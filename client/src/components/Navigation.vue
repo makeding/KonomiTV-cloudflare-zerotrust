@@ -39,6 +39,10 @@
                         <span class="navigation__link-text">視聴履歴</span>
                     </router-link>
                     <v-spacer></v-spacer>
+                    <a v-ripple class="navigation__link" active-class="navigation__link--active" href="/cdn-cgi/access/logout" v-if="CFZTStore.is_CFZT">
+                        <Icon class="navigation__link-icon" icon="fluent:sign-out-20-regular" width="26px" />
+                        <span class="navigation__link-text">CFからログアウト</span>
+                    </a>
                     <router-link v-ripple class="navigation__link" active-class="navigation__link--active" to="/settings/"
                         :class="{'navigation__link--active': $route.path.startsWith('/settings')}">
                         <Icon class="navigation__link-icon" icon="fluent:settings-20-regular" width="26px" />
@@ -67,6 +71,7 @@ import { mapStores } from 'pinia';
 import { defineComponent } from 'vue';
 
 import BottomNavigation from '@/components/BottomNavigation.vue';
+import useCFZTStore from '@/stores/CloudflareZerotrustStone';
 import useVersionStore from '@/stores/VersionStore';
 
 export default defineComponent({
@@ -75,10 +80,21 @@ export default defineComponent({
         BottomNavigation,
     },
     computed: {
+        ...mapStores(useCFZTStore),
         ...mapStores(useVersionStore),
     },
     async created() {
         await this.versionStore.fetchServerVersion();
+        await this.CFZTStore.fetchCFZTIdentity();
+        const u = new URL(location.href);
+        if (u.searchParams.get('_pwa') === 'false') {
+            u.searchParams.delete('_pwa')
+            history.pushState('','',u.href);
+        } else if (!this.versionStore.server_version && this.CFZTStore.is_CFZT && !this.CFZTStore.is_login) {
+            console.log('Cloudflare ZeroTrust Login need!!');
+            u.searchParams.set('_pwa','false');
+            location.href = u.href;
+        }
     }
 });
 

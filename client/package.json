@@ -11,9 +11,6 @@
         "preview": "concurrently --raw \"npm:akebi\" \"vite preview\"",
         "lint": "eslint . --fix --ignore-path .gitignore"
     },
-    "engines": {
-        "node": "20.16.0"
-    },
     "dependencies": {
         "@github/mini-throttle": "^2.1.1",
         "@tsukumijima/aribts": "github:tsukumijima/node-aribts#v1.5.1",
