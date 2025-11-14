@@ -158,6 +158,27 @@ export interface IJikkyoComments {
     detail: string;
 }
 
+/** シリーズマッチングのスコア明細を表すインターフェース */
+export interface ISeriesMatchBreakdown {
+    title: number;
+    time: number;
+    channel: number;
+    metadata: number;
+}
+
+/** シリーズマッチング結果を表すインターフェース */
+export interface ISeriesMatch {
+    program: IRecordedProgram;
+    score: number;
+    breakdown: ISeriesMatchBreakdown;
+}
+
+/** シリーズマッチング結果リストを表すインターフェース */
+export interface ISeriesMatches {
+    total: number;
+    series_matches: ISeriesMatch[];
+}
+
 
 class Videos {
 
@@ -266,6 +287,40 @@ class Videos {
         response.data.comments = response.data.comments.filter((comment) => {
             return CommentUtils.isMutedComment(comment.text, comment.author, comment.color, comment.type, comment.size) === false;
         });
+        return response.data;
+    }
+
+
+    /**
+     * 録画番組のシリーズマッチング結果を取得する
+     * @param video_id 録画番組の ID
+     * @param filter_mode フィルタモード ('strict' or 'relaxed')
+     * @param show_other_channels 他のチャンネルの番組も表示するかどうか
+     * @param page ページ番号
+     * @returns シリーズマッチング結果のリスト or 取得に失敗した場合は null
+     */
+    static async fetchVideoSeries(
+        video_id: number,
+        filter_mode: 'strict' | 'relaxed' = 'strict',
+        show_other_channels: boolean = false,
+        page: number = 1
+    ): Promise<ISeriesMatches | null> {
+
+        // API リクエストを実行
+        const response = await APIClient.get<ISeriesMatches>(`/videos/${video_id}/series`, {
+            params: {
+                filter_mode,
+                show_other_channels,
+                page,
+            },
+        });
+
+        // エラー処理
+        if (response.type === 'error') {
+            APIClient.showGenericError(response, 'シリーズマッチング結果を取得できませんでした。');
+            return null;
+        }
+
         return response.data;
     }
 

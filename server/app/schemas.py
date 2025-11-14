@@ -558,6 +558,26 @@ class UserAccessToken(BaseModel):
     access_token: str
     token_type: str
 
+# ***** シリーズマッチング *****
+
+# シリーズマッチングのスコア明細
+class SeriesMatchBreakdown(TypedDict):
+    title: int  # タイトルマッチングスコア (最大60点)
+    time: int  # 時間帯マッチングスコア (最大20点)
+    channel: int  # チャンネルマッチングスコア (最大10点)
+    metadata: int  # メタデータマッチングスコア (最大10点)
+
+# シリーズマッチング結果
+class SeriesMatch(BaseModel):
+    program: RecordedProgram  # マッチした録画番組
+    score: int  # 合計スコア
+    breakdown: SeriesMatchBreakdown  # スコア明細
+
+# シリーズマッチング結果のリスト
+class SeriesMatches(BaseModel):
+    total: int  # マッチした番組の総数
+    series_matches: list[SeriesMatch]  # マッチング結果のリスト
+
 # ***** バージョン情報 *****
 
 class VersionInformation(BaseModel):

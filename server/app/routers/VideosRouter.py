@@ -28,6 +28,7 @@ from app.models.User import User
 from app.routers.UsersRouter import GetCurrentAdminUser
 from app.utils.DriveIOLimiter import DriveIOLimiter
 from app.utils.JikkyoClient import JikkyoClient
+from app.utils.SeriesMatcher import SeriesMatcher
 from app.utils.TSInformation import TSInformation
 
 
@@ -894,6 +895,100 @@ async def VideoThumbnailRegenerateAPI(
         raise HTTPException(
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail = f'Failed to regenerate thumbnails: {ex!s}',
+        )
+
+
+@router.get(
+    '/{video_id}/series',
+    summary = 'シリーズ番組マッチング API',
+    response_description = 'マッチしたシリーズ番組の情報のリスト。',
+    response_model = schemas.SeriesMatches,
+)
+async def VideoSeriesMatchAPI(
+    recorded_program: Annotated[RecordedProgram, Depends(GetRecordedProgram)],
+    filter_mode: Annotated[Literal['strict', 'relaxed'], Query(description='フィルターモード (strict: 70点以上, relaxed: 50点以上) 。')] = 'strict',
+    show_other_channels: Annotated[bool, Query(description='他チャンネルの番組も含めるかどうか。')] = False,
+    page: Annotated[int, Query(description='ページ番号。')] = 1,
+):
+    """
+    指定された録画番組のシリーズ番組（同じシリーズ・関連番組）を取得する。<br>
+    filter_mode には "strict" (厳格：70点以上) または "relaxed" (緩和：50点以上) を指定する。<br>
+    show_other_channels を true にすると、他のチャンネルの番組も含める。<br>
+    page (ページ番号) には 1 以上の整数を指定する。
+    """
+
+    try:
+        # RecordedProgram モデルを schemas.RecordedProgram に変換
+        current_program = schemas.RecordedProgram.model_validate(recorded_program, from_attributes=True)
+
+        # スコア閾値を設定
+        score_threshold = 70 if filter_mode == 'strict' else 50
+
+        # 最近の録画番組を取得（最大200件）
+        # series_id が一致する場合は優先的に取得
+        all_programs_query = RecordedProgram.all() \
+            .select_related('recorded_video') \
+            .select_related('channel') \
+            .order_by('-start_time')
+
+        # series_id が存在する場合は、同じ series_id の番組を優先取得
+        if current_program.series_id:
+            series_programs = await all_programs_query.filter(series_id=current_program.series_id).limit(100)
+            other_programs = await all_programs_query.exclude(series_id=current_program.series_id).limit(100)
+            all_programs_models = series_programs + other_programs
+        else:
+            all_programs_models = await all_programs_query.limit(200)
+
+        # Tortoise ORM モデルを Pydantic モデルに変換
+        all_programs: list[schemas.RecordedProgram] = []
+        for program_model in all_programs_models:
+            all_programs.append(schemas.RecordedProgram.model_validate(program_model, from_attributes=True))
+
+        # 各番組をスコアリング
+        series_matches: list[schemas.SeriesMatch] = []
+        for program in all_programs:
+            match_result = SeriesMatcher.calculate_series_match(current_program, program)
+
+            # スコア閾値でフィルタリング
+            if match_result['score'] < score_threshold:
+                continue
+
+            # 他チャンネルフィルター
+            if not show_other_channels:
+                if program.channel and current_program.channel:
+                    if program.channel.id != current_program.channel.id:
+                        continue
+
+            series_matches.append(schemas.SeriesMatch(
+                program=match_result['program'],
+                score=match_result['score'],
+                breakdown=schemas.SeriesMatchBreakdown(
+                    title=match_result['breakdown']['title'],
+                    time=match_result['breakdown']['time'],
+                    channel=match_result['breakdown']['channel'],
+                    metadata=match_result['breakdown']['metadata'],
+                )
+            ))
+
+        # スコアでソート（降順）
+        series_matches.sort(key=lambda x: x.score, reverse=True)
+
+        # ページングを適用
+        total = len(series_matches)
+        start_index = (page - 1) * PAGE_SIZE
+        end_index = start_index + PAGE_SIZE
+        paginated_matches = series_matches[start_index:end_index]
+
+        return schemas.SeriesMatches(
+            total=total,
+            series_matches=paginated_matches,
+        )
+
+    except Exception as ex:
+        logging.error(f'[VideoSeriesMatchAPI] Failed to match series programs for video_id {recorded_program.id}:', exc_info=ex)
+        raise HTTPException(
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail = f'Failed to match series programs: {ex!s}',
         )
 
 
