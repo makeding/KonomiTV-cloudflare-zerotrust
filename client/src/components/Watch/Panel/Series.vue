@@ -215,8 +215,8 @@ export default defineComponent({
         async searchSeriesPrograms() {
             let current_program = this.playerStore.recorded_program;
 
-            // playerStore に録画番組情報がない場合は URL から取得
-            if (!current_program) {
+            // playerStore に録画番組情報がない、または ID が無効な場合は URL から取得
+            if (!current_program || current_program.id === -1) {
                 const video_id = this.$route.params.video_id;
                 if (!video_id) return;
 
@@ -226,6 +226,12 @@ export default defineComponent({
                 // playerStore に保存
                 this.playerStore.recorded_program = fetched_program;
                 current_program = fetched_program;
+            }
+
+            // video_id が依然として無効な場合は処理を中断
+            if (current_program.id === -1) {
+                console.log('[Series] 無効な video_id のため処理を中断');
+                return;
             }
 
             // 同じ番組で既に検索中の場合はスキップ

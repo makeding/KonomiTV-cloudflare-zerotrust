@@ -918,26 +918,41 @@ async def VideoSeriesMatchAPI(
     """
 
     try:
+        from datetime import datetime, timedelta
+
         # RecordedProgram モデルを schemas.RecordedProgram に変換
         current_program = schemas.RecordedProgram.model_validate(recorded_program, from_attributes=True)
 
         # スコア閾値を設定
         score_threshold = 70 if filter_mode == 'strict' else 50
 
-        # 最近の録画番組を取得（最大200件）
+        # 1年以内の録画番組のみを対象にする
+        one_year_ago = datetime.now() - timedelta(days=365)
+
+        # 最近の録画番組を取得（1年以内、最大500件）
         # series_id が一致する場合は優先的に取得
         all_programs_query = RecordedProgram.all() \
             .select_related('recorded_video') \
             .select_related('channel') \
+            .filter(start_time__gte=one_year_ago) \
             .order_by('-start_time')
 
         # series_id が存在する場合は、同じ series_id の番組を優先取得
+        # ただし series_id 一致の番組は期間制限なしで取得
         if current_program.series_id:
-            series_programs = await all_programs_query.filter(series_id=current_program.series_id).limit(100)
-            other_programs = await all_programs_query.exclude(series_id=current_program.series_id).limit(100)
+            # series_id 一致: 期間制限なし（全期間から取得）
+            series_programs_query = RecordedProgram.all() \
+                .select_related('recorded_video') \
+                .select_related('channel') \
+                .filter(series_id=current_program.series_id) \
+                .order_by('-start_time')
+            series_programs = await series_programs_query.limit(200)
+
+            # その他の番組: 1年以内のみ
+            other_programs = await all_programs_query.exclude(series_id=current_program.series_id).limit(300)
             all_programs_models = series_programs + other_programs
         else:
-            all_programs_models = await all_programs_query.limit(200)
+            all_programs_models = await all_programs_query.limit(500)
 
         # Tortoise ORM モデルを Pydantic モデルに変換
         all_programs: list[schemas.RecordedProgram] = []
@@ -949,8 +964,20 @@ async def VideoSeriesMatchAPI(
         for program in all_programs:
             match_result = SeriesMatcher.calculate_series_match(current_program, program)
 
-            # スコア閾値でフィルタリング
-            if match_result['score'] < score_threshold:
+            # series_id が一致する場合は、スコア閾値を緩和し、ボーナス点を追加
+            # EPG が同じシリーズと認識しているため、時間が古くても含める
+            is_same_series = (current_program.series_id and
+                            program.series_id and
+                            current_program.series_id == program.series_id)
+
+            # series_id 一致の場合は +1000 点のボーナスを追加（最優先表示）
+            bonus_score = 1000 if is_same_series else 0
+            final_score = match_result['score'] + bonus_score
+
+            effective_threshold = 10 if is_same_series else score_threshold
+
+            # スコア閾値でフィルタリング（ボーナス適用前のスコアで判定）
+            if match_result['score'] < effective_threshold:
                 continue
 
             # 他チャンネルフィルター
@@ -961,7 +988,7 @@ async def VideoSeriesMatchAPI(
 
             series_matches.append(schemas.SeriesMatch(
                 program=match_result['program'],
-                score=match_result['score'],
+                score=final_score,  # ボーナス適用後のスコア
                 breakdown=schemas.SeriesMatchBreakdown(
                     title=match_result['breakdown']['title'],
                     time=match_result['breakdown']['time'],
@@ -970,8 +997,8 @@ async def VideoSeriesMatchAPI(
                 )
             ))
 
-        # スコアでソート（降順）
-        series_matches.sort(key=lambda x: x.score, reverse=True)
+        # 放送時間で降順ソート（新しい順）
+        series_matches.sort(key=lambda x: x.program.start_time, reverse=True)
 
         # ページングを適用
         total = len(series_matches)
