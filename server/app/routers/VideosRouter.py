@@ -238,6 +238,26 @@ async def GetThumbnailResponse(
 
         return False
 
+    def CreateDefaultThumbnailResponse() -> FileResponse:
+        """ 録画中 or サムネイル画像が存在しない場合に返すデフォルトのレスポンスを返す """
+
+        default_thumbnail_path = STATIC_DIR / 'thumbnails/default.webp'
+        # キャッシュさせないようにヘッダーを設定
+        headers = {
+            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0',
+        }
+        return FileResponse(
+            path = default_thumbnail_path,
+            media_type = 'image/webp',
+            headers = headers,
+        )
+
+    # 録画中のファイルは常にデフォルトのサムネイル画像を返す
+    if recorded_program.recorded_video.status == 'Recording':
+        return CreateDefaultThumbnailResponse()
+
     # サムネイル画像のパスを生成
     suffix = '_tile' if return_tiled else ''
     base_path = anyio.Path(str(THUMBNAILS_DIR)) / f'{recorded_program.recorded_video.file_hash}{suffix}'
@@ -252,20 +272,9 @@ async def GetThumbnailResponse(
             media_type = mime
             break
 
-    # サムネイル画像が存在しない場合はデフォルト画像を返す
+    # サムネイル画像が存在しない場合はデフォルトのサムネイル画像を返す
     if thumbnail_path is None:
-        default_thumbnail_path = STATIC_DIR / 'thumbnails/default.webp'
-        # キャッシュさせないようにヘッダーを設定
-        headers = {
-            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0',
-        }
-        return FileResponse(
-            path = default_thumbnail_path,
-            media_type = 'image/webp',
-            headers = headers,
-        )
+        return CreateDefaultThumbnailResponse()
 
     # サムネイル画像のファイル情報を取得
     stat_result = await thumbnail_path.stat()
@@ -796,20 +805,23 @@ async def VideoReanalyzeAPI(
     selected_service_id: int | None = None,
 ):
     """
-    指定された録画番組のメタデータ（動画情報・番組情報・キーフレーム情報・CM 区間情報など）を再解析する。<br>
-    生成に時間のかかるシークバー用サムネイルタイルは既存ファイルがあれば再利用されるが、代表サムネイルはメタデータと同時に再度生成される。
+    指定された録画番組のメタデータ（動画情報・番組情報・サムネイル画像・キーフレーム情報・CM 区間情報など）をすべて再解析・再生成する。
     """
 
     try:
-        # DriveIOLimiter で同一 HDD に対してのバックグラウンドタスクの同時実行数を原則1セッションに制限
         file_path = anyio.Path(recorded_program.recorded_video.file_path)
-        async with DriveIOLimiter.getSemaphore(file_path):
-            # メタデータ再解析を実行
-            await RecordedScanTask().processRecordedFile(
-                file_path = file_path,
-                force_update = True,
-                selected_service_id = selected_service_id,
-            )
+        # メタデータ再解析を実行
+        ## wait_background_analysis = True 指定時は DriveIOLimiter を掛けるとデッドロックが発生するので、敢えて掛けない
+        ## どのみち内部で実行される RecordedScanTask で DriveIOLimiter を掛けているため、ここで掛ける必要はない
+        await RecordedScanTask().processRecordedFile(
+            file_path = file_path,
+            # 既に DB に登録されている録画ファイルのメタデータを強制的に再解析する
+            force_update = True,
+            # 特定のサービス ID を指定して解析する場合に使用
+            selected_service_id = selected_service_id,
+            # API レスポンスの返却をもってメタデータ再解析が完全に完了したことをユーザーに伝えるため、バックグラウンド解析タスクが完了するまで待つ
+            wait_background_analysis = True,
+        )
 
     except Exception as ex:
         logging.error(f'[VideoReanalyzeAPI] Failed to reanalyze the video_id {recorded_program.id}:', exc_info=ex)
@@ -821,7 +833,7 @@ async def VideoReanalyzeAPI(
 
 @router.get(
     '/{video_id}/thumbnail',
-    summary = '録画番組サムネイル API',
+    summary = '録画番組サムネイル画像取得 API',
     response_description = '録画番組のサムネイル画像 (WebP または JPEG) 。',
     response_class = FileResponse,
     responses = {
@@ -836,7 +848,7 @@ async def VideoThumbnailAPI(
 ):
     """
     指定された録画番組のサムネイル画像を取得する。<br>
-    サムネイルが生成されていない場合はデフォルト画像を返す。
+    サムネイル画像が生成されていない場合はデフォルトのサムネイル画像を返す。
     """
 
     return await GetThumbnailResponse(request, recorded_program)
@@ -844,7 +856,7 @@ async def VideoThumbnailAPI(
 
 @router.get(
     '/{video_id}/thumbnail/tiled',
-    summary = '録画番組シークバー用サムネイルタイル API',
+    summary = '録画番組シークバー用サムネイルタイル画像取得 API',
     response_description = '録画番組のシークバー用サムネイルタイル画像 (WebP または JPEG) 。',
     response_class = FileResponse,
     responses = {
@@ -858,8 +870,8 @@ async def VideoThumbnailTileAPI(
     recorded_program: Annotated[RecordedProgram, Depends(GetRecordedProgram)],
 ):
     """
-    指定された録画番組のシークバーサムネイル画像を取得する。<br>
-    サムネイルが生成されていない場合はデフォルト画像を返す。
+    指定された録画番組のシークバー用サムネイルタイル画像を取得する。<br>
+    サムネイル画像が生成されていない場合はデフォルトのサムネイル画像を返す。
     """
 
     return await GetThumbnailResponse(request, recorded_program, return_tiled=True)
@@ -867,16 +879,15 @@ async def VideoThumbnailTileAPI(
 
 @router.post(
     '/{video_id}/thumbnail/regenerate',
-    summary = 'サムネイル再生成 API',
+    summary = '録画番組サムネイル画像再生成 API',
     status_code = status.HTTP_204_NO_CONTENT,
 )
 async def VideoThumbnailRegenerateAPI(
     recorded_program: Annotated[RecordedProgram, Depends(GetRecordedProgram)],
-    skip_tile_if_exists: Annotated[bool, Query(description='既に存在する場合はサムネイルタイルの生成をスキップするかどうか（通常のサムネイルは再度生成する）。')] = False,
 ):
     """
-    指定された録画番組のサムネイルを再生成する。<br>
-    サムネイル生成には数分程度かかる場合がある。
+    指定された録画番組のサムネイル画像を再生成する。<br>
+    サムネイル画像の再生成には数分程度かかる場合がある。
     """
 
     try:
@@ -886,9 +897,9 @@ async def VideoThumbnailRegenerateAPI(
         # DriveIOLimiter で同一 HDD に対してのバックグラウンドタスクの同時実行数を原則1セッションに制限
         file_path = anyio.Path(recorded_program.recorded_video.file_path)
         async with DriveIOLimiter.getSemaphore(file_path):
-            # サムネイル生成を実行
+            # サムネイル画像の再生成を実行
             generator = ThumbnailGenerator.fromRecordedProgram(recorded_program_schema)
-            await generator.generateAndSave(skip_tile_if_exists=skip_tile_if_exists)
+            await generator.generateAndSave()
 
     except Exception as ex:
         logging.error(f'[VideoThumbnailRegenerateAPI] Failed to regenerate thumbnails for video_id {recorded_program.id}:', exc_info=ex)
