@@ -1,0 +1,571 @@
+diff --git a/Makefile.am b/Makefile.am
+index 644f3e1..ae4b525 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -38,12 +38,7 @@ src_core_libffms2_la_SOURCES = \
+ 	src/core/videoutils.cpp \
+ 	src/core/videoutils.h \
+ 	src/core/zipfile.cpp \
+-	src/core/zipfile.h \
+-	src/vapoursynth/VapourSynth4.h \
+-	src/vapoursynth/VSHelper4.h \
+-	src/vapoursynth/vapoursource4.cpp \
+-	src/vapoursynth/vapoursource4.h \
+-	src/vapoursynth/vapoursynth4.cpp
++	src/core/zipfile.h
+ 
+ if AVISYNTH
+ src_core_libffms2_la_SOURCES += \
+diff --git a/include/ffms.h b/include/ffms.h
+index 3f9d455..028258c 100644
+--- a/include/ffms.h
++++ b/include/ffms.h
+@@ -437,6 +437,7 @@ FFMS_API(int) FFMS_GetVersion();
+ FFMS_API(int) FFMS_GetLogLevel();
+ FFMS_API(void) FFMS_SetLogLevel(int Level);
+ FFMS_API(FFMS_VideoSource *) FFMS_CreateVideoSource(const char *SourceFile, int Track, FFMS_Index *Index, int Threads, int SeekMode, FFMS_ErrorInfo *ErrorInfo);
++FFMS_API(FFMS_VideoSource *) FFMS_CreateVideoSource2(const char *SourceFile, int Track, FFMS_Index *Index, int Threads, int SeekMode, const char *HWDevice, int ExtraHWFrames, FFMS_ErrorInfo *ErrorInfo);
+ FFMS_API(FFMS_AudioSource *) FFMS_CreateAudioSource(const char *SourceFile, int Track, FFMS_Index *Index, int DelayMode, FFMS_ErrorInfo *ErrorInfo);
+ FFMS_API(FFMS_AudioSource *) FFMS_CreateAudioSource2(const char *SourceFile, int Track, FFMS_Index *Index, int DelayMode, int FillGaps, double DrcScale, FFMS_ErrorInfo *ErrorInfo);
+ FFMS_API(void) FFMS_DestroyVideoSource(FFMS_VideoSource *V);
+diff --git a/src/avisynth/avisynth.cpp b/src/avisynth/avisynth.cpp
+index 2e38682..737bb13 100644
+--- a/src/avisynth/avisynth.cpp
++++ b/src/avisynth/avisynth.cpp
+@@ -105,6 +105,8 @@ static AVSValue __cdecl CreateFFVideoSource(AVSValue Args, void* UserData, IScri
+     const char *Resizer = Args[12].AsString("BICUBIC");
+     const char *ColorSpace = Args[13].AsString("");
+     const char *VarPrefix = Args[14].AsString("");
++    const char *HWDevice = Args[15].AsString("");
++    int ExtraHWFrames = Args[16].AsInt(8);
+ 
+     if (FPSDen < 1)
+         Env->ThrowError("FFVideoSource: FPS denominator needs to be 1 or higher");
+@@ -174,7 +176,7 @@ static AVSValue __cdecl CreateFFVideoSource(AVSValue Args, void* UserData, IScri
+     AvisynthVideoSource *Filter;
+ 
+     try {
+-        Filter = new AvisynthVideoSource(Source, Track, Index, FPSNum, FPSDen, Threads, SeekMode, Width, Height, Resizer, ColorSpace, VarPrefix, Env);
++        Filter = new AvisynthVideoSource(Source, Track, Index, FPSNum, FPSDen, Threads, SeekMode, Width, Height, Resizer, ColorSpace, VarPrefix, HWDevice, ExtraHWFrames, Env);
+     } catch (...) {
+         FFMS_DestroyIndex(Index);
+         throw;
+@@ -348,7 +350,7 @@ extern "C" AVS_EXPORT const char* __stdcall AvisynthPluginInit3(IScriptEnvironme
+     AVS_linkage = vectors;
+ 
+     Env->AddFunction("FFIndex", "[source]s[cachefile]s[indexmask]i[errorhandling]i[overwrite]b[enable_drefs]b[use_absolute_path]b", CreateFFIndex, nullptr);
+-    Env->AddFunction("FFVideoSource", "[source]s[track]i[cache]b[cachefile]s[fpsnum]i[fpsden]i[threads]i[timecodes]s[seekmode]i[rffmode]i[width]i[height]i[resizer]s[colorspace]s[varprefix]s", CreateFFVideoSource, nullptr);
++    Env->AddFunction("FFVideoSource", "[source]s[track]i[cache]b[cachefile]s[fpsnum]i[fpsden]i[threads]i[timecodes]s[seekmode]i[rffmode]i[width]i[height]i[resizer]s[colorspace]s[varprefix]s[hwdevice]s[extrahwframes]i", CreateFFVideoSource, nullptr);
+     Env->AddFunction("FFAudioSource", "[source]s[track]i[cache]b[cachefile]s[adjustdelay]i[fill_gaps]i[drc_scale]f[varprefix]s", CreateFFAudioSource, nullptr);
+ 
+     Env->AddFunction("FFmpegSource2", "[source]s[vtrack]i[atrack]i[cache]b[cachefile]s[fpsnum]i[fpsden]i[threads]i[timecodes]s[seekmode]i[overwrite]b[width]i[height]i[resizer]s[colorspace]s[rffmode]i[adjustdelay]i[enable_drefs]b[use_absolute_path]b[fill_gaps]i[drc_scale]f[varprefix]s", CreateFFmpegSource2, nullptr);
+diff --git a/src/avisynth/avssources.cpp b/src/avisynth/avssources.cpp
+index 7964616..a0e44c4 100644
+--- a/src/avisynth/avssources.cpp
++++ b/src/avisynth/avssources.cpp
+@@ -20,12 +20,28 @@
+ 
+ #define NOMINMAX
+ #include "avssources.h"
+-#include "../vapoursynth/VSHelper4.h"
+ #include "../core/utils.h"
+ 
+ #include <algorithm>
+ #include <cassert>
+ 
++static void ReduceRational(int64_t *Num, int64_t *Den) {
++    if (*Den == 0)
++        return;
++
++    int64_t A = *Num;
++    int64_t B = *Den;
++    while (B != 0) {
++        int64_t Remainder = A % B;
++        A = B;
++        B = Remainder;
++    }
++    if (A < 0)
++        A = -A;
++    *Num /= A;
++    *Den /= A;
++}
++
+ static AVPixelFormat CSNameToPIXFMT(const char *CSName, AVPixelFormat Default, bool HighBitDepth) {
+     if (!CSName)
+         return AV_PIX_FMT_NONE;
+@@ -116,7 +132,8 @@ static AVPixelFormat CSNameToPIXFMT(const char *CSName, AVPixelFormat Default, b
+ AvisynthVideoSource::AvisynthVideoSource(const char *SourceFile, int Track, FFMS_Index *Index,
+     int AFPSNum, int AFPSDen, int Threads, int SeekMode,
+     int ResizeToWidth, int ResizeToHeight, const char *ResizerName,
+-    const char *ConvertToFormatName, const char *VarPrefix, IScriptEnvironment* Env)
++    const char *ConvertToFormatName, const char *VarPrefix,
++    const char *HWDevice, int ExtraHWFrames, IScriptEnvironment* Env)
+     : FPSNum(AFPSNum)
+     , FPSDen(AFPSDen)
+     , VarPrefix(VarPrefix) {
+@@ -128,7 +145,7 @@ AvisynthVideoSource::AvisynthVideoSource(const char *SourceFile, int Track, FFMS
+     VI.pixel_type = VideoInfo::CS_UNKNOWN;
+ 
+     ErrorInfo E;
+-    V = FFMS_CreateVideoSource(SourceFile, Track, Index, Threads, SeekMode, &E);
++    V = FFMS_CreateVideoSource2(SourceFile, Track, Index, Threads, SeekMode, HWDevice, ExtraHWFrames, &E);
+     if (!V)
+         Env->ThrowError("FFVideoSource: %s", E.Buffer);
+ 
+@@ -145,7 +162,7 @@ AvisynthVideoSource::AvisynthVideoSource(const char *SourceFile, int Track, FFMS
+     VI.fps_numerator = VP->FPSNumerator;
+     VI.num_frames = VP->NumFrames;
+     if (FPSNum > 0 && FPSDen > 0) {
+-        vsh::reduceRational(&FPSNum, &FPSDen);
++        ReduceRational(&FPSNum, &FPSDen);
+         VI.fps_denominator = FPSDen;
+         VI.fps_numerator = FPSNum;
+         if (VP->NumFrames > 1) {
+@@ -273,7 +290,7 @@ void AvisynthVideoSource::InitOutputFormat(
+ 
+     if (FFMS_SetOutputFormatV2(V, TargetFormats.data(),
+         ResizeToWidth, ResizeToHeight, Resizer, &E))
+-        Env->ThrowError("FFVideoSource: No suitable output format found");
++        Env->ThrowError("FFVideoSource: %s", E.Buffer);
+ 
+     F = FFMS_GetFrame(V, 0, &E);
+     TargetFormats.clear();
+@@ -283,7 +300,7 @@ void AvisynthVideoSource::InitOutputFormat(
+     // This trick is required to first get the "best" default format and then set only that format as the output
+     if (FFMS_SetOutputFormatV2(V, TargetFormats.data(),
+         ResizeToWidth, ResizeToHeight, Resizer, &E))
+-        Env->ThrowError("FFVideoSource: No suitable output format found");
++        Env->ThrowError("FFVideoSource: %s", E.Buffer);
+ 
+     F = FFMS_GetFrame(V, 0, &E);
+ 
+@@ -471,7 +488,7 @@ PVideoFrame AvisynthVideoSource::GetFrame(int n, IScriptEnvironment *Env) {
+                 num = 1;
+             int64_t DurNum = TB->Num * num;
+             int64_t DurDen = TB->Den * 1000;
+-            vsh::reduceRational(&DurNum, &DurDen);
++            ReduceRational(&DurNum, &DurDen);
+             Env->propSetInt(props, "_DurationNum", DurNum, 0);
+             Env->propSetInt(props, "_DurationDen", DurDen, 0);
+             Env->propSetFloat(props, "_AbsoluteTime", ((static_cast<double>(TB->Num) / 1000) * FFMS_GetFrameInfo(T, n)->PTS) / TB->Den, 0);
+diff --git a/src/avisynth/avssources.h b/src/avisynth/avssources.h
+index 73a972b..92de821 100644
+--- a/src/avisynth/avssources.h
++++ b/src/avisynth/avssources.h
+@@ -53,7 +53,8 @@ public:
+     AvisynthVideoSource(const char *SourceFile, int Track, FFMS_Index *Index,
+         int FPSNum, int FPSDen, int Threads, int SeekMode,
+         int ResizeToWidth, int ResizeToHeight, const char *ResizerName,
+-        const char *ConvertToFormatName, const char *VarPrefix, IScriptEnvironment* Env);
++        const char *ConvertToFormatName, const char *VarPrefix,
++        const char *HWDevice, int ExtraHWFrames, IScriptEnvironment* Env);
+     ~AvisynthVideoSource();
+     bool __stdcall GetParity(int n);
+     int __stdcall SetCacheHints(int cachehints, int frame_range) { return 0; }
+diff --git a/src/core/ffms.cpp b/src/core/ffms.cpp
+index cbfe88e..593f6ae 100644
+--- a/src/core/ffms.cpp
++++ b/src/core/ffms.cpp
+@@ -100,8 +100,12 @@ FFMS_API(void) FFMS_SetLogLevel(int Level) {
+ }
+ 
+ FFMS_API(FFMS_VideoSource *) FFMS_CreateVideoSource(const char *SourceFile, int Track, FFMS_Index *Index, int Threads, int SeekMode, FFMS_ErrorInfo *ErrorInfo) {
++    return FFMS_CreateVideoSource2(SourceFile, Track, Index, Threads, SeekMode, "", 0, ErrorInfo);
++}
++
++FFMS_API(FFMS_VideoSource *) FFMS_CreateVideoSource2(const char *SourceFile, int Track, FFMS_Index *Index, int Threads, int SeekMode, const char *HWDevice, int ExtraHWFrames, FFMS_ErrorInfo *ErrorInfo) {
+     try {
+-        return new FFMS_VideoSource(SourceFile, *Index, Track, Threads, SeekMode);
++        return new FFMS_VideoSource(SourceFile, *Index, Track, Threads, SeekMode, HWDevice, ExtraHWFrames);
+     } catch (FFMS_Exception &e) {
+         e.CopyOut(ErrorInfo);
+         return nullptr;
+diff --git a/src/core/videosource.cpp b/src/core/videosource.cpp
+index 3045082..0ac2381 100644
+--- a/src/core/videosource.cpp
++++ b/src/core/videosource.cpp
+@@ -22,6 +22,7 @@
+ #include "indexing.h"
+ #include "videoutils.h"
+ #include <algorithm>
++#include <string>
+ #include <thread>
+ 
+ 
+@@ -222,7 +223,7 @@ FFMS_Frame *FFMS_VideoSource::OutputFrame(AVFrame *Frame) {
+     return &LocalFrame;
+ }
+ 
+-FFMS_VideoSource::FFMS_VideoSource(const char *SourceFile, FFMS_Index &Index, int Track, int Threads, int SeekMode)
++FFMS_VideoSource::FFMS_VideoSource(const char *SourceFile, FFMS_Index &Index, int Track, int Threads, int SeekMode, const char *HWDevice, int ExtraHWFrames)
+     : Index(Index), SeekMode(SeekMode) {
+ 
+     try {
+@@ -264,49 +265,117 @@ FFMS_VideoSource::FFMS_VideoSource(const char *SourceFile, FFMS_Index &Index, in
+ 
+         LAVFOpenFile(SourceFile, FormatContext, VideoTrack, Index.LAVFOpts);
+ 
+-        auto *Codec = avcodec_find_decoder(FormatContext->streams[VideoTrack]->codecpar->codec_id);
++        // Layered streams require two software frames per output frame. Reject
++        // hardware decoding only after this property has actually been read.
++        if (FormatContext->streams[VideoTrack]->disposition & AV_DISPOSITION_MULTILAYER) {
++            IsLayered = true;
++            // See if we can figure out the primary (base) eye based on side data
++            for (int i = 0; i < FormatContext->streams[VideoTrack]->codecpar->nb_coded_side_data; i++) {
++                if (FormatContext->streams[VideoTrack]->codecpar->coded_side_data[i].type == AV_PKT_DATA_STEREO3D) {
++                    const AVStereo3D *StereoSideData = (const AVStereo3D *)FormatContext->streams[VideoTrack]->codecpar->coded_side_data[i].data;
++                    // If 'right', set it as such, otherwise it is left.
++                    PrimaryEyeIsLeft = !(StereoSideData->primary_eye == AV_PRIMARY_EYE_RIGHT);
++                    EyesInverted = !!(StereoSideData->flags & AV_STEREO3D_FLAG_INVERT);
++                }
++            }
++        }
++
++        std::string HWDeviceName = HWDevice ? HWDevice : "";
++        std::string HWDeviceTypeName = HWDeviceName;
++        std::string HWDeviceIdentifier;
++        AVHWDeviceType HWDeviceType = AV_HWDEVICE_TYPE_NONE;
++        if (!HWDeviceName.empty()) {
++            size_t Separator = HWDeviceName.find(':');
++            if (Separator != std::string::npos) {
++                HWDeviceTypeName = HWDeviceName.substr(0, Separator);
++                HWDeviceIdentifier = HWDeviceName.substr(Separator + 1);
++                if (HWDeviceIdentifier.empty())
++                    throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_INVALID_ARGUMENT,
++                        "FFMS2-HW: Empty HW device identifier: " + HWDeviceName);
++            }
++            HWDeviceType = av_hwdevice_find_type_by_name(HWDeviceTypeName.c_str());
++            if (HWDeviceType == AV_HWDEVICE_TYPE_NONE)
++                throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_INVALID_ARGUMENT,
++                    "FFMS2-HW: Unknown HW device: " + HWDeviceTypeName);
++        }
++        HWMode = HWDeviceType != AV_HWDEVICE_TYPE_NONE;
++        if (HWMode && ExtraHWFrames < 0)
++            throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_INVALID_ARGUMENT,
++                "FFMS2-HW: Extra HW frames must be non-negative");
++        if (HWMode && IsLayered)
++            throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_UNSUPPORTED,
++                "FFMS2-HW: Hardware decoding of layered video is unsupported");
++
++        const auto CodecID = FormatContext->streams[VideoTrack]->codecpar->codec_id;
++        // FFmpeg's native AV1 decoder is required for hardware formats, while
++        // libaom is the deterministic CPU path (the native decoder can return
++        // empty frames for valid 10-bit streams supported by libaom).
++        auto *Codec = CodecID == AV_CODEC_ID_AV1 ?
++            avcodec_find_decoder_by_name(HWMode ? "av1" : "libaom-av1") :
++            avcodec_find_decoder(CodecID);
+         if (Codec == nullptr)
+             throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
+-                "Video codec not found");
++                HWMode ? "FFMS2-HW: Video codec not found" : "Video codec not found");
++
++        if (HWMode) {
++            for (int i = 0; ; i++) {
++                const AVCodecHWConfig *Config = avcodec_get_hw_config(Codec, i);
++                if (!Config)
++                    throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_UNSUPPORTED,
++                        "FFMS2-HW: Decoder " + std::string(Codec->name) +
++                        " does not support device type " + av_hwdevice_get_type_name(HWDeviceType));
++                if ((Config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
++                    Config->device_type == HWDeviceType) {
++                    HWPixelFormat = Config->pix_fmt;
++                    break;
++                }
++            }
++        }
+ 
+         CodecContext = avcodec_alloc_context3(Codec);
+         if (CodecContext == nullptr)
+             throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_ALLOCATION_FAILED,
+-                "Could not allocate video codec context.");
++                HWMode ? "FFMS2-HW: Could not allocate video codec context." :
++                    "Could not allocate video codec context.");
+         if (avcodec_parameters_to_context(CodecContext, FormatContext->streams[VideoTrack]->codecpar) < 0)
+             throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
+-                "Could not copy video decoder parameters.");
++                HWMode ? "FFMS2-HW: Could not copy video decoder parameters." :
++                    "Could not copy video decoder parameters.");
+         CodecContext->thread_count = DecodingThreads;
+         CodecContext->has_b_frames = Frames.MaxBFrames;
+ 
++        if (HWMode) {
++            CodecContext->extra_hw_frames = ExtraHWFrames;
++            CodecContext->opaque = this;
++            CodecContext->get_format = SelectHardwareFormat;
++            const char *Identifier = HWDeviceIdentifier.empty() ? nullptr : HWDeviceIdentifier.c_str();
++            if (av_hwdevice_ctx_create(&HWDeviceContext, HWDeviceType, Identifier, nullptr, 0) < 0)
++                throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
++                    "FFMS2-HW: Failed to create specified HW device: " + HWDeviceName);
++            CodecContext->hw_device_ctx = av_buffer_ref(HWDeviceContext);
++            if (!CodecContext->hw_device_ctx)
++                throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_ALLOCATION_FAILED,
++                    "FFMS2-HW: Failed to reference the HW device context");
++            HWFrame = av_frame_alloc();
++            if (!HWFrame)
++                throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_ALLOCATION_FAILED,
++                    "FFMS2-HW: Could not allocate hardware frame");
++        }
++
+         // Full explanation by more clever person availale here: https://github.com/Nevcairiel/LAVFilters/issues/113
+         if (CodecContext->codec_id == AV_CODEC_ID_H264 && CodecContext->has_b_frames)
+             CodecContext->has_b_frames = 15; // the maximum possible value for h264
+ 
+-        // Are we layered?
+-        if (FormatContext->streams[VideoTrack]->disposition & AV_DISPOSITION_MULTILAYER) {
+-            IsLayered = true;
+-            // See if we can figure out the primary (base) eye based on side data
+-            for (int i = 0; i < FormatContext->streams[VideoTrack]->codecpar->nb_coded_side_data; i++) {
+-                if (FormatContext->streams[VideoTrack]->codecpar->coded_side_data[i].type == AV_PKT_DATA_STEREO3D) {
+-                    const AVStereo3D *StereoSideData = (const AVStereo3D *)FormatContext->streams[VideoTrack]->codecpar->coded_side_data[i].data;
+-                    // If 'right', set it as such, otherwise it is left.
+-                    PrimaryEyeIsLeft = !(StereoSideData->primary_eye == AV_PRIMARY_EYE_RIGHT);
+-                    EyesInverted = !!(StereoSideData->flags & AV_STEREO3D_FLAG_INVERT);
+-                }
+-            }
+-        }
+-
+         // Just ask for all views possible if we're layered
+         AVDictionary *CodecDict = nullptr;
+         if (IsLayered)
+             av_dict_set(&CodecDict, "view_ids", "-1", 0);
+ 
+-        if (avcodec_open2(CodecContext, Codec, &CodecDict) < 0)
+-            throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
+-                "Could not open video codec");
+-
++        const int CodecOpenResult = avcodec_open2(CodecContext, Codec, &CodecDict);
+         av_dict_free(&CodecDict);
++        if (CodecOpenResult < 0)
++            throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
++                HWMode ? "FFMS2-HW: Could not open video codec" : "Could not open video codec");
+ 
+         // Similar yet different to h264 workaround above
+         // vc1 simply sets has_b_frames to 1 no matter how many there are so instead we set it to the max value
+@@ -542,18 +608,27 @@ void FFMS_VideoSource::SetInputFormat(int ColorSpace, int ColorRange, AVPixelFor
+ }
+ 
+ void FFMS_VideoSource::DetectInputFormat() {
++    const AVPixelFormat DecodedFormat = HWMode ?
++        static_cast<AVPixelFormat>(DecodeFrame->format) : CodecContext->pix_fmt;
++    const AVColorRange DecodedColorRange =
++        HWMode && DecodeFrame->color_range != AVCOL_RANGE_UNSPECIFIED ?
++            DecodeFrame->color_range : CodecContext->color_range;
++    const AVColorSpace DecodedColorSpace =
++        HWMode && DecodeFrame->colorspace != AVCOL_SPC_UNSPECIFIED ?
++            DecodeFrame->colorspace : CodecContext->colorspace;
++
+     if (InputFormat == AV_PIX_FMT_NONE)
+-        InputFormat = CodecContext->pix_fmt;
++        InputFormat = DecodedFormat;
+ 
+     AVColorRange RangeFromFormat = handle_jpeg(&InputFormat);
+ 
+     if (InputColorRange == AVCOL_RANGE_UNSPECIFIED)
+         InputColorRange = RangeFromFormat;
+     if (InputColorRange == AVCOL_RANGE_UNSPECIFIED)
+-        InputColorRange = CodecContext->color_range;
++        InputColorRange = DecodedColorRange;
+ 
+     if (InputColorSpace == AVCOL_SPC_UNSPECIFIED)
+-        InputColorSpace = CodecContext->colorspace;
++        InputColorSpace = DecodedColorSpace;
+ }
+ 
+ void FFMS_VideoSource::ReAdjustOutputFormat(AVFrame *Frame) {
+@@ -564,20 +639,31 @@ void FFMS_VideoSource::ReAdjustOutputFormat(AVFrame *Frame) {
+ 
+     DetectInputFormat();
+ 
++    const int SourceWidth = HWMode ? Frame->width : CodecContext->width;
++    const int SourceHeight = HWMode ? Frame->height : CodecContext->height;
++
+     OutputFormat = FindBestPixelFormat(TargetPixelFormats, InputFormat);
+     if (OutputFormat == AV_PIX_FMT_NONE) {
+         ResetOutputFormat();
+         throw FFMS_Exception(FFMS_ERROR_SCALING, FFMS_ERROR_INVALID_ARGUMENT,
+-            "No suitable output format found");
++            HWMode ? "FFMS2-HW: No suitable output format found" :
++                "No suitable output format found");
+     }
+ 
++    const AVColorRange SourceColorRange =
++        HWMode && Frame->color_range != AVCOL_RANGE_UNSPECIFIED ?
++            Frame->color_range : CodecContext->color_range;
++    const AVColorSpace SourceColorSpace =
++        HWMode && Frame->colorspace != AVCOL_SPC_UNSPECIFIED ?
++            Frame->colorspace : CodecContext->colorspace;
++
+     OutputColorRange = handle_jpeg(&OutputFormat);
+     if (OutputColorRange == AVCOL_RANGE_UNSPECIFIED)
+-        OutputColorRange = CodecContext->color_range;
++        OutputColorRange = SourceColorRange;
+     if (OutputColorRange == AVCOL_RANGE_UNSPECIFIED)
+         OutputColorRange = InputColorRange;
+ 
+-    OutputColorSpace = CodecContext->colorspace;
++    OutputColorSpace = SourceColorSpace;
+     if (OutputColorSpace == AVCOL_SPC_UNSPECIFIED)
+         OutputColorSpace = InputColorSpace;
+ 
+@@ -611,8 +697,8 @@ void FFMS_VideoSource::ReAdjustOutputFormat(AVFrame *Frame) {
+     }
+ 
+     if (InputFormat != OutputFormat ||
+-        TargetWidth != CodecContext->width ||
+-        TargetHeight != CodecContext->height ||
++        TargetWidth != SourceWidth ||
++        TargetHeight != SourceHeight ||
+         InputColorSpace != OutputColorSpace ||
+         InputColorRange != OutputColorRange) {
+         SWS = GetSwsContext(
+@@ -623,14 +709,16 @@ void FFMS_VideoSource::ReAdjustOutputFormat(AVFrame *Frame) {
+         if (!SWS) {
+             ResetOutputFormat();
+             throw FFMS_Exception(FFMS_ERROR_SCALING, FFMS_ERROR_INVALID_ARGUMENT,
+-                "Failed to allocate SWScale context");
++                HWMode ? "FFMS2-HW: Failed to allocate SWScale context" :
++                    "Failed to allocate SWScale context");
+         }
+     }
+ 
+     av_freep(&SWSFrameData[0]);
+     if (av_image_alloc(SWSFrameData, SWSFrameLinesize, TargetWidth, TargetHeight, OutputFormat, 4) < 0)
+         throw FFMS_Exception(FFMS_ERROR_SCALING, FFMS_ERROR_ALLOCATION_FAILED,
+-            "Could not allocate frame with new resolution.");
++            HWMode ? "FFMS2-HW: Could not allocate frame with new resolution." :
++                "Could not allocate frame with new resolution.");
+ }
+ 
+ void FFMS_VideoSource::ResetOutputFormat() {
+@@ -673,12 +761,16 @@ void FFMS_VideoSource::SetVideoProperties() {
+     }
+     VP.NumFrames = Frames.VisibleFrameCount();
+     VP.TopFieldFirst = !!(DecodeFrame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST);
+-    VP.ColorSpace = CodecContext->colorspace;
+-    VP.ColorRange = CodecContext->color_range;
++    VP.ColorSpace = HWMode && DecodeFrame->colorspace != AVCOL_SPC_UNSPECIFIED ?
++        DecodeFrame->colorspace : CodecContext->colorspace;
++    VP.ColorRange = HWMode && DecodeFrame->color_range != AVCOL_RANGE_UNSPECIFIED ?
++        DecodeFrame->color_range : CodecContext->color_range;
+     // these pixfmt's are deprecated but still used
+-    if (CodecContext->pix_fmt == AV_PIX_FMT_YUVJ420P ||
+-        CodecContext->pix_fmt == AV_PIX_FMT_YUVJ422P ||
+-        CodecContext->pix_fmt == AV_PIX_FMT_YUVJ444P
++    const AVPixelFormat DecodedFormat = HWMode ?
++        static_cast<AVPixelFormat>(DecodeFrame->format) : CodecContext->pix_fmt;
++    if (DecodedFormat == AV_PIX_FMT_YUVJ420P ||
++        DecodedFormat == AV_PIX_FMT_YUVJ422P ||
++        DecodedFormat == AV_PIX_FMT_YUVJ444P
+         )
+         VP.ColorRange = AVCOL_RANGE_JPEG;
+ 
+@@ -754,10 +846,17 @@ bool FFMS_VideoSource::DecodePacket(const AVPacket &Packet) {
+         ResendPacket = true;
+     } else if (Ret == 0) {
+         Delay.Increment(PacketHidden, SecondField);
++    } else if (HWMode && Ret != AVERROR_EOF) {
++        throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
++            "FFMS2-HW: Failed to send packet to decoder: " + AVErrorToString(Ret));
+     }
+ 
+-    Ret = avcodec_receive_frame(CodecContext, DecodeFrame);
++    if (HWMode)
++        av_frame_unref(HWFrame);
++    Ret = avcodec_receive_frame(CodecContext, HWMode ? HWFrame : DecodeFrame);
+     if (Ret == 0) {
++        if (HWMode)
++            TransferHWFrame();
+         if (IsLayered) {
+             const AVFrameSideData *sd = av_frame_get_side_data(DecodeFrame, AV_FRAME_DATA_STEREO3D);
+             if (!sd)
+@@ -786,6 +885,11 @@ bool FFMS_VideoSource::DecodePacket(const AVPacket &Packet) {
+             CopyEye(stereo3d->view);
+         }
+         Delay.Decrement();
++    } else if (HWMode && Ret != AVERROR(EAGAIN) && Ret != AVERROR_EOF) {
++        throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
++            HWFormatSelectionFailed ?
++                "FFMS2-HW: Decoder did not offer the required hardware pixel format" :
++                "FFMS2-HW: Failed to receive hardware frame: " + AVErrorToString(Ret));
+     } else {
+         std::swap(DecodeFrame, LastDecodedFrame);
+     }
+@@ -837,6 +941,36 @@ void FFMS_VideoSource::Free() {
+     av_freep(&RightEyeFrameData[0]);
+     av_frame_free(&DecodeFrame);
+     av_frame_free(&LastDecodedFrame);
++    av_frame_free(&HWFrame);
++    av_buffer_unref(&HWDeviceContext);
++}
++
++AVPixelFormat FFMS_VideoSource::SelectHardwareFormat(AVCodecContext *Context, const AVPixelFormat *Formats) {
++    FFMS_VideoSource *Source = static_cast<FFMS_VideoSource *>(Context->opaque);
++    if (!Source || !Source->HWMode || !Formats)
++        return AV_PIX_FMT_NONE;
++
++    for (const AVPixelFormat *Format = Formats; *Format != AV_PIX_FMT_NONE; Format++) {
++        if (*Format == Source->HWPixelFormat) {
++            Source->HWFormatSelectionFailed = false;
++            return *Format;
++        }
++    }
++
++    // Returning NONE makes FFmpeg fail the decode instead of silently
++    // selecting a software format and misreporting a hardware attempt.
++    Source->HWFormatSelectionFailed = true;
++    return AV_PIX_FMT_NONE;
++}
++
++void FFMS_VideoSource::TransferHWFrame() {
++    av_frame_unref(DecodeFrame);
++    if (av_hwframe_transfer_data(DecodeFrame, HWFrame, 0) < 0)
++        throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
++            "FFMS2-HW: Failed to transfer hardware frame to host");
++    if (av_frame_copy_props(DecodeFrame, HWFrame) < 0)
++        throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_CODEC,
++            "FFMS2-HW: Failed to copy hardware frame properties");
+ }
+ 
+ SmartAVPacket FFMS_VideoSource::DecodeNextFrame() {
+diff --git a/src/core/videosource.h b/src/core/videosource.h
+index 2da221d..8574a26 100644
+--- a/src/core/videosource.h
++++ b/src/core/videosource.h
+@@ -29,6 +29,7 @@ extern "C" {
+ #include <libavutil/stereo3d.h>
+ #include <libavutil/display.h>
+ #include <libavutil/mastering_display_metadata.h>
++#include <libavutil/hwcontext.h>
+ 
+ #include "ffmscompat.h"
+ #include <libavutil/hdr_dynamic_metadata.h>
+@@ -113,6 +114,11 @@ private:
+     size_t HDR10PlusBufferSize = 0;
+     AVFrame *DecodeFrame = nullptr;
+     AVFrame *LastDecodedFrame = nullptr;
++    AVFrame *HWFrame = nullptr;
++    AVBufferRef *HWDeviceContext = nullptr;
++    AVPixelFormat HWPixelFormat = AV_PIX_FMT_NONE;
++    bool HWMode = false;
++    bool HWFormatSelectionFailed = false;
+     int LastFrameNum = 0;
+     FFMS_Index &Index;
+     FFMS_Track Frames;
+@@ -130,6 +136,8 @@ private:
+     FFMS_Frame *OutputFrame(AVFrame *Frame);
+     void SetVideoProperties();
+     bool DecodePacket(const AVPacket &Packet);
++    void TransferHWFrame();
++    static AVPixelFormat SelectHardwareFormat(AVCodecContext *Context, const AVPixelFormat *Formats);
+ 
+     // Returns the first packet read
+     SmartAVPacket DecodeNextFrame();
+@@ -138,7 +146,7 @@ private:
+     void Free();
+     static void SanityCheckFrameForData(AVFrame *Frame);
+ public:
+-    FFMS_VideoSource(const char *SourceFile, FFMS_Index &Index, int Track, int Threads, int SeekMode);
++    FFMS_VideoSource(const char *SourceFile, FFMS_Index &Index, int Track, int Threads, int SeekMode, const char *HWDevice, int ExtraHWFrames);
+     ~FFMS_VideoSource();
+     const FFMS_VideoProperties& GetVideoProperties() { return VP; }
+     FFMS_Track *GetTrack() { return &Frames; }

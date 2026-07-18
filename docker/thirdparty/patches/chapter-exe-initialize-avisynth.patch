@@ -1,0 +1,8 @@
+diff --git a/src/source.h b/src/source.h
+--- a/src/source.h
++++ b/src/source.h
+@@ -288,2 +288,4 @@ public:
+     : NullSource()
++    , env(nullptr)
++    , clip()
+     , format()

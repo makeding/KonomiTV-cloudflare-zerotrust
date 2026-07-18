@@ -1,0 +1,414 @@
+--- a/src/logoframe.c
++++ b/src/logoframe.c
+@@ -20,6 +20,7 @@
+ #include "logo.h"
+ #include "logoset.h"
+ #include "logoset_mul.h"
++#include "luma.h"
+ 
+ #include <avisynth.h>
+ #include <stdio.h>
+@@ -44,7 +45,7 @@
+ extern int  MultLogoOptionOrgFile(MLOGO_DATASET* pml);
+ extern int  MultLogoSetup(MLOGO_DATASET* pml, int num_frames);
+ extern void MultLogoDisplayParam(MLOGO_DATASET* pml);
+-extern void MultLogoCalc(MLOGO_DATASET* pml, const BYTE *data, int pitch, int nframe, int height);
++extern void MultLogoCalc(MLOGO_DATASET* pml, const LUMA_FRAME *frame, int nframe);
+ extern void MultLogoFind(MLOGO_DATASET* pml);
+ extern int  MultLogoWrite(MLOGO_DATASET* pml);
+ 
+@@ -86,6 +87,67 @@
+   return 1;
+ }
+ 
++static bool is_native_integer_luma(const VideoInfo& info)
++{
++  if (!info.IsPlanar() || !(info.IsYUV() || info.IsYUVA() || info.IsY())) {
++    return false;
++  }
++  const int bits = info.BitsPerComponent();
++  const int bytes = info.ComponentSize();
++  return (bytes == 1 && bits == 8) ||
++         (bytes == 2 && (bits == 10 || bits == 12 || bits == 14 || bits == 16));
++}
++
++static bool get_full_range(PClip clip, IScriptEnvironment *env)
++{
++  if (clip->GetVideoInfo().num_frames <= 0) {
++    return false;
++  }
++  const PVideoFrame frame = clip->GetFrame(0, env);
++  const AVSMap *props = env->getFramePropsRO(frame);
++  int error = 0;
++  const int64_t value = env->propGetInt(props, "_ColorRange", 0, &error);
++  // AviSynth+: 0 is full range, 1 is limited. Missing/invalid YUV props
++  // default to limited, matching ConvertBits.
++  return error == 0 && value == 0;
++}
++
++static std::vector<uint8_t> build_luma_to_8bit(int bit_depth, bool full_range)
++{
++  if (bit_depth == 8) {
++    return std::vector<uint8_t>();
++  }
++  std::vector<uint8_t> table(1u << 16);
++  const unsigned max_value = (1u << bit_depth) - 1u;
++  const unsigned shift = (unsigned)(bit_depth - 8);
++  const unsigned round = 1u << (shift - 1u);
++  for (unsigned value = 0; value < table.size(); value++) {
++    const unsigned clipped = std::min(value, max_value);
++    unsigned converted;
++    if (full_range) {
++      converted = (clipped * 255u + max_value / 2u) / max_value;
++    } else {
++      converted = (clipped + round) >> shift;
++    }
++    table[value] = (uint8_t)std::min(converted, 255u);
++  }
++  return table;
++}
++
++static LUMA_FRAME make_luma_frame(const PVideoFrame& picture, const VideoInfo& info,
++                                  bool full_range, const std::vector<uint8_t>& table)
++{
++  LUMA_FRAME frame;
++  frame.data = picture->GetReadPtr(PLANAR_Y);
++  frame.pitch_samples = picture->GetPitch(PLANAR_Y) / info.ComponentSize();
++  frame.width = info.width;
++  frame.height = info.height;
++  frame.bit_depth = info.BitsPerComponent();
++  frame.full_range = full_range ? 1 : 0;
++  frame.to_8bit = table.empty() ? NULL : table.data();
++  return frame;
++}
++
+ int fail(MLOGO_DATASET logodata, int retval){
+   MultLogoFree( &logodata );     // for LOGO
+   return retval;
+@@ -249,7 +311,7 @@
+ 
+ static ParallelScanResult scan_parallel_range(CreateScriptEnvironmentFunc create_environment,
+                                                const char *infile, int csp,
+-                                               const VideoInfo expected,
++                                               const VideoInfo expected, bool expected_full_range,
+                                                MLOGO_DATASET *logodata,
+                                                ParallelRange range)
+ {
+@@ -284,9 +346,7 @@
+       interlaced = 1;
+     }
+ 
+-    if ((csp == CSP_I420 && 12 != info.BitsPerPixel()) ||
+-        (csp == CSP_I422 && 16 != info.BitsPerPixel()) ||
+-        (csp == CSP_I444 && 24 != info.BitsPerPixel())) {
++    if (!is_native_integer_luma(info)) {
+       const char *csp_name = csp == CSP_I444 ? "YV24" :
+                              csp == CSP_I422 ? "YV16" : "YV12";
+       const char *arg_name[2] = { NULL, "interlaced" };
+@@ -298,18 +358,27 @@
+       info = clip->GetVideoInfo();
+     }
+ 
++    if (!is_native_integer_luma(info)) {
++      result.error = "worker clip has unsupported luma format";
++      return result;
++    }
++
++    const bool full_range = get_full_range(clip, env);
++
+     if (info.width != expected.width || info.height != expected.height ||
+-        info.num_frames != expected.num_frames || info.BitsPerPixel() != expected.BitsPerPixel()) {
++        info.num_frames != expected.num_frames || info.BitsPerPixel() != expected.BitsPerPixel() ||
++        info.BitsPerComponent() != expected.BitsPerComponent() ||
++        info.ComponentSize() != expected.ComponentSize() || full_range != expected_full_range) {
+       result.error = "worker clip format differs from master";
+       return result;
+     }
+ 
+-    static const int planes[] = { PLANAR_Y, PLANAR_U, PLANAR_V };
++    const std::vector<uint8_t> luma_to_8bit =
++      build_luma_to_8bit(info.BitsPerComponent(), full_range);
+     for (int frame = range.start; frame < range.end; frame++) {
+       PVideoFrame picture = clip->GetFrame(frame, env);
+-      const int pitch = picture->GetPitch(planes[0]);
+-      const BYTE *data = picture->GetReadPtr(planes[0]);
+-      MultLogoCalc(logodata, data, pitch, frame - range.start, info.height);
++      const LUMA_FRAME luma = make_luma_frame(picture, info, full_range, luma_to_8bit);
++      MultLogoCalc(logodata, &luma, frame - range.start);
+     }
+   } catch (const AvisynthError &error) {
+     result.error = std::string("AviSynth error: ") + error.msg;
+@@ -554,9 +623,7 @@
+     fprintf(stderr, "%d/%d fps, ", inf.fps_numerator, inf.fps_denominator);
+   fprintf(stderr, "%d frames\n", inf.num_frames);
+ 
+-  if( (csp == CSP_I420 && 12 != inf.BitsPerPixel()) ||
+-      (csp == CSP_I422 && 16 != inf.BitsPerPixel()) ||
+-      (csp == CSP_I444 && 24 != inf.BitsPerPixel()) )
++  if (!is_native_integer_luma(inf))
+   {
+     const char *csp_name = csp == CSP_I444 ? "YV24" :
+       csp == CSP_I422 ? "YV16" :
+@@ -591,6 +658,17 @@
+     inf = clip->GetVideoInfo();
+   }
+ 
++  if (!is_native_integer_luma(inf)) {
++    fprintf(stderr, "error: unsupported luma format (planar integer Y/YUV 8/10/12/14/16 required)\n");
++    return fail(logodata, retval);
++  }
++
++  const bool full_range = get_full_range(clip, env);
++  const std::vector<uint8_t> luma_to_8bit =
++    build_luma_to_8bit(inf.BitsPerComponent(), full_range);
++  fprintf(stderr, "native luma: %d-bit %s range\n",
++          inf.BitsPerComponent(), full_range ? "full" : "limited");
++
+   char *interlace_type = interlaced ? tff ? "t" : "b" : "p";
+   char *csp_type = NULL;
+   //    int chroma_h_shift = 0;
+@@ -624,10 +702,6 @@
+ 
+   //--------------- start logoframe from here ---------------
+   int errnum;
+-  int height;
+-
+-  // for checking if logodata area is out of image data
+-  height = inf.height;
+ 
+   // setup for logo detection
+   errnum = MultLogoSetup( &logodata, inf.num_frames );  // for LOGO
+@@ -668,13 +742,11 @@
+         fprintf(stderr, "error: %s occurred while reading frame %d\n", err.msg, frm);
+         return fail(logodata, retval);
+       }
+-      static const int planes[] = {PLANAR_Y, PLANAR_U, PLANAR_V};
+-      int pitch = f->GetPitch(planes[0]);
+-      const BYTE* data = f->GetReadPtr(planes[0]);
++      const LUMA_FRAME luma = make_luma_frame(f, inf, full_range, luma_to_8bit);
+       //--- avisynth end ---
+ 
+       // detect logo in a picture
+-      MultLogoCalc( &logodata, data, pitch, frm, height );    // for LOGO
++      MultLogoCalc( &logodata, &luma, frm );    // for LOGO
+ 
+       if (nodisp == 0){
+         if (((frm % 5000 == 0) && (frm != 0)) ||
+@@ -732,7 +804,7 @@
+     try {
+       for (int worker_index = 0; worker_index < worker_count; worker_index++) {
+         futures.push_back(std::async(std::launch::async,
+-          scan_parallel_range, CreateScriptEnvironment, infile, csp, inf,
++          scan_parallel_range, CreateScriptEnvironment, infile, csp, inf, full_range,
+           workers[worker_index]->get(), ranges[worker_index]));
+       }
+     } catch (const std::exception &error) {
+--- a/src/logoframe_det.c
++++ b/src/logoframe_det.c
+@@ -19,6 +19,7 @@
+ #include <stdint.h>
+ #include "logo.h"
+ #include "logoset.h"
++#include "luma.h"
+ 
+ //--- 透過ロゴ変換式 ---
+ #define ConvLogo(d,dp_y,y)    (((d) * (LOGO_MAX_DP - (dp_y)) + (y) * (dp_y) + LOGO_MAX_DP/2) / LOGO_MAX_DP)
+@@ -1882,8 +1883,17 @@
+ //   thres_ydif   : この値/16以上の輝度差がロゴデータにあれば演算を行う。
+ //   thres_yoffedg: この値を超える輝度時はエッジ検出でロゴなし判定をしない
+ //---------------------------------------------------------------------
+-int LogoCalc_getdif(LOGO_CALCREC *plogoc1, LOGO_CALCREC *plogoc2, LOGO_PARAMREC *plogop,
+-					const BYTE *data, int pitch, short thres_ymax, short thres_yedge,
++static inline BYTE LogoLumaTo8(BYTE value, const LUMA_FRAME *){
++	return value;
++}
++
++static inline BYTE LogoLumaTo8(uint16_t value, const LUMA_FRAME *frame){
++	return frame->to_8bit[value];
++}
++
++template<typename pixel_t>
++int LogoCalc_getdif_t(LOGO_CALCREC *plogoc1, LOGO_CALCREC *plogoc2, LOGO_PARAMREC *plogop,
++					const LUMA_FRAME *frame, short thres_ymax, short thres_yedge,
+ 					short thres_ydif, short thres_yoffedg){
+ 	LOGO_CALCREC  *plogoc;
+ 	LOGO_VCCALCREC *pvc;
+@@ -1894,8 +1904,10 @@
+ 	long logo_width, logo_height;
+ 	long logo_numline;
+ 	long logo_num0, logo_num1;
+-	const BYTE *pt_data_line;
+-	const BYTE *pt_data0, *pt_data1;
++	const pixel_t *data = reinterpret_cast<const pixel_t *>(frame->data);
++	const int pitch = frame->pitch_samples;
++	const pixel_t *pt_data_line;
++	const pixel_t *pt_data0, *pt_data1;
+ 	const int interval = 2;
+ 
+ 	// initialize
+@@ -1923,23 +1935,29 @@
+ 		// main check
+ 		pt_data0 = pt_data_line;
+ 		pt_data1 = &(pt_data_line[interval]);
+-		logo_num0 = logo_numline;
+-		logo_num1 = logo_numline + interval;
+-		for(j=0; j<logo_width; j++){
+-			if (plogop->dif_y_col[logo_num0] > 0){
+-				LogoCalc_getdif_pix(
+-						plogoc, *pt_data0, *pt_data1,
++			logo_num0 = logo_numline;
++			logo_num1 = logo_numline + interval;
++			for(j=0; j<logo_width; j++){
++				const bool use_edge = plogop->dif_y_col[logo_num0] > 0;
++				const bool use_area = plogop->area_y[logo_num0] > 0;
++				if (use_edge || use_area){
++					const BYTE data0 = LogoLumaTo8(*pt_data0, frame);
++					if (use_edge){
++						const BYTE data1 = LogoLumaTo8(*pt_data1, frame);
++					LogoCalc_getdif_pix(
++							plogoc, data0, data1,
+ 						plogop->dp_y[logo_num0], plogop->y[logo_num0],
+ 						plogop->dp_y[logo_num1], plogop->y[logo_num1],
+-						thres_ymax, thres_yedge, thres_ydif, thres_yoffedg,
+-						plogop->most_logo_y, 0 );
+-			}
+-			if (plogop->area_y[logo_num0] > 0){ // area detect algorithm
+-				LogoCalc_getdif_areasum(
+-						plogoc, *pt_data0,
++							thres_ymax, thres_yedge, thres_ydif, thres_yoffedg,
++							plogop->most_logo_y, 0 );
++					}
++					if (use_area){ // area detect algorithm
++					LogoCalc_getdif_areasum(
++							plogoc, data0,
+ 						plogop->dp_y[logo_num0], plogop->y[logo_num0],
+-						plogop->area_y[logo_num0], thres_ymax, plogop->most_logo_y);
+-			}
++							plogop->area_y[logo_num0], thres_ymax, plogop->most_logo_y);
++					}
++				}
+ 			pt_data0 ++;
+ 			pt_data1 ++;
+ 			logo_num0 ++;
+@@ -1974,12 +1992,14 @@
+ 		// main check
+ 		pt_data0 = pt_data_line;
+ 		pt_data1 = &(pt_data_line[pitch * interval]);
+-		logo_num0 = logo_numline;
+-		logo_num1 = logo_numline + (logo_width * interval);
+-		for(j=0; j<logo_width; j++){
+-			if (plogop->dif_y_row[logo_num0] > 0){
+-				LogoCalc_getdif_pix(
+-						plogoc, *pt_data0, *pt_data1,
++			logo_num0 = logo_numline;
++			logo_num1 = logo_numline + (logo_width * interval);
++			for(j=0; j<logo_width; j++){
++				if (plogop->dif_y_row[logo_num0] > 0){
++					const BYTE data0 = LogoLumaTo8(*pt_data0, frame);
++					const BYTE data1 = LogoLumaTo8(*pt_data1, frame);
++					LogoCalc_getdif_pix(
++							plogoc, data0, data1,
+ 						plogop->dp_y[logo_num0], plogop->y[logo_num0],
+ 						plogop->dp_y[logo_num1], plogop->y[logo_num1],
+ 						thres_ymax, thres_yedge, thres_ydif, thres_yoffedg,
+@@ -2702,7 +2722,8 @@
+ //   pitch     : 画像データの１行データ数
+ //   nframe    : フレーム番号
+ //=====================================================================
+-void LogoCalc(LOGO_DATASET *pl, const BYTE *data, int pitch, int nframe){
++template<typename pixel_t>
++static void LogoCalc_t(LOGO_DATASET *pl, const LUMA_FRAME *frame, int nframe){
+ 	LOGO_PARAMREC *plogop  = &(pl->paramdat);
+ 	LOGO_CALCREC  *plogoc1 = &(pl->calcdat1);	// for Bottom field of interlace
+ 	LOGO_CALCREC  *plogoc2 = &(pl->calcdat2);	// for Top field of interlace
+@@ -2711,8 +2732,8 @@
+ 
+ 	LogoCalc_clear( plogoc1, plogot->num_fadein, plogot->num_fadeout );
+ 	LogoCalc_clear( plogoc2, plogot->num_fadein, plogot->num_fadeout );
+-	LogoCalc_getdif( plogoc1, plogoc2, plogop, data, pitch,
+-					 plogot->thres_ymax, plogot->thres_yedge,
++	LogoCalc_getdif_t<pixel_t>( plogoc1, plogoc2, plogop, frame,
++						 plogot->thres_ymax, plogot->thres_yedge,
+ 					 plogot->thres_ydif, plogot->thres_yoffedg);
+ 	LogoCalc_summary( plogoc1, plogop );
+ 	LogoCalc_summary( plogoc2, plogop );
+@@ -2721,6 +2742,15 @@
+ 	LogoCalc_savedata( plogof, plogoc1, plogoc2, nframe );
+ }
+ 
++void LogoCalc(LOGO_DATASET *pl, const LUMA_FRAME *frame, int nframe){
++	if (frame->bit_depth == 8){
++		LogoCalc_t<BYTE>(pl, frame, nframe);
++	}
++	else{
++		LogoCalc_t<uint16_t>(pl, frame, nframe);
++	}
++}
++
+ 
+ //=====================================================================
+ // Public関数：デバッグ用に画像１枚のロゴ計算結果を出力
+--- a/src/logoframe_mul.c
++++ b/src/logoframe_mul.c
+@@ -13,6 +13,7 @@
+ #include "logo.h"
+ #include "logoset.h"
+ #include "logoset_mul.h"
++#include "luma.h"
+ 
+ #ifndef _WIN32
+ #include <sys/types.h>
+@@ -35,7 +36,7 @@
+ extern void LogoFree(LOGO_DATASET *pl);
+ extern int  LogoRead(const char *logofname, LOGO_DATASET *pl);
+ extern int  LogoFrameInit(LOGO_DATASET *pl, long num_frames);
+-extern void LogoCalc(LOGO_DATASET *pl, const BYTE *data, int pitch, int nframe);
++extern void LogoCalc(LOGO_DATASET *pl, const LUMA_FRAME *frame, int nframe);
+ extern void LogoWriteFrameParam(LOGO_DATASET *pl, int nframe, FILE *fpo_ana2);
+ extern void LogoFind(LOGO_DATASET *pl);
+ extern long LogoGetTotalFrame(LOGO_DATASET *pl);
+@@ -1328,19 +1329,21 @@
+ //   nframe    : フレーム番号
+ //   height    : 画像データの高さ（ロゴデータが画像内か判断のみに使用）
+ //=====================================================================
+-void MultLogoCalc(MLOGO_DATASET* pml, const BYTE *data, int pitch, int nframe, int height){
++void MultLogoCalc(MLOGO_DATASET* pml, const LUMA_FRAME *frame, int nframe){
+ 	LOGO_DATASET* plogo;
+ 	int i;
++	const int width = frame->width;
++	const int height = frame->height;
+ 
+ 	for(i = 0; i < LOGONUM_MAX; i++){
+ 		plogo      = pml->all_logodata[i];
+ 		if (plogo != NULL){
+ 			// 画像外メモリアクセスで落ちることを防ぐために追加
+-			if ((plogo->paramdat.yx + plogo->paramdat.yw <= pitch+8 &&
++			if ((plogo->paramdat.yx + plogo->paramdat.yw <= width+8 &&
+ 				 plogo->paramdat.yy + plogo->paramdat.yh <  height-1) ||
+-			    (plogo->paramdat.yx + plogo->paramdat.yw <  pitch   &&
++			    (plogo->paramdat.yx + plogo->paramdat.yw <  width   &&
+ 				 plogo->paramdat.yy + plogo->paramdat.yh <  height  )){
+-		        LogoCalc( plogo, data, pitch, nframe );
++			        LogoCalc( plogo, frame, nframe );
+ 		        if (pml->fpo_ana2[i] != NULL){     // for debug
+ 					LogoWriteFrameParam( plogo, nframe, pml->fpo_ana2[i] );
+ 				}
+--- /dev/null
++++ b/src/luma.h
+@@ -0,0 +1,16 @@
++#ifndef LOGOFRAME_LUMA_H
++#define LOGOFRAME_LUMA_H
++
++#include <stdint.h>
++
++typedef struct {
++	const void *data;
++	int pitch_samples;
++	int width;
++	int height;
++	int bit_depth;
++	int full_range;
++	const uint8_t *to_8bit;
++} LUMA_FRAME;
++
++#endif

@@ -1,0 +1,39 @@
+--- a/src/logoframe.c
++++ b/src/logoframe.c
+@@ -347,6 +347,15 @@
+     }
+ 
+     if (!is_native_integer_luma(info)) {
++      // AviSynth+'s public ConvertToYV* filters only accept 8-bit RGB input.
++      // Preserve the native Y/YUV fast path above, but reduce unsupported
++      // high-bit-depth or float RGB clips before the legacy colorspace fallback.
++      if (info.BitsPerComponent() != 8) {
++        AVSValue bits_arg_arr[2] = { source, 8 };
++        source = env->Invoke("ConvertBits", AVSValue(bits_arg_arr, 2));
++        clip = source.AsClip();
++        info = clip->GetVideoInfo();
++      }
+       const char *csp_name = csp == CSP_I444 ? "YV24" :
+                              csp == CSP_I422 ? "YV16" : "YV12";
+       const char *arg_name[2] = { NULL, "interlaced" };
+@@ -625,6 +634,20 @@
+ 
+   if (!is_native_integer_luma(inf))
+   {
++    // ConvertBits accepts high-bit-depth and float RGB, while ConvertToYV*
++    // below intentionally keeps the original logoframe 8-bit fallback.
++    if (inf.BitsPerComponent() != 8) {
++      AVSValue bits_arg_arr[2] = {res, 8};
++      try {
++        res = env->Invoke("ConvertBits", AVSValue(bits_arg_arr, 2));
++      }
++      catch (const AvisynthError &) {
++        fprintf(stderr, "error: couldn't convert input clip to 8 bits\n");
++        return fail(logodata, retval);
++      }
++      clip = res.AsClip();
++      inf = clip->GetVideoInfo();
++    }
+     const char *csp_name = csp == CSP_I444 ? "YV24" :
+       csp == CSP_I422 ? "YV16" :
+       "YV12";

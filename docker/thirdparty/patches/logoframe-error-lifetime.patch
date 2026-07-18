@@ -1,0 +1,186 @@
+diff --git a/src/logoframe.c b/src/logoframe.c
+--- a/src/logoframe.c
++++ b/src/logoframe.c
+@@ -65,17 +65,29 @@
+   return 0;
+ }
+ 
+-int fail(MLOGO_DATASET logodata, void *handle, int retval){
++int fail(MLOGO_DATASET logodata, int retval){
+   MultLogoFree( &logodata );     // for LOGO
+-
+-  //--- avisynth command ---
+-  //if (env != NULL) env->DeleteScriptEnvironment();
+-
+-  if (handle != NULL) dlclose(handle);
+   return retval;
+-
+ }
+ 
++class AviSynthRuntime {
++public:
++  AviSynthRuntime(void *handle, IScriptEnvironment *env) : handle_(handle), env_(env) {}
++  ~AviSynthRuntime() {
++    // AVSValue/PClip instances are declared after this guard. C++ destroys them
++    // first, so the environment and its shared object are released last.
++    if (env_ != NULL) env_->DeleteScriptEnvironment();
++    if (handle_ != NULL) dlclose(handle_);
++  }
++
++  AviSynthRuntime(const AviSynthRuntime&) = delete;
++  AviSynthRuntime& operator=(const AviSynthRuntime&) = delete;
++
++private:
++  void *handle_;
++  IScriptEnvironment *env_;
++};
++
+ const AVS_Linkage *AVS_linkage = nullptr;
+ 
+ int main(int argc, const char* argv[])
+@@ -225,19 +237,26 @@
+   void *handle = dlopen("libavisynth.so", RTLD_LAZY);
+   if (handle == NULL) {
+     fprintf(stderr, "Cannot load libavisynth.so\r\n");
+-    fail(logodata, handle, retval);
++    return fail(logodata, retval);
+   }
+ 
+ 
+   void *mkr = dlsym(handle, "CreateScriptEnvironment");
+   if(mkr == NULL) {
+     fprintf(stderr, "Cannot find CreateScriptEnvironment\r\n");
+-    fail(logodata, handle, retval);
++    dlclose(handle);
++    return fail(logodata, retval);
+   }
+ 
+   typedef IScriptEnvironment * (* func_t)(int);
+   func_t CreateScriptEnvironment = (func_t)mkr;
+   IScriptEnvironment *env = CreateScriptEnvironment(AVISYNTH_INTERFACE_VERSION);
++  if (env == NULL) {
++    fprintf(stderr, "Cannot create AviSynth script environment\r\n");
++    dlclose(handle);
++    return fail(logodata, retval);
++  }
++  AviSynthRuntime avisynth_runtime(handle, env);
+ 
+   AVS_linkage = env->GetAVSLinkage(); // e.g. for VideoInfo.BitsPerComponent, etc..
+ 
+@@ -250,18 +269,18 @@
+   }
+   catch (const AvisynthError &err) {
+     fprintf(stderr,"Avisynth error: %s\r\n", err.msg);
+-    fail(logodata, handle, retval);
++    return fail(logodata, retval);
+   }
+ 
+   if(!res.IsClip()) {
+     fprintf(stderr, "error: '%s' didn't return a video clip\n", infile);
+-    fail(logodata, handle, retval);
++    return fail(logodata, retval);
+   }
+   PClip clip = res.AsClip();
+   VideoInfo inf = clip->GetVideoInfo();
+   if(!inf.HasVideo()) {
+     fprintf(stderr, "error: '%s' has no video data\n", infile);
+-    fail(logodata, handle, retval);
++    return fail(logodata, retval);
+   }
+   /* if the clip is made of fields instead of frames, call weave to make them frames */
+   if(inf.IsFieldBased()) {
+@@ -272,7 +291,7 @@
+     }
+     catch (const AvisynthError &err) {
+       fprintf(stderr, "error: couldn't weave fields into frames\n");
+-      fail(logodata, handle, retval);
++      return fail(logodata, retval);
+     }
+     res = tmp;
+     clip = res.AsClip();
+@@ -297,15 +316,15 @@
+     fprintf(stderr, "converting input clip to %s\n", csp_name);
+     if(csp < CSP_I444 && (inf.width&1)) {
+       fprintf(stderr, "error: input clip width not divisible by 2 (%dx%d)\n", inf.width, inf.height);
+-      fail(logodata, handle, retval);
++      return fail(logodata, retval);
+     }
+     if(csp == CSP_I420 && interlaced && (inf.height&3)) {
+       fprintf(stderr, "error: input clip height not divisible by 4 (%dx%d)\n", inf.width, inf.height);
+-      fail(logodata, handle, retval);
++      return fail(logodata, retval);
+     }
+     if((csp == CSP_I420 || interlaced) && (inf.height&1)) {
+       fprintf(stderr, "error: input clip height not divisible by 2 (%dx%d)\n", inf.width, inf.height);
+-      fail(logodata, handle, retval);
++      return fail(logodata, retval);
+     }
+     const char *arg_name[2] = {NULL, "interlaced"};
+     AVSValue arg_arr[2] = {res, bool(interlaced)};
+@@ -313,11 +332,11 @@
+     strcat(conv_func, csp_name);
+     AVSValue tmp;
+     try {
+-      tmp = env->Invoke(conv_func, (arg_arr, 2), arg_name);
++      tmp = env->Invoke(conv_func, AVSValue(arg_arr, 2), arg_name);
+     }
+     catch (const AvisynthError &err) {
+       fprintf(stderr, "error: couldn't convert input clip to %s\n", csp_name);
+-      fail(logodata, handle, retval);
++      return fail(logodata, retval);
+     }
+     res = tmp;
+     clip = res.AsClip();
+@@ -343,7 +362,7 @@
+       break;
+     default:
+       //can't happen
+-      fail(logodata, handle, retval);
++      return fail(logodata, retval);
+   }
+   if (nodisp == 0){
+     fprintf(stderr, "YUV4MPEG2 W%d H%d F%u:%u I%s A0:0 C%s\n",
+@@ -368,7 +387,7 @@
+     if (errnum == 3){    // no logo definition found
+       retval = 0;
+     }
+-    fail(logodata, handle, retval);
++    return fail(logodata, retval);
+   }
+ 
+   // display parameter
+@@ -390,8 +409,8 @@
+       f = clip->GetFrame(frm,env);
+     }
+     catch (const AvisynthError &err) {
+-      fprintf(stderr, "error: %s occurred while reading frame %d\n", err, frm);
+-      fail(logodata, handle, retval);
++      fprintf(stderr, "error: %s occurred while reading frame %d\n", err.msg, frm);
++      return fail(logodata, retval);
+     }
+     static const int planes[] = {PLANAR_Y, PLANAR_U, PLANAR_V};
+     int pitch = f->GetPitch(planes[0]); 
+@@ -419,10 +438,10 @@
+   MultLogoFind( &logodata );     // for LOGO
+ 
+   // output result
+-  MultLogoWrite( &logodata );    // for LOGO
+-
+-  //env->DeleteScriptEnvironment();
+-  //dlclose(handle);
++  if (MultLogoWrite( &logodata ) != 0) {    // for LOGO
++    fprintf(stderr, "error: couldn't write logo analysis output\n");
++    return fail(logodata, retval);
++  }
+ 
+   //--------------- end logoframe ---------------
+ 
+@@ -430,8 +449,5 @@
+   //close_files:
+   retval = 0;
+   MultLogoFree( &logodata );     // for LOGO
+-  //--- avisynth command ---
+-  //if (env != NULL) env->DeleteScriptEnvironment();
+-  if (handle != NULL) dlclose(handle);
+   return retval;
+ }

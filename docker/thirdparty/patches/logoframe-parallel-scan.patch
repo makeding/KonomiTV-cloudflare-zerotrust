@@ -1,0 +1,454 @@
+--- a/src/logoframe.c
++++ b/src/logoframe.c
+@@ -24,6 +24,12 @@
+ #include <avisynth.h>
+ #include <stdio.h>
+ #include <dlfcn.h>
++#include <algorithm>
++#include <cerrno>
++#include <future>
++#include <memory>
++#include <string>
++#include <vector>
+ 
+ #ifndef _WIN32
+ #define stricmp strcasecmp
+@@ -53,6 +59,9 @@
+ #define CSP_I420 1
+ #define CSP_I422 2
+ #define CSP_I444 3
++#define MAX_PARALLEL 64
++
++typedef IScriptEnvironment * (*CreateScriptEnvironmentFunc)(int);
+ 
+ static int csp_to_int(const char *arg)
+ {
+@@ -65,6 +74,18 @@
+   return 0;
+ }
+ 
++static int parse_parallel(const char *arg, int *parallel)
++{
++  char *endptr = NULL;
++  errno = 0;
++  const long value = strtol(arg, &endptr, 10);
++  if (errno != 0 || endptr == arg || *endptr != '\0' || value < 1 || value > MAX_PARALLEL) {
++    return 0;
++  }
++  *parallel = (int)value;
++  return 1;
++}
++
+ int fail(MLOGO_DATASET logodata, int retval){
+   MultLogoFree( &logodata );     // for LOGO
+   return retval;
+@@ -88,6 +109,222 @@
+   IScriptEnvironment *env_;
+ };
+ 
++class AviSynthEnvironment {
++public:
++  explicit AviSynthEnvironment(IScriptEnvironment *env) : env_(env) {}
++  ~AviSynthEnvironment() {
++    if (env_ != NULL) env_->DeleteScriptEnvironment();
++  }
++
++  AviSynthEnvironment(const AviSynthEnvironment&) = delete;
++  AviSynthEnvironment& operator=(const AviSynthEnvironment&) = delete;
++
++private:
++  IScriptEnvironment *env_;
++};
++
++class LogoDatasetOwner {
++public:
++  LogoDatasetOwner() { MultLogoInit(&data_); }
++  ~LogoDatasetOwner() { MultLogoFree(&data_); }
++
++  LogoDatasetOwner(const LogoDatasetOwner&) = delete;
++  LogoDatasetOwner& operator=(const LogoDatasetOwner&) = delete;
++
++  MLOGO_DATASET *get() { return &data_; }
++
++private:
++  MLOGO_DATASET data_;
++};
++
++struct ParallelRange {
++  int start;
++  int end;
++};
++
++struct ParallelScanResult {
++  bool ok;
++  std::string error;
++};
++
++static int load_worker_logo_options(MLOGO_DATASET *logodata, int argc, const char *argv[])
++{
++  MultLogoOptionOrgFile(logodata);
++
++  for (int i = 1; i < argc; i++) {
++    if (!stricmp(argv[i], "-F") && i <= argc - 2) {
++      MultLogoOptionFile(logodata, argv[++i]);
++    }
++  }
++
++  for (int i = 1; i < argc; i++) {
++    if (argv[i][0] != '-' || argv[i][1] == 0) {
++      continue;
++    }
++    const char *strval = (i <= argc - 2) ? argv[i + 1] : NULL;
++    const int ncnt = MultLogoOptionAdd(logodata, argv[i], strval);
++    if (ncnt > 0) {
++      i += ncnt - 1;
++    } else if (ncnt < 0) {
++      return 2;
++    } else if (!stricmp(argv[i], "-F")) {
++      i++;
++    }
++  }
++
++  // Only the master dataset may own output files. Workers calculate raw frame
++  // data and never call MultLogoFind/MultLogoWrite.
++  if (logodata->opt_ana2file != NULL) {
++    free(logodata->opt_ana2file);
++    logodata->opt_ana2file = NULL;
++  }
++  logodata->dispoff = 1;
++  logodata->paramoff = 1;
++  return 0;
++}
++
++static bool same_logo_layout(const MLOGO_DATASET *master, const MLOGO_DATASET *worker, std::string *error)
++{
++  if (master->num_deflogo != worker->num_deflogo) {
++    *error = "worker logo count differs from master";
++    return false;
++  }
++  for (int i = 0; i < LOGONUM_MAX; i++) {
++    const bool master_exists = master->all_logodata[i] != NULL;
++    const bool worker_exists = worker->all_logodata[i] != NULL;
++    if (master_exists != worker_exists) {
++      *error = "worker logo layout differs from master";
++      return false;
++    }
++    if (master_exists) {
++      const char *master_name = master->all_logofilename[i];
++      const char *worker_name = worker->all_logofilename[i];
++      if (master_name == NULL || worker_name == NULL || strcmp(master_name, worker_name) != 0) {
++        *error = "worker logo filename differs from master";
++        return false;
++      }
++      if (memcmp(&master->all_logodata[i]->thresdat,
++                 &worker->all_logodata[i]->thresdat,
++                 sizeof(LOGO_THRESREC)) != 0) {
++        *error = "worker logo thresholds differ from master";
++        return false;
++      }
++    }
++  }
++  return true;
++}
++
++static bool copy_raw_frame_data(MLOGO_DATASET *master, const MLOGO_DATASET *worker,
++                                int start, int count, std::string *error)
++{
++  if (!same_logo_layout(master, worker, error)) {
++    return false;
++  }
++  for (int i = 0; i < LOGONUM_MAX; i++) {
++    LOGO_DATASET *dst_logo = master->all_logodata[i];
++    LOGO_DATASET *src_logo = worker->all_logodata[i];
++    if (dst_logo == NULL) {
++      continue;
++    }
++    LOGO_FRAMEREC *dst = &dst_logo->framedat;
++    const LOGO_FRAMEREC *src = &src_logo->framedat;
++    if (src->num_frames != count || start < 0 || start + count > dst->num_frames) {
++      *error = "worker frame range is invalid";
++      return false;
++    }
++#define COPY_RAW_FIELD(field) memcpy(dst->field + start, src->field, sizeof(char) * count)
++    COPY_RAW_FIELD(rate_logoon);
++    COPY_RAW_FIELD(rate_fade);
++    COPY_RAW_FIELD(flag_nosample);
++    COPY_RAW_FIELD(flag_nofadesm);
++    COPY_RAW_FIELD(rate_logooni1);
++    COPY_RAW_FIELD(rate_logooni2);
++    COPY_RAW_FIELD(rate_fadei1);
++    COPY_RAW_FIELD(rate_fadei2);
++    COPY_RAW_FIELD(rank_unclear);
++#undef COPY_RAW_FIELD
++  }
++  return true;
++}
++
++static ParallelScanResult scan_parallel_range(CreateScriptEnvironmentFunc create_environment,
++                                               const char *infile, int csp,
++                                               const VideoInfo expected,
++                                               MLOGO_DATASET *logodata,
++                                               ParallelRange range)
++{
++  ParallelScanResult result = { false, "" };
++  IScriptEnvironment *env = create_environment(AVISYNTH_INTERFACE_VERSION);
++  if (env == NULL) {
++    result.error = "cannot create AviSynth script environment";
++    return result;
++  }
++  AviSynthEnvironment avisynth_environment(env);
++
++  try {
++    AVSValue imported = env->Invoke("Import", AVSValue(infile));
++    if (!imported.IsClip()) {
++      result.error = std::string("'") + infile + "' didn't return a video clip";
++      return result;
++    }
++
++    AVSValue source = imported;
++    PClip clip = source.AsClip();
++    VideoInfo info = clip->GetVideoInfo();
++    if (!info.HasVideo()) {
++      result.error = std::string("'") + infile + "' has no video data";
++      return result;
++    }
++
++    int interlaced = 0;
++    if (info.IsFieldBased()) {
++      source = env->Invoke("Weave", source);
++      clip = source.AsClip();
++      info = clip->GetVideoInfo();
++      interlaced = 1;
++    }
++
++    if ((csp == CSP_I420 && 12 != info.BitsPerPixel()) ||
++        (csp == CSP_I422 && 16 != info.BitsPerPixel()) ||
++        (csp == CSP_I444 && 24 != info.BitsPerPixel())) {
++      const char *csp_name = csp == CSP_I444 ? "YV24" :
++                             csp == CSP_I422 ? "YV16" : "YV12";
++      const char *arg_name[2] = { NULL, "interlaced" };
++      AVSValue arg_arr[2] = { source, bool(interlaced) };
++      char conv_func[14] = { "ConvertTo" };
++      strcat(conv_func, csp_name);
++      source = env->Invoke(conv_func, AVSValue(arg_arr, 2), arg_name);
++      clip = source.AsClip();
++      info = clip->GetVideoInfo();
++    }
++
++    if (info.width != expected.width || info.height != expected.height ||
++        info.num_frames != expected.num_frames || info.BitsPerPixel() != expected.BitsPerPixel()) {
++      result.error = "worker clip format differs from master";
++      return result;
++    }
++
++    static const int planes[] = { PLANAR_Y, PLANAR_U, PLANAR_V };
++    for (int frame = range.start; frame < range.end; frame++) {
++      PVideoFrame picture = clip->GetFrame(frame, env);
++      const int pitch = picture->GetPitch(planes[0]);
++      const BYTE *data = picture->GetReadPtr(planes[0]);
++      MultLogoCalc(logodata, data, pitch, frame - range.start, info.height);
++    }
++  } catch (const AvisynthError &error) {
++    result.error = std::string("AviSynth error: ") + error.msg;
++    return result;
++  } catch (const std::exception &error) {
++    result.error = error.what();
++    return result;
++  } catch (...) {
++    result.error = "unknown worker exception";
++    return result;
++  }
++  result.ok = true;
++  return result;
++}
++
+ const AVS_Linkage *AVS_linkage = nullptr;
+ 
+ int main(int argc, const char* argv[])
+@@ -101,6 +338,7 @@
+   int usage = 0;
+   int seek = 0;
+   int end = 0;
++  int parallel = 1;
+   int interlaced = 0;
+   int tff = 0;
+   int csp = CSP_I420;
+@@ -171,6 +409,15 @@
+           return 2;
+         }
+         end = atoi(argv[++i]);
++      } else if(!stricmp(argv[i], "-parallel")) {
++        if(i > argc-2) {
++          fprintf(stderr, "-parallel needs an argument\n");
++          return 2;
++        }
++        if (!parse_parallel(argv[++i], &parallel)) {
++          fprintf(stderr, "-parallel must be between 1 and %d\n", MAX_PARALLEL);
++          return 2;
++        }
+       } else if(!stricmp(argv[i], "-csp")) {
+         if(i > argc-2) {
+           fprintf(stderr, "-csp needs an argument\n");
+@@ -211,6 +458,8 @@
+   if(usage || !infile){
+     fprintf(stderr, MY_VERSION "\n"
+         "Usage: logoframe [options] in.avs [-logo data.lgd] [-oa outa.txt] [-o out.avs]\n"
++        "       -parallel N  analyze frame ranges with N independent workers (1-%d)\n"
++        , MAX_PARALLEL
+         );
+     return 2;
+   }
+@@ -248,8 +497,7 @@
+     return fail(logodata, retval);
+   }
+ 
+-  typedef IScriptEnvironment * (* func_t)(int);
+-  func_t CreateScriptEnvironment = (func_t)mkr;
++  CreateScriptEnvironmentFunc CreateScriptEnvironment = (CreateScriptEnvironmentFunc)mkr;
+   IScriptEnvironment *env = CreateScriptEnvironment(AVISYNTH_INTERFACE_VERSION);
+   if (env == NULL) {
+     fprintf(stderr, "Cannot create AviSynth script environment\r\n");
+@@ -398,37 +646,122 @@
+     fprintf(stderr, "Total logodata : %d\n", logodata.num_deflogo);  // for LOGO
+   }
+ 
++  // -oa2 is written incrementally by MultLogoCalc. Keep that diagnostic mode
++  // on the original serial path so its output and failure behavior stay exact.
++  if (parallel > 1 && logodata.opt_ana2file != NULL) {
++    fprintf(stderr, "warning: -parallel is disabled when -oa2 is specified\n");
++    parallel = 1;
++  }
++
+   // read framedata
+   if (nodisp == 0){
+     fprintf(stderr, "checking %6d/%d start.\n", seek, end-1);
+   }
+-  for(int frm = seek; frm < end; ++frm) {
+-    //--- avisynth start ---
+-    PVideoFrame f;
+-    try {
+-      f = clip->GetFrame(frm,env);
++  if (parallel <= 1 || end <= seek) {
++    for(int frm = seek; frm < end; ++frm) {
++      //--- avisynth start ---
++      PVideoFrame f;
++      try {
++        f = clip->GetFrame(frm,env);
++      }
++      catch (const AvisynthError &err) {
++        fprintf(stderr, "error: %s occurred while reading frame %d\n", err.msg, frm);
++        return fail(logodata, retval);
++      }
++      static const int planes[] = {PLANAR_Y, PLANAR_U, PLANAR_V};
++      int pitch = f->GetPitch(planes[0]);
++      const BYTE* data = f->GetReadPtr(planes[0]);
++      //--- avisynth end ---
++
++      // detect logo in a picture
++      MultLogoCalc( &logodata, data, pitch, frm, height );    // for LOGO
++
++      if (nodisp == 0){
++        if (((frm % 5000 == 0) && (frm != 0)) ||
++            (frm == 100) ||
++            (frm == 1000)){
++          fprintf(stderr, "checking %6d/%d ended.\n", frm, end-1);
++        }
++      }
++
++      //--- avisynth command ---
+     }
+-    catch (const AvisynthError &err) {
+-      fprintf(stderr, "error: %s occurred while reading frame %d\n", err.msg, frm);
+-      return fail(logodata, retval);
++  } else {
++    const int total_frames = end - seek;
++    const int worker_count = std::min(parallel, total_frames);
++    // The main environment was used only to validate the clip and size the
++    // master dataset. Release its source graph before opening worker graphs.
++    clip = PClip();
++    res = AVSValue();
++    std::vector<ParallelRange> ranges;
++    std::vector<std::unique_ptr<LogoDatasetOwner>> workers;
++    ranges.reserve(worker_count);
++    workers.reserve(worker_count);
++
++    for (int worker_index = 0; worker_index < worker_count; worker_index++) {
++      ParallelRange range = {
++        seek + (int)((2LL * total_frames * worker_index + worker_count) / (2LL * worker_count)),
++        seek + (int)((2LL * total_frames * (worker_index + 1) + worker_count) / (2LL * worker_count))
++      };
++      std::unique_ptr<LogoDatasetOwner> worker(new LogoDatasetOwner());
++      if (load_worker_logo_options(worker->get(), argc, argv) != 0) {
++        fprintf(stderr, "error: couldn't initialize logo options for worker %d\n", worker_index);
++        return fail(logodata, retval);
++      }
++      errnum = MultLogoSetup(worker->get(), range.end - range.start);
++      if (errnum != 0) {
++        fprintf(stderr, "error: couldn't initialize logo dataset for worker %d (code %d)\n",
++                worker_index, errnum);
++        return fail(logodata, retval);
++      }
++      std::string layout_error;
++      if (!same_logo_layout(&logodata, worker->get(), &layout_error)) {
++        fprintf(stderr, "error: worker %d: %s\n", worker_index, layout_error.c_str());
++        return fail(logodata, retval);
++      }
++      if (nodisp == 0) {
++        fprintf(stderr, "parallel worker %d/%d: frames %d-%d\n",
++                worker_index + 1, worker_count, range.start, range.end - 1);
++      }
++      ranges.push_back(range);
++      workers.push_back(std::move(worker));
+     }
+-    static const int planes[] = {PLANAR_Y, PLANAR_U, PLANAR_V};
+-    int pitch = f->GetPitch(planes[0]); 
+-    const BYTE* data = f->GetReadPtr(planes[0]);
+-    //--- avisynth end ---
+ 
+-    // detect logo in a picture
+-    MultLogoCalc( &logodata, data, pitch, frm, height );    // for LOGO
+-
+-    if (nodisp == 0){
+-      if (((frm % 5000 == 0) && (frm != 0)) ||
+-          (frm == 100) ||
+-          (frm == 1000)){
+-        fprintf(stderr, "checking %6d/%d ended.\n", frm, end-1);
++    std::vector<std::future<ParallelScanResult>> futures;
++    futures.reserve(worker_count);
++    try {
++      for (int worker_index = 0; worker_index < worker_count; worker_index++) {
++        futures.push_back(std::async(std::launch::async,
++          scan_parallel_range, CreateScriptEnvironment, infile, csp, inf,
++          workers[worker_index]->get(), ranges[worker_index]));
+       }
++    } catch (const std::exception &error) {
++      fprintf(stderr, "error: couldn't start parallel logo analysis: %s\n", error.what());
++      return fail(logodata, retval);
+     }
+ 
+-    //--- avisynth command ---
++    for (int worker_index = 0; worker_index < worker_count; worker_index++) {
++      ParallelScanResult scan_result;
++      try {
++        scan_result = futures[worker_index].get();
++      } catch (const std::exception &error) {
++        fprintf(stderr, "error: parallel worker %d failed: %s\n", worker_index, error.what());
++        return fail(logodata, retval);
++      }
++      if (!scan_result.ok) {
++        fprintf(stderr, "error: parallel worker %d failed: %s\n",
++                worker_index, scan_result.error.c_str());
++        return fail(logodata, retval);
++      }
++      const ParallelRange range = ranges[worker_index];
++      std::string copy_error;
++      if (!copy_raw_frame_data(&logodata, workers[worker_index]->get(),
++                               range.start, range.end - range.start, &copy_error)) {
++        fprintf(stderr, "error: parallel worker %d merge failed: %s\n",
++                worker_index, copy_error.c_str());
++        return fail(logodata, retval);
++      }
++    }
+   }
+   if (nodisp == 0){
+     fprintf(stderr, "checking %6d/%d ended.\n", end-1, end-1);
