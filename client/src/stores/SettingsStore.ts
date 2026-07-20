@@ -64,6 +64,7 @@ export interface ILocalClientSettings extends IClientSettings {
     }[];
     selected_remote_device_id: string | null;
     remote_control_menu_pinned: boolean;
+    video_auto_skip_cm: boolean;
     lshaped_screen_crop_enabled: boolean;
     lshaped_screen_crop_zoom_level: number;
     lshaped_screen_crop_x_position: number;
@@ -173,6 +174,8 @@ export const ILocalClientSettingsDefault: ILocalClientSettings = {
     selected_remote_device_id: null,
     // テレビ操作メニューを右上に開いたまま表示する (同期無効)
     remote_control_menu_pinned: false,
+    // 録画再生時に CM 区間を自動でスキップする (Default: オフ) (同期無効)
+    video_auto_skip_cm: false,
 
     // ***** L字画面のクロップ設定 *****
 
@@ -382,6 +385,7 @@ export const SYNCABLE_SETTINGS_KEYS: (keyof IClientSettings)[] = [
     // bluesky_reply_thread_states: 同期無効
     // selected_remote_device_id: 同期無効
     // remote_control_menu_pinned: 同期無効
+    // video_auto_skip_cm: 同期無効
     'saved_twitter_hashtags',
     'mylist',
     'watched_history',

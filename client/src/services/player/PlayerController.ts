@@ -17,6 +17,7 @@ import LiveCommentManager from '@/services/player/managers/LiveCommentManager';
 import LiveDataBroadcastingManager from '@/services/player/managers/LiveDataBroadcastingManager';
 import LiveEventManager from '@/services/player/managers/LiveEventManager';
 import MediaSessionManager from '@/services/player/managers/MediaSessionManager';
+import RecordedCMSkipManager from '@/services/player/managers/RecordedCMSkipManager';
 import TLVDataBroadcastingManager from '@/services/player/managers/TLVDataBroadcastingManager';
 import PlayerManager from '@/services/player/PlayerManager';
 import Videos, { type IJikkyoComments } from '@/services/Videos';
@@ -373,6 +374,7 @@ class PlayerController {
         // この誤差は放送局や TOT 精度によっておそらく異なるので、本編の最初が削れないように2秒のプラスに留めている
         // seek_seconds はこの後 DPlayer を初期化した後の初回シーク時に参照される
         let seek_seconds = options.seek_seconds;
+        let is_initial_video_playback_without_history = false;
         if (seek_seconds === null) {
             if (this.playback_mode === 'Video') {
                 const history = settings_store.settings.watched_history.find(
@@ -383,11 +385,30 @@ class PlayerController {
                     console.log(`\u001b[31m[PlayerController] Seeking to ${seek_seconds} seconds. (Watched History)`);
                 } else {
                     seek_seconds = player_store.recorded_program.recording_start_margin + 2;
+                    is_initial_video_playback_without_history = true;
                     console.log(`\u001b[31m[PlayerController] Seeking to ${seek_seconds} seconds. (Recording Start Margin + 2)`);
                 }
             } else {
                 // ライブ再生時は使わない値だが、型エラー回避のために 0 を設定
                 seek_seconds = 0;
+            }
+        }
+
+        // 視聴履歴のない新規再生だけは、初期位置が CM 内ならロード開始前に CM 終了位置へ補正する。
+        // 視聴履歴・画質切り替え・プレイヤー再起動からの位置復元は、ユーザーが見ていた位置を優先する。
+        if (
+            this.playback_mode === 'Video' &&
+            is_initial_video_playback_without_history === true &&
+            settings_store.settings.video_auto_skip_cm === true
+        ) {
+            const cm_skip_target = RecordedCMSkipManager.getInitialSkipTarget(
+                seek_seconds,
+                player_store.recorded_program.recorded_video.cm_sections,
+                player_store.recorded_program.recorded_video.duration,
+            );
+            if (cm_skip_target !== null) {
+                seek_seconds = cm_skip_target;
+                console.log(`\u001b[31m[PlayerController] Seeking to ${seek_seconds} seconds. (Initial CM Auto Skip)`);
             }
         }
         // 上の分岐を抜けた時点で必ず number になっている。TLV の初回再生だけ実際の開始位置を 0 秒へ変更するため、
@@ -1562,6 +1583,7 @@ class PlayerController {
             // ビデオ視聴時に設定する PlayerManager
             this.player_managers = [
                 ...(this.player.quality?.type === 'tlv' ? [new TLVDataBroadcastingManager(this.player, this.playback_mode)] : []),
+                new RecordedCMSkipManager(this.player),
                 new CaptureManager(this.player, this.playback_mode),
                 new DocumentPiPManager(this.player, this.playback_mode),
                 new KeyboardShortcutManager(this.player, this.playback_mode),
@@ -2369,6 +2391,7 @@ class PlayerController {
     private setupSettingPanelHandler(): void {
         assert(this.player !== null);
         const player_store = usePlayerStore();
+        const settings_store = useSettingsStore();
 
         // 設定パネルの開閉を把握するためモンキーパッチを追加し、PlayerStore に通知する
         const original_hide = this.player.setting.hide;
@@ -2385,6 +2408,26 @@ class PlayerController {
         };
 
         const is_offline_playback = this.playback_mode === 'Video' && player_store.is_offline_playback === true;
+
+        // CM 区間は録画メタデータに含まれるため、オンライン・オフラインを問わず録画再生時に切り替えられる。
+        if (this.playback_mode === 'Video') {
+            this.player.template.audio.insertAdjacentHTML('afterend', `
+                <div class="dplayer-setting-item dplayer-setting-auto-skip-cm">
+                    <span class="dplayer-label">CM自動スキップ</span>
+                    <div class="dplayer-toggle">
+                        <input class="dplayer-auto-skip-cm-setting-input" type="checkbox" name="dplayer-toggle-auto-skip-cm">
+                        <label for="dplayer-toggle-auto-skip-cm" style="--theme-color:#E64F97"></label>
+                    </div>
+                </div>
+            `);
+            const auto_skip_cm_button = this.player.container.querySelector<HTMLElement>('.dplayer-setting-auto-skip-cm')!;
+            const auto_skip_cm_input = auto_skip_cm_button.querySelector<HTMLInputElement>('.dplayer-auto-skip-cm-setting-input')!;
+            auto_skip_cm_input.checked = settings_store.settings.video_auto_skip_cm;
+            auto_skip_cm_button.addEventListener('click', () => {
+                auto_skip_cm_input.checked = !auto_skip_cm_input.checked;
+                settings_store.settings.video_auto_skip_cm = auto_skip_cm_input.checked;
+            });
+        }
 
         // オフライン再生では通信節約モードや画質プロファイル切り替えは無関係なので、該当スイッチを設定パネルへ追加しない
         if (is_offline_playback === false) {
