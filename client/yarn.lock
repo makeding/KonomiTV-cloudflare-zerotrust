@@ -1454,15 +1454,6 @@
     magic-string "^0.30.21"
     string.prototype.matchall "^4.0.12"
 
-"@tsukumijima/aribts@github:tsukumijima/node-aribts#v1.5.2":
-  version "1.5.2"
-  resolved "https://codeload.github.com/tsukumijima/node-aribts/tar.gz/58b7621fcd00453016d883645daf3c9f6a53b204"
-  dependencies:
-    buffer "^6.0.3"
-    events "^3.3.0"
-    iconv-lite "0.6.3"
-    readable-stream "^4.5.2"
-
 "@tsukumijima/aribts@github:tsukumijima/node-aribts#v1.5.3":
   version "1.5.3"
   resolved "https://codeload.github.com/tsukumijima/node-aribts/tar.gz/d6ac17dd3e6fcdb182957d7c3399438321458de4"
@@ -2527,9 +2518,9 @@ crypto-random-string@^2.0.0:
   resolved "https://registry.yarnpkg.com/crypto-random-string/-/crypto-random-string-2.0.0.tgz#ef2a7a966ec11083388369baa02ebead229b30d5"
   integrity sha512-v1plID3y9r/lPhviJ1wrXpLeyUIGAZ2SHNYTEapm7/8A9nLPoyvVp3RK/EPFqn5kEznyWgYZNsRtYYIWbuG8KA==
 
-"css@github:otya128/reworkcss-css#b29fc79faf40c8164b20a74ca818c28fab19cf71":
-  version "3.0.0"
-  resolved "https://codeload.github.com/otya128/reworkcss-css/tar.gz/b29fc79faf40c8164b20a74ca818c28fab19cf71"
+"css@github:otya128/reworkcss-css#v3.0.1":
+  version "3.0.1"
+  resolved "https://codeload.github.com/otya128/reworkcss-css/tar.gz/63d9700ba124f941e77e0f41dd89d62d01e2164d"
   dependencies:
     inherits "^2.0.4"
     source-map "^0.6.1"
@@ -2716,9 +2707,9 @@ dotenv@^16.3.1:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
   integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
 
-"dplayer@github:makeding/DPlayer#dfa2d1758955f90091ef27e87908a0b1c0545cfa":
+"dplayer@github:makeding/DPlayer#891aa273346a69ecf30b453582e5eced7ea7de18":
   version "1.32.8"
-  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/dfa2d1758955f90091ef27e87908a0b1c0545cfa"
+  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/891aa273346a69ecf30b453582e5eced7ea7de18"
   dependencies:
     aribb24.js "~1.11.5"
     aribb62.js "^0.1.6"
@@ -6168,7 +6159,7 @@ webidl-conversions@^4.0.2:
   resolved "https://registry.yarnpkg.com/webidl-conversions/-/webidl-conversions-4.0.2.tgz#a855980b1f0b6b359ba1d5d9fb39ae941faa63ad"
   integrity sha512-YQ+BmxuTgd6UXZW3+ICGfyqRyHXVlD5GtQr5+qjiNW7bF0cqrzX500HVXPBOvgXb5YnzDd+h0zqyv61KUD7+Sg==
 
-"webworkify-webpack@github:xqq/webworkify-webpack":
+webworkify-webpack@xqq/webworkify-webpack:
   version "2.1.5"
   resolved "https://codeload.github.com/xqq/webworkify-webpack/tar.gz/24d1e719b4a6cac37a518b2bb10fe124527ef4ef"
 
