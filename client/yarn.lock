@@ -2707,9 +2707,9 @@ dotenv@^16.3.1:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
   integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
 
-"dplayer@github:makeding/DPlayer#891aa273346a69ecf30b453582e5eced7ea7de18":
+"dplayer@github:makeding/DPlayer#73d1d667085ac017f4f0d01a6f7fd1848810f4f1":
   version "1.32.8"
-  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/891aa273346a69ecf30b453582e5eced7ea7de18"
+  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/73d1d667085ac017f4f0d01a6f7fd1848810f4f1"
   dependencies:
     aribb24.js "~1.11.5"
     aribb62.js "^0.1.6"
@@ -4398,9 +4398,9 @@ mpegts.js@^1.7.3:
     es6-promise "^4.2.5"
     webworkify-webpack xqq/webworkify-webpack
 
-"mpegts.js@github:makeding/mmts.js#f17ea3c97405c7a380b4335c5b8665743b0e256b":
+"mpegts.js@github:makeding/mmts.js#19ba46b6d194325c2a9976052d9f62375d52c3fa":
   version "1.8.0-3"
-  resolved "https://codeload.github.com/makeding/mmts.js/tar.gz/f17ea3c97405c7a380b4335c5b8665743b0e256b"
+  resolved "https://codeload.github.com/makeding/mmts.js/tar.gz/19ba46b6d194325c2a9976052d9f62375d52c3fa"
   dependencies:
     es6-promise "^4.2.5"
 
