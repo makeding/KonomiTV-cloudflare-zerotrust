@@ -24,11 +24,11 @@
         "comlink": "^4.4.1",
         "copy-image-clipboard": "^2.1.2",
         "dayjs": "^1.11.13",
-        "dplayer": "github:makeding/DPlayer#9b5526644b94170eb2cf0d5bde736f2ce590573f",
+        "dplayer": "github:makeding/DPlayer#dfa2d1758955f90091ef27e87908a0b1c0545cfa",
         "floating-vue": "^5.2.2",
         "hls.js": "^1.6.9",
         "mitt": "^3.0.1",
-        "mpegts.js": "github:makeding/mmts.js#f6ca2b03356522ab47711e41210164a11f5d3ef7",
+        "mpegts.js": "github:makeding/mmts.js#f17ea3c97405c7a380b4335c5b8665743b0e256b",
         "nanoid": "^5.0.9",
         "ohash": "^1.1.3",
         "piexifjs": "^2.0.0-beta.9",
@@ -46,9 +46,6 @@
         "vuedraggable": "^4.1.0",
         "vuetify": "~3.7.1",
         "web-bml": "github:tsukumijima/web-bml#fea69f4526ee4acc66687019a1985643618be572"
-    },
-    "resolutions": {
-        "mpegts.js": "file:../../mmts.js"
     },
     "devDependencies": {
         "@babel/types": "^7.25.4",

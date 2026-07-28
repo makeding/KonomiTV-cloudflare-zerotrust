@@ -82,7 +82,8 @@ const handleSettingCoverClick = () => {
     @include smartphone-vertical {
         overflow: visible !important;
     }
-    svg circle, svg path {
+    svg:not(.dplayer-aribb62-subtitle *) circle,
+    svg:not(.dplayer-aribb62-subtitle *) path {
         fill: rgb(var(--v-theme-text)) !important;
     }
     .dplayer-video-wrap {
