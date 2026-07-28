@@ -444,7 +444,6 @@ class PlayerController {
 
         type MMTSVideoQuality = DPlayerType.VideoQuality & {
             mmtsVideoPacketId?: number;
-            mmtsDuration?: number;
             mmtsFileSize?: number;
         };
         const initialized_aribb62_subtitle_players = new WeakSet<object>();
@@ -579,11 +578,11 @@ class PlayerController {
                     url: video.src,
                 },
             );
-            // MMTS VOD は MediaSource の現在の append 範囲だけでは録画全体の長さを判断できない。
-            // DB で解析済みの正確な duration / filesize を渡し、mmts.js の VOD シークと MSE duration を初期状態から有効にする。
+            // MMTS VOD の duration は DB 上の録画時間を信用せず、mpegts.probeMMTSDuration() で実データから事前取得した値を使う。
+            // filesize は byte-range シークに必要なため、ファイルそのものから取得した値を引き続き渡す。
             if (dplayer.options.live !== true && current_quality?.type === 'mmts') {
-                if (current_quality.mmtsDuration !== undefined && current_quality.mmtsDuration > 0) {
-                    media_data_source.duration = current_quality.mmtsDuration;
+                if (mmts_vod_duration_ms !== null && mmts_vod_duration_ms > 0) {
+                    media_data_source.duration = mmts_vod_duration_ms;
                 }
                 if (current_quality.mmtsFileSize !== undefined && current_quality.mmtsFileSize > 0) {
                     media_data_source.filesize = current_quality.mmtsFileSize;
@@ -650,6 +649,36 @@ class PlayerController {
                 return undefined;
             }
         })();
+
+        // MMT/TLV 録画ファイルの Raw MMTS 直通再生では、mmts.js は録画全体の duration を自力では把握できない。
+        // MediaSource の append 範囲から duration を漸次的に推定するしかなく、初期状態ではシークバーが機能しない。
+        // そこで mpegts.js が提供する probeMMTSDuration() でファイル先頭/末尾を事前プローブし、正確な duration を得る。
+        // 結果は initializeMMTSPlayer() の MediaDataSource.duration に反映し、MSE duration と VOD シークを即座に有効化する。
+        // ライブの Raw MMTS はそもそも duration が無限なので対象外。
+        let mmts_vod_duration_ms: number | null = null;
+        if (this.playback_mode === 'Video' &&
+            player_store.recorded_program.recorded_video.container_format === 'MMT/TLV' &&
+            this.is_offline_cached === false) {
+            const probe_url = `${Utils.api_base_url}/streams/video/${player_store.recorded_program.id}/raw-mmts/mpegts`;
+            const probe_filesize = player_store.recorded_program.recorded_video.file_size;
+            if (typeof probe_filesize === 'number' && probe_filesize > 0) {
+                try {
+                    const probe_result = await mpegts.probeMMTSDuration(probe_url, {
+                        filesize: probe_filesize,
+                        // withCredentials を true にすると XHR が credentialed になり、
+                        // CORS ヘッダーの都合上うまくいかないため、認証不要な raw-mmts API では false にする
+                        withCredentials: false,
+                    });
+                    if (probe_result && probe_result.duration > 0) {
+                        mmts_vod_duration_ms = probe_result.duration;
+                        console.log(`\u001b[36m[PlayerController] MMTS VOD duration probed: ${probe_result.duration} ms.`);
+                    }
+                } catch (error) {
+                    // プローブ失敗時は従来通り mmts.js 側の漸次的 duration 推定にフォールバックする
+                    console.warn('\u001b[33m[PlayerController] MMTS VOD duration probe failed.', error);
+                }
+            }
+        }
 
         // DPlayer を初期化
         const is_bs4k_live_channel = this.playback_mode === 'Live' && channels_store.channel.current.type === 'BS4K';
@@ -827,8 +856,6 @@ class PlayerController {
                                 name: PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME,
                                 type: 'mmts',
                                 url: `${streaming_api_base_url}/raw-mmts/mpegts`,
-                                // mpegts.js の MediaDataSource.duration はミリ秒単位
-                                mmtsDuration: Math.round(player_store.recorded_program.recorded_video.duration * 1000),
                                 mmtsFileSize: player_store.recorded_program.recorded_video.file_size,
                             });
                         }
