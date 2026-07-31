@@ -2617,8 +2617,15 @@ class PlayerController {
             return;
         }
 
-        const tracks = (audio_tracks.tracks as any[]).filter((track) =>
-            this.getMMTSAudioTrackPacketId(track) !== null && this.isMMTSAudioTrackBrowserCompatible(track));
+        // tlvdemux は MMT のテーブル更新時に同じトラックを再通知することがある。
+        // packet_id (0xf310, 0xf311 など) を一意キーにして、メニューに同じ音声を複数表示しない。
+        const tracks_by_packet_id = new Map<number, any>();
+        for (const track of audio_tracks.tracks as any[]) {
+            const packet_id = this.getMMTSAudioTrackPacketId(track);
+            if (packet_id === null || this.isMMTSAudioTrackBrowserCompatible(track) === false) continue;
+            tracks_by_packet_id.set(packet_id, track);
+        }
+        const tracks = [...tracks_by_packet_id.values()];
         const reported_selected_packet_id = typeof audio_tracks.selectedPacketId === 'number' ? audio_tracks.selectedPacketId : null;
         if (
             this.mmts_selected_audio_packet_id_override !== null &&
