@@ -108,6 +108,9 @@ const usePlayerStore = defineStore('player', {
             }
         })(),
 
+        // データ放送表示中は、リモコンへ常にアクセスできるよう視聴パネルを折りたためないようにする
+        is_data_broadcasting_display: false,
+
         // ライブ視聴: 表示されるパネルのタブ
         tv_panel_active_tab: useSettingsStore().settings.tv_panel_active_tab,
 
@@ -227,6 +230,7 @@ const usePlayerStore = defineStore('player', {
                         return settings_store.settings.showed_panel_last_time;
                 }
             })();
+            this.is_data_broadcasting_display = false;
             this.tv_panel_active_tab = useSettingsStore().settings.tv_panel_active_tab;
             this.video_panel_active_tab = useSettingsStore().settings.video_panel_active_tab;
             this.twitter_active_tab = useSettingsStore().settings.twitter_active_tab;

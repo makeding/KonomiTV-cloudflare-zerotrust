@@ -2,7 +2,8 @@
     <div class="watch-panel"
          @mousemove="playerStore.event_emitter.emit('SetControlDisplayTimer', {event: $event})">
         <div class="watch-panel__header">
-            <div v-ripple class="panel-close-button" @click="playerStore.is_panel_display = false">
+            <div v-ripple class="panel-close-button"
+                @click="playerStore.is_data_broadcasting_display === false && (playerStore.is_panel_display = false)">
                 <Icon class="panel-close-button__icon" icon="akar-icons:chevron-right" width="25px" />
                 <span class="panel-close-button__text">閉じる</span>
             </div>
@@ -30,13 +31,13 @@
                 :class="{'watch-panel__content--active': panel_active_tab === 'Comment'}" />
             <Twitter class="watch-panel__content" :playback_mode="playback_mode"
                 :class="{'watch-panel__content--active': panel_active_tab === 'Twitter'}" />
-            <button v-ripple class="watch-panel__content-remocon-button elevation-8" v-if="playback_mode === 'Live'"
-                :class="{'watch-panel__content-remocon-button--active': panel_active_tab === 'Program' || panel_active_tab === 'Channel'}"
+            <button v-ripple class="watch-panel__content-remocon-button elevation-8" v-if="show_remocon"
+                :class="{'watch-panel__content-remocon-button--active': remocon_panel_active}"
                 @click="playerStore.is_remocon_display = !playerStore.is_remocon_display">
                 <Icon class="panel-close-button__icon" icon="material-symbols:remote-gen" width="25px" />
             </button>
-            <Remocon class="watch-panel__remocon" v-if="playback_mode === 'Live'"
-                :modelValue="(panel_active_tab === 'Program' || panel_active_tab === 'Channel') && playerStore.is_remocon_display === true"
+            <Remocon class="watch-panel__remocon" v-if="show_remocon"
+                :modelValue="remocon_panel_active && playerStore.is_remocon_display === true"
                 @update:modelValue="playerStore.is_remocon_display = $event" />
         </div>
         <div class="watch-panel__navigation">
@@ -129,6 +130,19 @@ export default defineComponent({
             } else {
                 return this.playerStore.video_panel_active_tab;
             }
+        },
+
+        // MMT/TLV 録画では B62 データ放送を操作できるため、ライブと同じリモコンを表示する
+        show_remocon(): boolean {
+            return this.playback_mode === 'Live' ||
+                this.playerStore.recorded_program?.recorded_video.container_format === 'MMT/TLV';
+        },
+
+        remocon_panel_active(): boolean {
+            if (this.playback_mode === 'Live') {
+                return this.panel_active_tab === 'Program' || this.panel_active_tab === 'Channel';
+            }
+            return this.panel_active_tab === 'RecordedProgram' || this.panel_active_tab === 'Series';
         }
     }
 });

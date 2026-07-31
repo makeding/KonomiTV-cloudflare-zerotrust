@@ -2707,14 +2707,15 @@ dotenv@^16.3.1:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
   integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
 
-"dplayer@github:makeding/DPlayer#7e1ffb534120169cbefa2093aebfd35f89a20658":
+"dplayer@github:makeding/DPlayer#ff4bc99cec48cfe82be32860ee37931751cc1ed5":
   version "1.32.8"
-  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/7e1ffb534120169cbefa2093aebfd35f89a20658"
+  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/ff4bc99cec48cfe82be32860ee37931751cc1ed5"
   dependencies:
     aribb24.js "~1.11.5"
     aribb62.js "^0.1.7"
     axios "^1.7.2"
     balloon-css "^1.2.0"
+    tlvdemux "^0.1.0"
 
 dunder-proto@^1.0.0, dunder-proto@^1.0.1:
   version "1.0.1"
@@ -4235,6 +4236,11 @@ levn@^0.4.1:
     prelude-ls "^1.2.1"
     type-check "~0.4.0"
 
+libaribhtml5@^0.1.1:
+  version "0.1.1"
+  resolved "https://registry.yarnpkg.com/libaribhtml5/-/libaribhtml5-0.1.1.tgz#200da70556fce516abc415a2e72df2251b83a409"
+  integrity sha512-31H2rilDFVBPFxCq9ShtBcScAmYOGYZDQy2oqWGsDE/cmIh+yn8ELeYlm48/iv8GH+6dClgEAc/ZSQSKZaK5xg==
+
 locate-path@^6.0.0:
   version "6.0.0"
   resolved "https://registry.yarnpkg.com/locate-path/-/locate-path-6.0.0.tgz#55321eb309febbc59c4801d931a72452a681d286"
@@ -4390,19 +4396,13 @@ mitt@^3.0.1:
   resolved "https://registry.yarnpkg.com/mitt/-/mitt-3.0.1.tgz#ea36cf0cc30403601ae074c8f77b7092cdab36d1"
   integrity sha512-vKivATfr97l2/QBCYAkXYDbrIWPM2IIKEl7YPhjCvKlG3kE2gm+uBo6nEXK3M5/Ffh/FLpKExzOQ3JJoJGFKBw==
 
-mpegts.js@^1.7.3:
+mpegts.js@^1.7.3, mpegts.js@^1.8.0:
   version "1.8.0"
   resolved "https://registry.yarnpkg.com/mpegts.js/-/mpegts.js-1.8.0.tgz#b944751df0e811be880c0d1e32dcd721f5ff9550"
   integrity sha512-ZtujqtmTjWgcDDkoOnLvrOKUTO/MKgLHM432zGDI8oPaJ0S+ebPxg1nEpDpLw6I7KmV/GZgUIrfbWi3qqEircg==
   dependencies:
     es6-promise "^4.2.5"
     webworkify-webpack xqq/webworkify-webpack
-
-"mpegts.js@github:makeding/mmts.js#108ef6b1b7c8a539f9b3066a6e51599631e34ba9":
-  version "1.8.0-3"
-  resolved "https://codeload.github.com/makeding/mmts.js/tar.gz/108ef6b1b7c8a539f9b3066a6e51599631e34ba9"
-  dependencies:
-    es6-promise "^4.2.5"
 
 ms@^2.1.1, ms@^2.1.3:
   version "2.1.3"
@@ -5715,6 +5715,11 @@ tinyglobby@^0.2.10, tinyglobby@^0.2.13:
   dependencies:
     fdir "^6.5.0"
     picomatch "^4.0.4"
+
+tlvdemux@^0.1.0:
+  version "0.1.0"
+  resolved "https://registry.yarnpkg.com/tlvdemux/-/tlvdemux-0.1.0.tgz#0e92b7e2b78ea21b4b9145483bbcecb7549bfdd7"
+  integrity sha512-aVXO2lStSfAlS7qGKgjMrF9tu3QWNxbh3pZt4JTiRrq8TDIfy1tx7mtsJMVICyf+yu2Gdx2pNFdrLdfqpgkH0Q==
 
 to-regex-range@^5.0.1:
   version "5.0.1"

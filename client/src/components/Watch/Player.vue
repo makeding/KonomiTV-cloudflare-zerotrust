@@ -31,8 +31,8 @@
                 <Icon class="switch-button-icon" icon="fluent:ios-arrow-left-24-filled" width="32px" style="transform: rotate(90deg)" />
             </div>
             <div v-ripple class="switch-button switch-button-panel"
-                :class="{'switch-button-panel--open': playerStore.is_panel_display}"
-                @click="playerStore.is_panel_display = !playerStore.is_panel_display">
+                :class="{'switch-button-panel--open': playerStore.is_panel_display || playerStore.is_data_broadcasting_display}"
+                @click="togglePanel">
                 <Icon class="switch-button-icon" icon="fluent:navigation-16-filled" width="32px" />
             </div>
             <div v-ripple class="switch-button switch-button-down"
@@ -64,6 +64,11 @@ defineProps({
 const channelsStore = useChannelsStore();
 const playerStore = usePlayerStore();
 const settingsStore = useSettingsStore();
+
+const togglePanel = () => {
+    if (playerStore.is_data_broadcasting_display) return;
+    playerStore.is_panel_display = !playerStore.is_panel_display;
+};
 
 // watch-player__dplayer-setting-cover がクリックされたとき、設定パネルを閉じる
 const handleSettingCoverClick = () => {
@@ -120,6 +125,10 @@ const handleSettingCoverClick = () => {
             // ローディング表示は自前でやるため不要
             display: none !important;
         }
+    }
+    // データ放送の外部 video plane より DPlayer 自身の情報パネルを常に手前に表示する
+    .dplayer-info-panel {
+        z-index: 3;
     }
     .dplayer-controller-mask {
         height: 82px !important;

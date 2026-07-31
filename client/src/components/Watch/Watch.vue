@@ -2,7 +2,8 @@
     <div class="route-container">
         <main class="watch-container" :class="{
                 'watch-container--control-display': playerStore.is_control_display,
-                'watch-container--panel-display': Utils.isSmartphoneVertical() || Utils.isTabletVertical() ? true : playerStore.is_panel_display,
+                'watch-container--panel-display': Utils.isSmartphoneVertical() || Utils.isTabletVertical() ? true :
+                    playerStore.is_panel_display || playerStore.is_data_broadcasting_display,
                 'watch-container--fullscreen': playerStore.is_fullscreen,
                 'watch-container--document-pip': playerStore.is_document_pip,
                 'watch-container--video': playback_mode === 'Video',

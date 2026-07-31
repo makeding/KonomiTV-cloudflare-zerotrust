@@ -38,6 +38,10 @@ async def BMLBrowserRequestGETProxyAPI(
     web-bml のネット接続機能専用の API で、web-bml 以外からは利用されない。
     """
 
+    # パスパラメーターに含まれる転送先 URL のクエリは FastAPI 側では request.query_params に分離されるため復元する
+    if request.url.query:
+        request_url += f'?{request.url.query}'
+
     # URLが HTTP または HTTPS URL かのバリデーション
     if not (request_url.startswith("http://") or request_url.startswith("https://")):
         logging.error(f'[DataBroadcastingRouter][BMLBrowserRequestGETProxyAPI] Request URL must be http or https URL: {request_url}')
@@ -98,6 +102,7 @@ async def BMLBrowserRequestGETProxyAPI(
 )
 async def BMLBrowserRequestPOSTProxyAPI(
     request_url: Annotated[str, Path(description='リクエスト URL 。')],
+    request: Request,
     Denbun: Annotated[str, Form(max_length=4096, description='データ放送ブラウザからのリクエストボディ (Denbun) 。')] = '',
 ):
     """
@@ -106,6 +111,10 @@ async def BMLBrowserRequestPOSTProxyAPI(
     web-bml のネット接続機能専用の API で、web-bml 以外からは利用されない。<br>
     Denbun は仕様書いわく「電文」のことらしく、データ放送ブラウザからの x-www-form-urlencoded 形式の値のキー名は Denbun で固定されている。
     """
+
+    # パスパラメーターに含まれる転送先 URL のクエリは FastAPI 側では request.query_params に分離されるため復元する
+    if request.url.query:
+        request_url += f'?{request.url.query}'
 
     # URLが HTTP または HTTPS URL かのバリデーション
     if not (request_url.startswith("http://") or request_url.startswith("https://")):
