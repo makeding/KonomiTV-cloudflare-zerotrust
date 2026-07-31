@@ -4,6 +4,7 @@
         'watch-player--virtual-keyboard-display': playerStore.is_virtual_keyboard_display && Utils.hasActiveElementClass('dplayer-comment-input'),
         'watch-player--video': playback_mode === 'Video',
         'watch-player--pure-black': settingsStore.settings.use_pure_black_player_background,
+        'watch-player--data-broadcasting': playerStore.is_data_broadcasting_display,
     }">
         <div class="watch-player__background-wrapper">
             <div class="watch-player__background" :class="{
@@ -620,6 +621,14 @@ _::-webkit-full-page-media, _:future, :root .dplayer-subtitle-icon[aria-label='�
 
     .watch-player__dplayer {
         width: 100%;
+    }
+
+    // データ放送中は、BML / video / 字幕の内部レイヤー構成を崩さず、
+    // DPlayer 全体を外側の切局・パネルボタンより手前に置く。
+    // 右パネルのリモコンは z-index: 20 のため、引き続き最前面に残る。
+    &.watch-player--data-broadcasting .watch-player__dplayer {
+        position: relative;
+        z-index: 1;
     }
 
     .watch-player__button {

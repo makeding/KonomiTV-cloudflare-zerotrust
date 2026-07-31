@@ -407,6 +407,9 @@ class PlayerController {
                 seek_seconds = 0;
             }
         }
+        // 上の分岐を抜けた時点で必ず number になっている。TLV の初回再生だけ実際の開始位置を 0 秒へ変更するため、
+        // 元のオプションとは別の変数で保持し、コメント初期化などの非同期コールバックからも安全に参照できるようにする。
+        const initial_playback_position_seconds: number = seek_seconds;
 
         // この時点で LocalStorage に dplayer-danmaku-opacity キーが存在しなければ、コメントの透明度の既定値を設定する
         // DPlayer のデフォルトは 1.0 (全表示) だが映像が見づらくなるため、0.5 に設定する
@@ -988,7 +991,7 @@ class PlayerController {
                         // この時点ではまだ映像の読み込みが完了していない可能性が高いので、currentTime がまだ 0 か非数の場合は seek_seconds をそのまま使う
                         let comment_seek_seconds = this.player!.video.currentTime;
                         if (comment_seek_seconds === 0 || isNaN(comment_seek_seconds)) {
-                            comment_seek_seconds = seek_seconds;
+                            comment_seek_seconds = initial_playback_position_seconds;
                         }
                         await Utils.sleep(0.1);  // 仮想スクローラーの準備ができるまで少し待つ
                         player_store.event_emitter.emit('PlaybackPositionChanged', {
@@ -1214,6 +1217,9 @@ class PlayerController {
         };
         dplayer_instance.on('tlv_ready', syncTLVTracks);
         dplayer_instance.on('tlv_tracks', syncTLVTracks);
+        dplayer_instance.on('tlv_error', (error: unknown) => {
+            console.error('\u001b[31m[PlayerController] TLV playback error:', error);
+        });
         // DPlayer の字幕ボタンで表示状態が変わったとき、通常の字幕コンテナだけでなく Raw MMTS 用の aribb62 overlay にも反映する
         // aribb62 overlay は initARIBB62Subtitle() が別 DOM として作成するため、この同期がないと字幕ボタンの状態から外れることがある
         dplayer_instance.on('subtitle_show', () => {
@@ -1308,10 +1314,9 @@ class PlayerController {
 
         // ビデオ視聴時のみ、指定されている場合は再生速度をレジュームし、指定秒数シークする
         if (this.playback_mode === 'Video') {
-
-            // 初期化前に算出しておいた秒数分初回シークを実行
-            // 録画マージン分シークするケースと、プレイヤー再起動前の再生位置を復元するケースの2通りある
-            this.player.seek(seek_seconds);
+            // TLVPlayer も WASM 初期化中の seek を保持し、0 秒を経由せず指定位置から最初の MSE を構築する。
+            // 録画マージン・視聴履歴の復元位置は配信形式に関係なく DPlayer へ渡す。
+            this.player.seek(initial_playback_position_seconds);
 
             // 指定されている場合はプレイヤー再起動前の再生速度を復元する
             if (options.playback_rate !== null) {
@@ -1322,17 +1327,17 @@ class PlayerController {
             // このため DPlayer.seek() 内部で実行されているシークバーの更新処理は動作せず、再生が開始されるまで再生済み範囲は反映されない
             // ここで再生済み範囲がシークバー上反映されていないとユーザーの認知的不協和を招くため、手動で再生済み範囲をシーク地点に移動する
             // この時点ではまだ HLS プレイリストのロードが完了していないため、API から取得済みの動画長を用いて割合を計算する
-            this.player.bar.set('played', seek_seconds / player_store.recorded_program.recorded_video.duration, 'width');
+            this.player.bar.set('played', initial_playback_position_seconds / player_store.recorded_program.recorded_video.duration, 'width');
 
             // 視聴履歴から再生を再開する場合のみ通知を表示
             // そうでない場合は seek() 実行後に表示される通知を即座に非表示にする
-            if (seek_seconds > player_store.recorded_program.recording_start_margin + 2) {
+            if (initial_playback_position_seconds > player_store.recorded_program.recording_start_margin + 2) {
                 this.player.notice('前回視聴した続きから再生します');
             } else {
                 this.player.hideNotice();
             }
             this.player.play();
-            console.log(`\u001b[31m[PlayerController] Seeking to ${seek_seconds} seconds.`);
+            console.log(`\u001b[31m[PlayerController] Seeking to ${initial_playback_position_seconds} seconds.`);
         }
 
         // UI コンポーネントからプレイヤーに通知メッセージの送信を要求されたときのイベントハンドラーを登録する
@@ -1875,6 +1880,12 @@ class PlayerController {
                 this.player.video.oncanplay = on_canplay;
                 this.player.video.oncanplaythrough = on_canplay;
 
+                // TLV パススルーは DPlayer の生成直後から読み込みを開始するため、ハンドラー登録より先に
+                // canplay / canplaythrough が発火していることがある。すでに再生可能なら待たずに loading を解除する。
+                if (this.player.video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+                    void on_canplay();
+                }
+
                 // 万が一 canplay(through) が発火しなかった場合のために (ほぼ Safari 向け) 、
                 // mpegts.js 側でメディア情報が取得できたタイミングでも再生開始を試みる
                 // 特に Safari 18 以降では MSE の canplay(through) が場合によっては発火しなかったり、発火が異常に遅かったりする…
@@ -1932,47 +1943,55 @@ class PlayerController {
             // ビデオ視聴のみ
             } else {
 
-                // hls.js の初期化時に startPosition を指定したことで、シーク時に常に startPosition に対応する HLS セグメントが
-                // ロードされるようになってしまうため、画質切り替えが完了する前に startPosition をデフォルト値の -1 に無理やり戻す
-                // こうすることで startPosition を指定しつつ、シーク時は従来通りシーク先のセグメントから先読みが開始されるようになる
-                const hls_plugin = this.player.plugins.hls;
-                if (hls_plugin !== undefined) {
-                    const resetStartPosition = () => {
-                        hls_plugin.off(Hls.Events.FRAG_BUFFERED, resetStartPosition);
-                        hls_plugin.config.startPosition = -1;
-                        const internal_hls = hls_plugin as unknown as {
-                            streamController?: {
-                                startPosition?: number;
-                                nextLoadPosition?: number;
+                // HLS 画質を選択している場合に限り、hls.js / Native HLS 固有の初期化を行う。
+                // TLV パススルーは DPlayer 内蔵の tlvdemux Player が担当するため plugins.hls が存在しないのが正常であり、
+                // ここで Native HLS と誤判定すると、実際には TLV 再生中なのに hls.js の警告が表示されてしまう。
+                if (this.player.quality?.type === 'hls') {
+                    // hls.js の初期化時に startPosition を指定したことで、シーク時に常に startPosition に対応する HLS セグメントが
+                    // ロードされるようになってしまうため、画質切り替えが完了する前に startPosition をデフォルト値の -1 に無理やり戻す
+                    // こうすることで startPosition を指定しつつ、シーク時は従来通りシーク先のセグメントから先読みが開始されるようになる
+                    const hls_plugin = this.player.plugins.hls;
+                    if (hls_plugin !== undefined) {
+                        const resetStartPosition = () => {
+                            hls_plugin.off(Hls.Events.FRAG_BUFFERED, resetStartPosition);
+                            hls_plugin.config.startPosition = -1;
+                            const internal_hls = hls_plugin as unknown as {
+                                streamController?: {
+                                    startPosition?: number;
+                                    nextLoadPosition?: number;
+                                };
                             };
-                        };
-                        if (internal_hls.streamController) {
-                            internal_hls.streamController.startPosition = -1;
-                            if (hls_plugin.media) {
-                                internal_hls.streamController.nextLoadPosition = hls_plugin.media.currentTime;
+                            if (internal_hls.streamController) {
+                                internal_hls.streamController.startPosition = -1;
+                                if (hls_plugin.media) {
+                                    internal_hls.streamController.nextLoadPosition = hls_plugin.media.currentTime;
+                                }
                             }
-                        }
-                    };
-                    hls_plugin.on(Hls.Events.FRAG_BUFFERED, resetStartPosition);
-                } else {
-                    // 実はなぜか hls.js を使わずとも Safari では普通に Native HLS 再生できてしまうようなので、警告を出しつつ何もしない
-                    // DPlayer 側の機能により、Native HLS 再生であっても字幕は表示される
-                    console.warn('\u001b[31m[PlayerController] hls.js plugin not found. (Native HLS playback may be supported on Safari.)');
-                    this.player.notice('お使いの iOS / iPadOS Safari は hls.js での再生に対応していません。代わりに Native HLS での再生を試みますが、正常に再生できない可能性があります。',
-                        undefined, undefined, '#FFA86A');
+                        };
+                        hls_plugin.on(Hls.Events.FRAG_BUFFERED, resetStartPosition);
+                    } else {
+                        // Safari では hls.js を使えない場合でも Native HLS で再生できるため、警告を出しつつ再生を継続する。
+                        // DPlayer 側の機能により、Native HLS 再生であっても字幕は表示される。
+                        console.warn('\u001b[31m[PlayerController] hls.js plugin not found. (Native HLS playback may be supported on Safari.)');
+                        this.player.notice('お使いの iOS / iPadOS Safari は hls.js での再生に対応していません。代わりに Native HLS での再生を試みますが、正常に再生できない可能性があります。',
+                            undefined, undefined, '#FFA86A');
+                    }
                 }
 
                 // 必ず最初はローディング状態で、背景写真を表示する
                 player_store.is_loading = true;
                 player_store.is_background_display = true;
 
-                // 再生準備ができた段階でローディング中の背景写真を非表示にするイベントハンドラーを登録
+                // 再生準備ができた段階でローディング中の背景写真を非表示にするイベントハンドラーを登録する。
+                // TLV パススルーは DPlayer の生成直後から非同期で読み込みが始まるため、このハンドラーを登録する前に
+                // canplay / canplaythrough が発火済みになることがある。その場合も後段の readyState チェックで確実に表示へ切り替える。
                 let on_canplay_called = false;
                 const on_canplay = async () => {
 
                     // 重複実行を回避する
                     if (this.player === null) return;
                     if (on_canplay_called === true) return;
+                    this.player.video.oncanplay = null;
                     this.player.video.oncanplaythrough = null;
                     on_canplay_called = true;
 
@@ -1985,7 +2004,14 @@ class PlayerController {
                     // ローディング中の背景写真をフェードアウト
                     player_store.is_background_display = false;
                 };
+                this.player.video.oncanplay = on_canplay;
                 this.player.video.oncanplaythrough = on_canplay;
+
+                // 高速なローカル配信や Range キャッシュでは、上記ハンドラーを設定した時点ですでに再生可能なことがある。
+                // イベントの再発火を待つと watch-player--loading が残り、再生中の video まで opacity: 0 のまま隠れてしまう。
+                if (this.player.video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+                    void on_canplay();
+                }
 
                 // HTMLVideoElement ネイティブの再生時エラーのイベントハンドラーを登録
                 // HLS 再生時にブラウザが呼び出す HW デコーダーがクラッシュした場合など、意図せず発生してしまうことがある
