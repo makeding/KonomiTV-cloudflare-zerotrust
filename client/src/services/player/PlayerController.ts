@@ -154,6 +154,10 @@ class PlayerController {
     // 古い MMTS_AUDIO_TRACKS イベントで設定表示が巻き戻るのを防ぐために使う
     private mmts_selected_audio_packet_id_override: number | null = null;
 
+    // DPlayer 標準の音声選択チェックアイコン
+    // TLV のトラック列挙で項目を作り直しても、初期 DOM から取得した SVG を保持し続ける。
+    private mmts_audio_check_icon_html: string | null = null;
+
     // ライブ視聴中のバッファリング発生時刻を保持する
     // handleLiveBufferingForMMTSSecondaryAutoSwitch() で 30 秒以内に何度バッファリングしたかを判定するために使う
     private mmts_secondary_auto_switch_buffering_timestamps_ms: number[] = [];
@@ -1201,7 +1205,8 @@ class PlayerController {
         // TLV のトラック列挙は DPlayer が tlvdemux から通知する。HonomiTV は既存の
         // 音声メニューへ packet_id ベースの表示と選択だけを反映する。
         const syncTLVTracks = (): void => {
-            const audio_tracks = dplayer_instance.plugins.tlv?.tracks.filter((track) => track.kind === 'audio') ?? [];
+            const audio_tracks = dplayer_instance.plugins.tlv?.tracks.filter((track) =>
+                track.kind === 'audio' && this.isMMTSAudioTrackBrowserCompatible(track)) ?? [];
             this.onMMTSAudioTracks({
                 tracks: audio_tracks,
                 selectedPacketId: this.mmts_preferred_audio_packet_id ?? audio_tracks[0]?.packetId ?? null,
@@ -2612,7 +2617,8 @@ class PlayerController {
             return;
         }
 
-        const tracks = (audio_tracks.tracks as any[]).filter((track) => this.getMMTSAudioTrackPacketId(track) !== null);
+        const tracks = (audio_tracks.tracks as any[]).filter((track) =>
+            this.getMMTSAudioTrackPacketId(track) !== null && this.isMMTSAudioTrackBrowserCompatible(track));
         const reported_selected_packet_id = typeof audio_tracks.selectedPacketId === 'number' ? audio_tracks.selectedPacketId : null;
         if (
             this.mmts_selected_audio_packet_id_override !== null &&
@@ -2638,7 +2644,11 @@ class PlayerController {
             return;
         }
 
-        const current_icon_html = audio_panel.querySelector<HTMLDivElement>('.dplayer-setting-audio-item .dplayer-toggle')?.innerHTML ?? '';
+        // トラックが一時的に 0 件になる TLV restart 中でもアイコンを失わないよう、
+        // すでに置き換えた panel ではなく DPlayer が作った初期項目から一度だけ保存する。
+        this.mmts_audio_check_icon_html ??=
+            this.player.template.audioItem[0]?.querySelector<HTMLDivElement>('.dplayer-toggle')?.innerHTML ?? '';
+        const current_icon_html = this.mmts_audio_check_icon_html;
         audio_panel.querySelectorAll('.dplayer-setting-audio-item').forEach((item) => item.remove());
 
         this.player.template.settingBox.style.setProperty('--mmts-audio-panel-height', `${54 + tracks.length * 30}px`);
@@ -2740,6 +2750,16 @@ class PlayerController {
             return null;
         }
         return track.packetId;
+    }
+
+
+    /**
+     * MMTS 音声トラックがブラウザの MSE で再生できるかを判定する
+     */
+    private isMMTSAudioTrackBrowserCompatible(track: any): boolean {
+        // 8K の 22.2ch (channel_configuration=14) は fMP4 で 13 channels の AAC となり、
+        // Chromium の MSE decoder が MediaSource ごと閉じてしまうため、併送の 5.1ch/2ch だけを表示する。
+        return track?.audio?.channelLayout !== 14;
     }
 
 

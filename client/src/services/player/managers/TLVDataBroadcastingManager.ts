@@ -267,6 +267,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.previous_installer = host_window.__ARIB_HTML5_INSTALL__;
         this.runtime_installer = target => {
             this.host?.installRuntime(target);
+            this.installReceiverFontFallback(target);
             this.installReceiverInfo(target, receiver_info);
             this.installNetworkProxy(target);
         };
@@ -366,7 +367,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         if (entry === null) return;
         this.ready_context_id = state.contextId;
         this.ready_entry = entry;
-        console.log('[TLVDataBroadcastingManager] PRESENT application is ready.', {
+        console.log('[TLVDataBroadcastingManager] Data menu application is ready.', {
             applicationId: state.applicationId,
             organizationId: state.organizationId,
             entry,
@@ -505,18 +506,37 @@ class TLVDataBroadcastingManager implements PlayerManager {
             if (parts.some(part => part === '..')) return null;
             return parts.join('/');
         };
-        const entry_path = normalizePath(state.entryPath);
-        if (entry_path === null) return null;
 
-        // entryPath 単体と、transport_protocol_descriptor の base URL を付けた候補を
-        // tlvdemux と同じ順序で照合し、この application 自身の起動文書を選ぶ。
-        const candidates = [entry_path];
-        for (const transport_url of state.transportUrls) {
-            if (transport_url.includes('://')) continue;
-            const transport_path = normalizePath(transport_url);
-            if (transport_path !== null) candidates.push([transport_path, entry_path].filter(Boolean).join('/'));
+        // AIT の entryPath は、d ボタンを受け取ってから実メニューへ遷移する透明な
+        // bootstrap になっていることがある。HonomiTV のd ボタン自体が起動操作なので、
+        // 同じ application context に放送済みの top/source/index*.html を見つけて直接開く。
+        // 放送局固有の sh4/sh8 などの transport path には依存しない。
+        const context_prefix = `${state.contextId}:`;
+        for (const resource_key of this.resource_revisions.keys()) {
+            if (resource_key.startsWith(context_prefix) === false) continue;
+            const resource_path = normalizePath(resource_key.slice(context_prefix.length));
+            if (resource_path !== null && /(^|\/)top\/source\/index[^/]*\.html?$/i.test(resource_path)) {
+                return resource_path;
+            }
         }
-        return candidates.find(candidate => this.resource_revisions.has(`${state.contextId}:${candidate}`)) ?? null;
+        return null;
+    }
+
+    /**
+     * libaribhtml5 の稀疎 ARIB 記号フォントを、システム日本語フォントより前の既定 fallback にする。
+     * 放送ページが独自の font-family を指定した場合は、後から読まれるそちらの CSS が優先される。
+     */
+    private installReceiverFontFallback(target: RuntimeWindow): void {
+        if (target.document.querySelector('style[data-konomi-arib-font-fallback]') !== null) return;
+        const style = target.document.createElement('style');
+        style.dataset.konomiAribFontFallback = '';
+        style.textContent = `
+            html, body {
+                font-family: "ARIB Symbols", "Hiragino Kaku Gothic ProN", "Yu Gothic", YuGothic,
+                    Meiryo, "Noto Sans CJK JP", "Noto Sans JP", sans-serif;
+            }
+        `;
+        (target.document.head ?? target.document.documentElement).append(style);
     }
 
     private normalizeResourceContentType(path: string, content_type: string): string {
