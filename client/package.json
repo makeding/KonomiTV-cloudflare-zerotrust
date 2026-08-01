@@ -27,7 +27,7 @@
         "dplayer": "github:makeding/DPlayer#8ef4c01d3c4dde173a672485daabbc85b602fd5c",
         "floating-vue": "^5.2.2",
         "hls.js": "^1.6.9",
-        "libaribhtml5": "^0.1.1",
+        "libaribhtml5": "^0.1.2",
         "mitt": "^3.0.1",
         "mpegts.js": "^1.8.0",
         "nanoid": "^5.0.9",

@@ -148,8 +148,10 @@ def Root(file: str):
 
     # 存在しない静的ファイルが指定された場合
     else:
-        if file.startswith('api/'):
-            # パスに api/ が前方一致で含まれているなら、404 Not Found を返す
+        if file.startswith('api/') or file == 'data-broadcast' or file.startswith('data-broadcast/'):
+            # API と ARIB データ放送用 VFS のパスは SPA の管理外なので、404 Not Found を返す。
+            # /data-broadcast/ を index.html へ fallback させると、VFS Worker がリソースを
+            # 解決できなかった際に KonomiTV 本体がデータ放送 iframe 内で起動してしまう。
             return JSONResponse({'detail': 'Not Found'}, status_code = status.HTTP_404_NOT_FOUND)
         else:
             # パスに api/ が前方一致で含まれていなければ、index.html を返す

@@ -32,6 +32,11 @@ type TLVApplicationState = {
     organizationId: number;
     applicationId: number;
     controlCode: number;
+    applicationDescriptorPresent: boolean;
+    serviceBound: boolean;
+    visibility: number;
+    presentApplicationPriority: boolean;
+    applicationPriority: number;
     entryPath: string;
     transportUrls: string[];
     entryReady: boolean;
@@ -45,6 +50,38 @@ type TLVBroadcastClock = {
 };
 
 type TLVEventInfo = DPlayerType.TLVEventInfo;
+
+type TLVCaptionData = DPlayerType.TLVCaptionData;
+
+type ManagedApplication = {
+    key: string;
+    state: TLVApplicationState;
+    entry: string;
+};
+
+type TLVStreamEvent = {
+    contextId: number;
+    eventMessageTag: number;
+    messageGroupId: number;
+    messageVersion: number;
+    currentNext: boolean;
+    timeMode: number;
+    messageId: number;
+    privateData: Uint8Array;
+};
+
+type ReceiverStreamEvent = {
+    source: {
+        original_network_id?: number;
+        tlv_stream_id?: number;
+        service_id?: number;
+        event_message_tag: number;
+    };
+    message_group_id: number;
+    message_id: number;
+    message_version: number;
+    private_data_byte: string;
+};
 
 interface RuntimeHostWindow extends Window {
     __ARIB_HTML5_INSTALL__?: (target: RuntimeWindow) => void;
@@ -72,11 +109,6 @@ type ReceiverInfo = {
     regioncode: number | null;
 };
 
-type BrowserPseudo = {
-    readPersistentArray: (namespace: string, structure: string) => unknown[] | null;
-};
-
-
 /**
  * DPlayer の video を元の 16:9 コンテナから動かさず、データ放送の映像枠だけへ合わせる。
  * MSE 接続済みの video を iframe へ移動すると Chromium が MediaSource を閉じるため、
@@ -88,28 +120,42 @@ class DPlayerMediaPlaneAdapter implements AribMediaPlaneAdapter {
 
     private readonly player: DPlayer;
     private managed_video: HTMLVideoElement | null = null;
+    private application_visible = true;
+    private last_plane: AribMediaPlane | null = null;
 
     constructor(player: DPlayer) {
         this.player = player;
     }
 
     public mountMediaPlane(_object: HTMLElement, plane: AribMediaPlane): void {
-        this.apply(plane);
+        this.last_plane = plane;
+        if (this.application_visible) this.apply(plane);
+        else this.restoreNormalLayout();
     }
 
     public updateMediaPlane(_object: HTMLElement, plane: AribMediaPlane): void {
-        this.apply(plane);
+        this.last_plane = plane;
+        if (this.application_visible) this.apply(plane);
+        else this.restoreNormalLayout();
     }
 
     public unmountMediaPlane(reason: AribMediaPlaneUnmountReason): void {
         // アプリ終了時と Manager 破棄時は、DPlayer 本来の CSS レイアウトへ完全に戻す。
         if (reason === 'application-exit' || reason === 'host-destroy') {
+            this.last_plane = null;
             this.restoreNormalLayout();
             return;
         }
 
         // ページ遷移中や映像 object が消えた間は、直前の映像が全面に残らないよう隠す。
         if (this.managed_video !== null) this.managed_video.style.visibility = 'hidden';
+    }
+
+    public setApplicationVisible(visible: boolean): void {
+        if (this.application_visible === visible) return;
+        this.application_visible = visible;
+        if (visible && this.last_plane !== null) this.apply(this.last_plane);
+        else if (!visible) this.restoreNormalLayout();
     }
 
     private apply(plane: AribMediaPlane): void {
@@ -169,10 +215,16 @@ class TLVDataBroadcastingManager implements PlayerManager {
     private previous_installer?: (target: RuntimeWindow) => void;
     private runtime_installer?: (target: RuntimeWindow) => void;
     private readonly resource_revisions = new Map<string, number>();
+    private readonly applications = new Map<string, ManagedApplication>();
     private readonly program_events = new Map<number, TLVEventInfo>();
     private session_generation = 0;
     private ready_context_id: number | null = null;
     private ready_entry: string | null = null;
+    private ready_application_key: string | null = null;
+    private active_application_key: string | null = null;
+    private pending_application_key: string | null = null;
+    private autostart_scheduled = false;
+    private media_plane_adapter: DPlayerMediaPlaneAdapter | null = null;
     private visible = false;
     private previous_remocon_display: boolean | null = null;
 
@@ -216,7 +268,6 @@ class TLVDataBroadcastingManager implements PlayerManager {
 
         this.iframe = document.createElement('iframe');
         this.iframe.className = 'dplayer-tlv-data-broadcast';
-        this.iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin');
         this.iframe.setAttribute('aria-hidden', 'true');
         Object.assign(this.iframe.style, {
             position: 'absolute',
@@ -225,14 +276,21 @@ class TLVDataBroadcastingManager implements PlayerManager {
             height: '100%',
             border: '0',
             display: 'none',
+            opacity: '0',
+            zIndex: '2',
             transformOrigin: '0 0',
+            // KonomiTV の dark color-scheme を継承すると、通常の light canvas を使う放送ページとの
+            // scheme 不一致を Chromium が不透明な白 backdrop で補う。iframe owner を only light に固定し、
+            // transparent な application canvas 越しに z=1 の映像面が見える状態を維持する。
+            colorScheme: 'only light',
         });
-        this.viewport.append(this.iframe);
-        // iframe、video、字幕面を同じ 16:9 コンテナの兄弟にして、座標系を一つに固定する。
-        // video 自体は DPlayer が生成した直系子要素のままなので、通常再生の寸法を失わない。
-        this.player.template.videoWrapAspect.prepend(this.viewport);
+        // receiver 背景、video、iframe を同じ 16:9 コンテナの sibling にして、
+        // z=0 < z=1 < z=2 の順で外部映像面を application canvas の間へ合成する。
+        // video 自体は DPlayer が生成した直系子要素のままなので、MSE 接続を失わない。
+        this.player.template.videoWrapAspect.prepend(this.viewport, this.iframe);
 
         const receiver_info = this.readReceiverInfo();
+        this.media_plane_adapter = new DPlayerMediaPlaneAdapter(this.player);
         this.host = new AribReceiverHost({
             iframe: this.iframe,
             viewport: this.viewport,
@@ -243,18 +301,33 @@ class TLVDataBroadcastingManager implements PlayerManager {
                 prefecture: receiver_info.prefecture,
                 regioncode: receiver_info.regioncode,
             },
-            mediaPlaneAdapter: new DPlayerMediaPlaneAdapter(this.player),
+            mediaPlaneAdapter: this.media_plane_adapter,
+            onCaptionSubscription: subscription => {
+                this.player.plugins.tlv?.setSubtitleSuppressedComponentTags(subscription.componentTags);
+            },
+            onReplaceApplication: async request => {
+                const application = [...this.applications.values()].find(candidate =>
+                    candidate.state.organizationId === request.organizationId &&
+                    candidate.state.applicationId === request.applicationId);
+                if (application === undefined) {
+                    throw new Error(`MH-AIT application not found: ${request.organizationId}:${request.applicationId}`);
+                }
+                await this.loadManagedApplication(application, 'アプリケーション切替中');
+            },
             onLifecycle: event => {
                 if (event.type === 'installed') {
-                    this.visible = true;
-                    this.lockPanelForApplication();
-                    if (this.viewport !== null) this.viewport.style.opacity = '1';
-                    this.iframe?.setAttribute('aria-hidden', 'false');
+                    this.active_application_key = this.pending_application_key;
+                    this.pending_application_key = null;
+                    this.applyApplicationVisibility();
                 } else if (event.type === 'exited') {
+                    this.active_application_key = null;
+                    this.pending_application_key = null;
                     this.visible = false;
                     this.unlockPanelForApplication();
+                    this.media_plane_adapter?.setApplicationVisible(false);
                     if (this.viewport !== null) this.viewport.style.opacity = '0';
                     if (this.iframe !== null) {
+                        this.iframe.style.opacity = '0';
                         this.iframe.style.display = 'none';
                         this.iframe.setAttribute('aria-hidden', 'true');
                     }
@@ -268,7 +341,6 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.runtime_installer = target => {
             this.host?.installRuntime(target);
             this.installReceiverFontFallback(target);
-            this.installReceiverInfo(target, receiver_info);
             this.installNetworkProxy(target);
         };
         host_window.__ARIB_HTML5_INSTALL__ = this.runtime_installer;
@@ -278,8 +350,13 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.on('tlv_application_state', this.handleApplicationState);
         this.player.on('tlv_broadcast_clock', this.handleBroadcastClock);
         this.player.on('tlv_event_info', this.handleEventInfo);
+        this.player.on('tlv_stream_event' as DPlayerType.Events, this.handleStreamEvent);
+        this.player.on('tlv_tracks', this.handleCaptionTracks);
+        this.player.on('tlv_caption_data', this.handleCaptionData);
         this.initRemoconButtons();
         await this.beginSession();
+        this.handleCaptionTracks();
+        this.syncBroadcastClock();
         console.log('[TLVDataBroadcastingManager] Initialized.');
     }
 
@@ -289,6 +366,9 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.off('tlv_application_state', this.handleApplicationState);
         this.player.off('tlv_broadcast_clock', this.handleBroadcastClock);
         this.player.off('tlv_event_info', this.handleEventInfo);
+        this.player.off('tlv_stream_event' as DPlayerType.Events, this.handleStreamEvent);
+        this.player.off('tlv_tracks', this.handleCaptionTracks);
+        this.player.off('tlv_caption_data', this.handleCaptionData);
         this.remocon_abort_controller?.abort();
         this.remocon_abort_controller = null;
         this.session_generation += 1;
@@ -297,15 +377,24 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.host?.destroy();
         this.host = null;
         this.viewport?.remove();
+        this.iframe?.remove();
         this.viewport = null;
         this.iframe = null;
-        await this.vfs_backend?.reset().catch(error => {
-            console.error('[TLVDataBroadcastingManager] VFS reset failed.', error);
-        });
+        const vfs = this.vfs;
+        const vfs_backend = this.vfs_backend;
         this.vfs = null;
         this.vfs_backend = null;
+        await vfs?.dispose().catch(error => {
+            console.error('[TLVDataBroadcastingManager] VFS session dispose failed.', error);
+        });
+        await vfs_backend?.dispose().catch(error => {
+            console.error('[TLVDataBroadcastingManager] VFS backend dispose failed.', error);
+        });
         this.resource_revisions.clear();
+        this.applications.clear();
         this.program_events.clear();
+        this.media_plane_adapter = null;
+        this.player.plugins.tlv?.setSubtitleSuppressedComponentTags([]);
         this.toggleRemoconLoading(true);
         this.toggleRemoconEnabled(false);
         const host_window = window as RuntimeHostWindow;
@@ -321,9 +410,16 @@ class TLVDataBroadcastingManager implements PlayerManager {
     private async beginSession(): Promise<void> {
         const generation = ++this.session_generation;
         this.resource_revisions.clear();
+        this.applications.clear();
         this.program_events.clear();
         this.ready_context_id = null;
         this.ready_entry = null;
+        this.ready_application_key = null;
+        this.active_application_key = null;
+        this.pending_application_key = null;
+        this.autostart_scheduled = false;
+        this.host?.resetCaptions();
+        this.player.plugins.tlv?.setSubtitleSuppressedComponentTags([]);
         this.host?.clearBroadcastClock();
         this.host?.clearProgramInfo();
         this.exitApplication();
@@ -331,6 +427,8 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.toggleRemoconEnabled(false);
         try {
             await this.vfs?.beginSession();
+            if (generation !== this.session_generation) return;
+            this.handleCaptionTracks();
         } catch (error) {
             if (generation !== this.session_generation) return;
             console.error('[TLVDataBroadcastingManager] Failed to begin VFS session.', error);
@@ -341,6 +439,49 @@ class TLVDataBroadcastingManager implements PlayerManager {
     private readonly handleResourcesReset = (): void => {
         void this.beginSession();
     };
+
+    private readonly handleCaptionTracks = (): void => {
+        const component_tags = this.player.plugins.tlv?.tracks
+            .filter(track => track.kind === 'subtitle' && track.codec === 'ttml')
+            .map(track => this.normalizeCaptionComponentTag(track.componentTag))
+            .filter((tag): tag is number => tag !== null) ?? [];
+        this.host?.setCaptionTracks([...new Set(component_tags)]);
+    };
+
+    private readonly handleCaptionData = (detail?: Event | TLVCaptionData): void => {
+        const packet = detail as TLVCaptionData;
+        const component_tag = this.normalizeCaptionComponentTag(packet?.componentTag);
+        if (component_tag === null || !(packet.data instanceof Uint8Array) || this.host === null) return;
+        const tmd = this.binaryNibble(packet.subtitleTimingMode ?? 0);
+        const decoder = new TextDecoder();
+        this.host.pushCaption({
+            componentTag: component_tag,
+            dataType: '0000',
+            tmd,
+            data: decoder.decode(packet.data),
+        });
+        for (const resource of packet.subtitleResources ?? []) {
+            const data_type = Number(resource.dataType);
+            if (!Number.isInteger(data_type) || data_type < 0 || data_type > 0x0f ||
+                !(resource.data instanceof Uint8Array)) continue;
+            this.host.pushCaption({
+                componentTag: component_tag,
+                dataType: this.binaryNibble(data_type),
+                tmd,
+                data: data_type === 6 ? decoder.decode(resource.data) : this.bytesToDomString(resource.data),
+            });
+        }
+    };
+
+    private normalizeCaptionComponentTag(value: unknown): number | null {
+        const component_tag = Number(value);
+        if (!Number.isInteger(component_tag) || component_tag < 0 || component_tag > 0xffff) return null;
+        return component_tag & 0xff;
+    }
+
+    private binaryNibble(value: number): string {
+        return (value & 0x0f).toString(2).padStart(4, '0');
+    }
 
     private readonly handleApplicationResource = (detail?: Event | TLVApplicationResource): void => {
         const resource = detail as TLVApplicationResource;
@@ -360,21 +501,81 @@ class TLVDataBroadcastingManager implements PlayerManager {
 
     private readonly handleApplicationState = (detail?: Event | TLVApplicationState): void => {
         const state = detail as TLVApplicationState;
-        // d ボタンで起動すべきなのは PRESENT application (control_code=0x02)。
-        // AUTOSTART application (0x01) は透明な常駐ページなので、手動起動の入口には使わない。
-        if (!state?.entryReady || state.controlCode !== 0x02) return;
-        const entry = this.resolveApplicationEntry(state);
+        this.syncBroadcastClock();
+        if (!state) return;
+        const key = this.applicationKey(state);
+        if (state.controlCode === 0x04) {
+            this.applications.delete(key);
+            if (this.ready_application_key === key) {
+                this.ready_application_key = null;
+                this.ready_context_id = null;
+                this.ready_entry = null;
+            }
+            if (this.active_application_key === key || this.pending_application_key === key) {
+                this.exitApplication();
+            }
+            return;
+        }
+        if (!state.entryReady) return;
+        const entry = this.player.plugins.tlv?.applicationEntry(state.contextId) ?? null;
         if (entry === null) return;
-        this.ready_context_id = state.contextId;
-        this.ready_entry = entry;
-        console.log('[TLVDataBroadcastingManager] Data menu application is ready.', {
+        const application: ManagedApplication = {key, state: {...state}, entry};
+        this.applications.set(key, application);
+
+        if (state.controlCode === 0x02) {
+            const current = this.ready_application_key === null
+                ? null
+                : this.applications.get(this.ready_application_key) ?? null;
+            if (current === null || state.applicationPriority >= current.state.applicationPriority) {
+                this.ready_application_key = key;
+                this.ready_context_id = state.contextId;
+                this.ready_entry = entry;
+            }
+            this.toggleRemoconLoading(false);
+            this.toggleRemoconEnabled(true);
+        }
+
+        if (this.active_application_key === key) this.applyApplicationVisibility();
+        if (state.controlCode === 0x01) this.scheduleAutostart();
+        console.log('[TLVDataBroadcastingManager] MH-AIT application is ready.', {
             applicationId: state.applicationId,
             organizationId: state.organizationId,
+            controlCode: state.controlCode,
+            visibility: state.visibility,
             entry,
         });
-        this.toggleRemoconLoading(false);
-        this.toggleRemoconEnabled(true);
     };
+
+    private applicationKey(state: TLVApplicationState): string {
+        return `${state.applicationType}:${state.organizationId}:${state.applicationId}`;
+    }
+
+    private applicationIsUserVisible(application: ManagedApplication): boolean {
+        // Older demuxer builds did not expose the mandatory descriptor. Keep
+        // their historical visible behavior instead of treating missing data
+        // as visibility=00.
+        return !application.state.applicationDescriptorPresent || application.state.visibility === 0x03;
+    }
+
+    private scheduleAutostart(): void {
+        if (this.autostart_scheduled) return;
+        this.autostart_scheduled = true;
+        const generation = this.session_generation;
+        queueMicrotask(() => {
+            this.autostart_scheduled = false;
+            if (generation !== this.session_generation || this.pending_application_key !== null) return;
+            const candidate = [...this.applications.values()]
+                .filter(application => application.state.controlCode === 0x01 && application.state.entryReady)
+                .sort((left, right) => right.state.applicationPriority - left.state.applicationPriority)[0];
+            if (candidate === undefined || candidate.key === this.active_application_key) return;
+            if (this.active_application_key !== null) {
+                const active = this.applications.get(this.active_application_key);
+                if (active?.state.controlCode !== 0x02 || active.state.presentApplicationPriority) return;
+                this.exitApplication();
+            }
+            void this.loadManagedApplication(candidate, '連動アプリケーション自動起動中');
+        });
+    }
 
     private readonly handleBroadcastClock = (detail?: Event | TLVBroadcastClock): void => {
         const clock = detail as TLVBroadcastClock;
@@ -389,6 +590,51 @@ class TLVDataBroadcastingManager implements PlayerManager {
         });
         this.updateProgramInfo();
     };
+
+    private syncBroadcastClock(): void {
+        const plugin = this.player.plugins.tlv as (DPlayerType.TLVPlugin & {
+            broadcastClock?: () => TLVBroadcastClock | null;
+        }) | undefined;
+        const clock = plugin?.broadcastClock?.();
+        if (clock !== null && clock !== undefined) this.handleBroadcastClock(clock);
+    }
+
+    private readonly handleStreamEvent = (detail?: Event | TLVStreamEvent): void => {
+        const event = detail as TLVStreamEvent;
+        if (!event || event.currentNext === false || event.timeMode !== 0 || this.host === null) return;
+
+        const present = this.program_events.get(0);
+        const source: ReceiverStreamEvent['source'] = {
+            event_message_tag: event.eventMessageTag,
+        };
+        if (present !== undefined) {
+            source.original_network_id = present.originalNetworkId;
+            source.tlv_stream_id = present.tlvStreamId;
+            source.service_id = present.serviceId;
+        }
+
+        const value: ReceiverStreamEvent = {
+            source,
+            message_group_id: event.messageGroupId,
+            message_id: event.messageId,
+            message_version: event.messageVersion,
+            private_data_byte: this.bytesToDomString(event.privateData),
+        };
+        // tlvdemux 0.1.2/libaribhtml5 0.1.3 以后的原生入口。旧版依赖下安全忽略，
+        // 避免把 EMT 当成 URL 或硬编码 40/5；页面注册的 listener 决定后续动作。
+        const host = this.host as AribReceiverHost & {
+            emitStreamEvent?: (stream_event: ReceiverStreamEvent) => void;
+        };
+        host.emitStreamEvent?.(value);
+    };
+
+    private bytesToDomString(data: Uint8Array): string {
+        let result = '';
+        for (let offset = 0; offset < data.byteLength; offset += 8192) {
+            result += String.fromCharCode(...data.subarray(offset, offset + 8192));
+        }
+        return result;
+    }
 
     private readonly handleEventInfo = (detail?: Event | TLVEventInfo): void => {
         const event = detail as TLVEventInfo;
@@ -447,37 +693,87 @@ class TLVDataBroadcastingManager implements PlayerManager {
     }
 
     private async enterApplication(): Promise<void> {
-        if (this.ready_context_id === null || this.ready_entry === null || this.vfs === null || this.iframe === null) return;
+        if (this.ready_application_key === null) {
+            if (this.active_application_key !== null) this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
+            return;
+        }
+        const application = this.applications.get(this.ready_application_key);
+        if (application === undefined) return;
+        if (application.key === this.active_application_key) {
+            this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
+            return;
+        }
+        await this.loadManagedApplication(application, 'アプリケーション読込中');
+    }
+
+    private async loadManagedApplication(application: ManagedApplication, status: string): Promise<void> {
+        if (this.vfs === null || this.iframe === null || this.pending_application_key !== null) return;
         const generation = this.session_generation;
-        const entry = this.ready_entry;
-        const revision = this.resource_revisions.get(`${this.ready_context_id}:${entry}`);
+        const revision = this.resource_revisions.get(`${application.state.contextId}:${application.entry}`);
         if (revision === undefined) return;
+        this.pending_application_key = application.key;
         try {
             await this.vfs.waitFor(revision);
-            await this.vfs.ensure(entry, revision);
+            await this.vfs.ensure(application.entry, revision);
             if (generation !== this.session_generation) return;
             const base_url = new URL('/data-broadcast/', location.origin);
-            const application_url = new URL(entry.replace(/^\/+/, ''), base_url);
+            const application_url = new URL(application.entry.replace(/^\/+/, ''), base_url);
             if (application_url.origin !== location.origin || !application_url.pathname.startsWith(base_url.pathname)) {
-                throw new Error(`Application entry escaped receiver scope: ${entry}`);
+                throw new Error(`Application entry escaped receiver scope: ${application.entry}`);
             }
             this.iframe.style.display = 'block';
+            this.iframe.style.opacity = '0';
             if (this.viewport !== null) this.viewport.style.opacity = '0';
-            this.lockPanelForApplication();
-            this.host?.loadApplication(application_url.href);
+            this.media_plane_adapter?.setApplicationVisible(this.applicationIsUserVisible(application));
+            this.host?.setApplicationInformation({
+                type: `0x${application.state.applicationType.toString(16).padStart(4, '0')}`,
+                organizationId: application.state.organizationId,
+                applicationId: application.state.applicationId,
+                controlCode: application.state.controlCode === 0x01
+                    ? 'AUTOSTART'
+                    : application.state.controlCode === 0x02 ? 'PRESENT' : '',
+            });
+            this.host?.loadApplication(application_url.href, status);
         } catch (error) {
-            this.unlockPanelForApplication();
+            if (this.pending_application_key === application.key) this.pending_application_key = null;
+            this.exitApplication();
             console.error('[TLVDataBroadcastingManager] Failed to enter application.', error);
             this.player.notice('データ放送を起動できませんでした。', 3000, undefined, '#FF6F6A');
         }
     }
 
+    private applyApplicationVisibility(): void {
+        const application = this.active_application_key === null
+            ? null
+            : this.applications.get(this.active_application_key) ?? null;
+        const visible = application !== null && this.applicationIsUserVisible(application);
+        this.visible = visible;
+        this.media_plane_adapter?.setApplicationVisible(visible);
+        if (visible) this.lockPanelForApplication();
+        else this.unlockPanelForApplication();
+        if (this.viewport !== null) this.viewport.style.opacity = visible ? '1' : '0';
+        if (this.iframe !== null) {
+            // Hidden AUTOSTART applications remain loaded and scheduled; only
+            // their user-facing compositor plane is suppressed.
+            this.iframe.style.display = application === null ? 'none' : 'block';
+            this.iframe.style.opacity = visible ? '1' : '0';
+            this.iframe.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        }
+    }
+
     private exitApplication(): void {
-        if (this.visible) this.host?.exitApplication();
+        // runtime 導入前の 404 でも iframe.src を about:blank に戻せるよう、visible にかかわらず終了する。
+        this.host?.exitApplication();
+        this.active_application_key = null;
+        this.pending_application_key = null;
         this.visible = false;
+        this.media_plane_adapter?.setApplicationVisible(false);
         this.unlockPanelForApplication();
         if (this.viewport !== null) this.viewport.style.opacity = '0';
-        if (this.iframe !== null) this.iframe.style.display = 'none';
+        if (this.iframe !== null) {
+            this.iframe.style.opacity = '0';
+            this.iframe.style.display = 'none';
+        }
     }
 
     private lockPanelForApplication(): void {
@@ -498,28 +794,6 @@ class TLVDataBroadcastingManager implements PlayerManager {
         if (remocon_id >= 1 && remocon_id <= 9) return 48 + remocon_id;
         if (remocon_id === 10) return 48;
         return undefined;
-    }
-
-    private resolveApplicationEntry(state: TLVApplicationState): string | null {
-        const normalizePath = (path: string): string | null => {
-            const parts = path.split('/').filter(part => part !== '' && part !== '.');
-            if (parts.some(part => part === '..')) return null;
-            return parts.join('/');
-        };
-
-        // AIT の entryPath は、d ボタンを受け取ってから実メニューへ遷移する透明な
-        // bootstrap になっていることがある。HonomiTV のd ボタン自体が起動操作なので、
-        // 同じ application context に放送済みの top/source/index*.html を見つけて直接開く。
-        // 放送局固有の sh4/sh8 などの transport path には依存しない。
-        const context_prefix = `${state.contextId}:`;
-        for (const resource_key of this.resource_revisions.keys()) {
-            if (resource_key.startsWith(context_prefix) === false) continue;
-            const resource_path = normalizePath(resource_key.slice(context_prefix.length));
-            if (resource_path !== null && /(^|\/)top\/source\/index[^/]*\.html?$/i.test(resource_path)) {
-                return resource_path;
-            }
-        }
-        return null;
     }
 
     /**
@@ -573,23 +847,6 @@ class TLVDataBroadcastingManager implements PlayerManager {
             prefecture: prefecture_raw?.length === 1 ? prefecture_raw.charCodeAt(0) : null,
             regioncode: regioncode_raw?.length === 2 ?
                 (regioncode_raw.charCodeAt(0) << 8) | regioncode_raw.charCodeAt(1) : null,
-        };
-    }
-
-    private installReceiverInfo(target: RuntimeWindow, receiver_info: ReceiverInfo): void {
-        const navigator = target.navigator as Navigator & {
-            bmlCompat?: {browserPseudo?: BrowserPseudo};
-        };
-        const browser_pseudo = navigator.bmlCompat?.browserPseudo;
-        if (browser_pseudo === undefined) return;
-        const original_read = browser_pseudo.readPersistentArray.bind(browser_pseudo);
-        browser_pseudo.readPersistentArray = (namespace, structure) => {
-            const stored = original_read(namespace, structure);
-            if (stored !== null || !namespace.toLowerCase().includes('receiverinfo')) return stored;
-            return structure.split(',').map(field => {
-                const key = field.trim().toLowerCase() as keyof ReceiverInfo;
-                return key in receiver_info ? receiver_info[key] : null;
-            });
         };
     }
 

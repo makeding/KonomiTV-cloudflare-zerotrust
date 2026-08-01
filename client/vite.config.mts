@@ -161,8 +161,15 @@ export default defineConfig({
             workbox: {
                 // 古いキャッシュを自動削除する
                 cleanupOutdatedCaches: true,
-                // /api/ /cdn-cgi/(cloudflare) 以下のリクエストでは index.html を返さない
-                navigateFallbackDenylist: [/^\/api/, /^\/cdn-cgi/, /[?&]pwa=false/],
+                // /data-broadcast/ 以下は ARIB データ放送用 VFS Worker が所有する。
+                // PWA Worker が index.html へ fallback すると、VFS 未命中時に KonomiTV 本体の
+                // SPA が iframe 内で起動してしまうため、他の API 系パスと同様に対象外にする。
+                navigateFallbackDenylist: [
+                    /^\/api/,
+                    /^\/cdn-cgi/,
+                    /^\/data-broadcast(?:\/|$)/,
+                    /[?&]pwa=false/,
+                ],
                 // キャッシュするファイルの最大サイズ
                 maximumFileSizeToCacheInBytes: 1024 * 1024 * 15,  // 15MB
             }
