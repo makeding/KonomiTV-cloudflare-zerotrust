@@ -274,6 +274,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.iframe = document.createElement('iframe');
         this.iframe.className = 'dplayer-tlv-data-broadcast';
         this.iframe.setAttribute('aria-hidden', 'true');
+        this.iframe.tabIndex = -1;
         Object.assign(this.iframe.style, {
             position: 'absolute',
             inset: '0',
@@ -282,6 +283,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
             border: '0',
             display: 'none',
             opacity: '0',
+            pointerEvents: 'none',
             zIndex: '2',
             transformOrigin: '0 0',
             // KonomiTV の dark color-scheme を継承すると、通常の light canvas を使う放送ページとの
