@@ -2707,9 +2707,9 @@ dotenv@^16.3.1:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
   integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
 
-"dplayer@github:makeding/DPlayer#65f179efda824f50d8ec7add21ee24c1d68ffae3":
+"dplayer@github:makeding/DPlayer#100470633c3d1d5e118202e8ce405585ed1eb358":
   version "1.32.8"
-  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/65f179efda824f50d8ec7add21ee24c1d68ffae3"
+  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/100470633c3d1d5e118202e8ce405585ed1eb358"
   dependencies:
     aribb24.js "~1.11.5"
     aribb62.js "^0.1.7"
