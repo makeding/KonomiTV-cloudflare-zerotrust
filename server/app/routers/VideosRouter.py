@@ -24,7 +24,7 @@ from starlette.datastructures import Headers
 from tortoise import connections
 
 from app import logging, schemas
-from app.constants import STATIC_DIR, THUMBNAILS_DIR
+from app.constants import JST, STATIC_DIR, THUMBNAILS_DIR
 from app.metadata.RecordedScanTask import RecordedScanTask
 from app.metadata.ThumbnailGenerator import ThumbnailGenerator
 from app.metadata.TSInfoAnalyzer import TSInfoAnalyzer
@@ -1355,11 +1355,19 @@ async def VideoJikkyoCommentsAPI(
         (recorded_program.recorded_video.recording_start_time is not None) and
         (recorded_program.recorded_video.recording_end_time is not None)):
 
+        # 録画中は recording_end_time が直近のメタデータ解析時点で止まっているため、
+        # その値を使うと追いかけ再生の過去ログが録画冒頭の短い範囲で途切れてしまう。
+        # コメント時刻の基準はプレイヤーの 0 秒と一致する recording_start_time のままにし、
+        # クエリ終点だけを現在時刻（番組終了後は番組終了時刻）まで延ばす。
+        jikkyo_end_time = recorded_program.recorded_video.recording_end_time
+        if recorded_program.recorded_video.status == 'Recording':
+            jikkyo_end_time = min(datetime.now(tz=JST), recorded_program.end_time)
+
         # ニコニコ実況 過去ログ API から一致する過去ログコメントを取得して返す
         jikkyo_client = JikkyoClient(recorded_program.channel.network_id, recorded_program.channel.service_id)
         jikkyo_comments = await jikkyo_client.fetchJikkyoComments(
             recorded_program.recorded_video.recording_start_time,
-            recorded_program.recorded_video.recording_end_time,
+            jikkyo_end_time,
         )
 
         if recorded_program.recorded_video.container_format != 'MPEG-TS' and jikkyo_comments.comments:
