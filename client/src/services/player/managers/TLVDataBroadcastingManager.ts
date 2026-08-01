@@ -223,6 +223,8 @@ class TLVDataBroadcastingManager implements PlayerManager {
     private ready_application_key: string | null = null;
     private active_application_key: string | null = null;
     private pending_application_key: string | null = null;
+    private show_requested = false;
+    private dispatch_data_key_after_install = false;
     private autostart_scheduled = false;
     private media_plane_adapter: DPlayerMediaPlaneAdapter | null = null;
     private visible = false;
@@ -315,10 +317,23 @@ class TLVDataBroadcastingManager implements PlayerManager {
                 await this.loadManagedApplication(application, 'アプリケーション切替中');
             },
             onLifecycle: event => {
+                console.debug('[TLVDataBroadcastingManager] Receiver lifecycle.', event);
                 if (event.type === 'installed') {
-                    this.active_application_key = this.pending_application_key;
-                    this.pending_application_key = null;
+                    // loadManagedApplication()/replaceApplication() の完了時だけ active slot を更新する。
+                    // 放送ページ内の location.replace()/reload でも新しい runtime が installed を送るが、
+                    // その時 pending は null なので既存 application の identity を維持する必要がある。
+                    if (this.pending_application_key !== null) {
+                        this.active_application_key = this.pending_application_key;
+                        this.pending_application_key = null;
+                    }
                     this.applyApplicationVisibility();
+                    if (this.dispatch_data_key_after_install) {
+                        this.dispatch_data_key_after_install = false;
+                        this.show_requested = false;
+                        this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
+                    } else if (this.show_requested) {
+                        void this.enterApplication();
+                    }
                 } else if (event.type === 'exited') {
                     this.active_application_key = null;
                     this.pending_application_key = null;
@@ -417,6 +432,8 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.ready_application_key = null;
         this.active_application_key = null;
         this.pending_application_key = null;
+        this.show_requested = false;
+        this.dispatch_data_key_after_install = false;
         this.autostart_scheduled = false;
         this.host?.resetCaptions();
         this.player.plugins.tlv?.setSubtitleSuppressedComponentTags([]);
@@ -428,6 +445,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         try {
             await this.vfs?.beginSession();
             if (generation !== this.session_generation) return;
+            this.replayApplicationSnapshot();
             this.handleCaptionTracks();
         } catch (error) {
             if (generation !== this.session_generation) return;
@@ -439,6 +457,27 @@ class TLVDataBroadcastingManager implements PlayerManager {
     private readonly handleResourcesReset = (): void => {
         void this.beginSession();
     };
+
+    /**
+     * DPlayer は Manager 初期化前から TLV を解復用するため、最初の MH-AIT / resource
+     * 通知を取り逃すことがある。demuxer が保持する現在値を VFS session 確立後に再投入し、
+     * 以降のイベント通知と同じ経路で処理する。
+     */
+    private replayApplicationSnapshot(): void {
+        const plugin = this.player.plugins.tlv;
+        if (plugin === undefined) return;
+        const resources = plugin.applicationResources();
+        const applications = plugin.applications();
+        console.log('[TLVDataBroadcastingManager] Replaying current demux snapshot.', {
+            applications: applications.length,
+            resources: resources.length,
+        });
+        for (const metadata of resources) {
+            const resource = plugin.applicationResource(metadata.contextId, metadata.path);
+            if (resource !== null) this.handleApplicationResource(resource);
+        }
+        for (const application of applications) this.handleApplicationState(application);
+    }
 
     private readonly handleCaptionTracks = (): void => {
         const component_tags = this.player.plugins.tlv?.tracks
@@ -497,6 +536,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
             data: content_type.startsWith('text/html') ? this.injectRuntimeBootstrap(resource.data) : resource.data,
         });
         this.resource_revisions.set(`${resource.contextId}:${resource.path}`, revision);
+        if (this.show_requested) void this.enterApplication();
     };
 
     private readonly handleApplicationState = (detail?: Event | TLVApplicationState): void => {
@@ -522,18 +562,26 @@ class TLVDataBroadcastingManager implements PlayerManager {
         const application: ManagedApplication = {key, state: {...state}, entry};
         this.applications.set(key, application);
 
-        if (state.controlCode === 0x02) {
-            const current = this.ready_application_key === null
-                ? null
-                : this.applications.get(this.ready_application_key) ?? null;
-            if (current === null || state.applicationPriority >= current.state.applicationPriority) {
-                this.ready_application_key = key;
-                this.ready_context_id = state.contextId;
-                this.ready_entry = entry;
-            }
-            this.toggleRemoconLoading(false);
-            this.toggleRemoconEnabled(true);
+        // demo と同様に、entryReady になった application は D ボタンから到達できる
+        // 互換入口として保持する。PRESENT が後から届いた場合は必ずそちらを優先し、
+        // 同種の候補同士だけ application_priority で選択する。
+        const current = this.ready_application_key === null
+            ? null
+            : this.applications.get(this.ready_application_key) ?? null;
+        const current_is_present = current?.state.controlCode === 0x02;
+        const candidate_is_present = state.controlCode === 0x02;
+        const current_priority = Number(current?.state.applicationPriority ?? 0);
+        const candidate_priority = Number(state.applicationPriority ?? 0);
+        if (current === null ||
+            (candidate_is_present && !current_is_present) ||
+            (candidate_is_present === current_is_present && candidate_priority >= current_priority)) {
+            this.ready_application_key = key;
+            this.ready_context_id = state.contextId;
+            this.ready_entry = entry;
         }
+        this.toggleRemoconLoading(false);
+        this.toggleRemoconEnabled(true);
+        if (this.show_requested) void this.enterApplication();
 
         if (this.active_application_key === key) this.applyApplicationVisibility();
         if (state.controlCode === 0x01) this.scheduleAutostart();
@@ -694,15 +742,36 @@ class TLVDataBroadcastingManager implements PlayerManager {
 
     private async enterApplication(): Promise<void> {
         if (this.ready_application_key === null) {
-            if (this.active_application_key !== null) this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
+            if (this.active_application_key !== null) {
+                this.show_requested = false;
+                this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
+            } else {
+                // demo と同様に、MH-AIT または入口 HTML がまだ揃っていない時の D キーを
+                // 捨てず、後続の application/resource 通知で再試行する。
+                this.show_requested = true;
+            }
             return;
         }
         const application = this.applications.get(this.ready_application_key);
-        if (application === undefined) return;
+        if (application === undefined) {
+            this.show_requested = true;
+            return;
+        }
         if (application.key === this.active_application_key) {
+            this.show_requested = false;
             this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
             return;
         }
+        if (this.vfs === null || this.iframe === null || this.pending_application_key !== null ||
+            this.resource_revisions.has(`${application.state.contextId}:${application.entry}`) === false) {
+            this.show_requested = true;
+            return;
+        }
+        // AUTOSTART は透明な常駐入口であり、D キーを受けてデータメニューへ遷移する。
+        // Manager 初期化直後に D が押され、AUTOSTART の load と入力が同時になった場合も、
+        // runtime 導入後に一度だけ D キーを配送して startup 画面で止めない。
+        this.dispatch_data_key_after_install = application.state.controlCode === 0x01;
+        this.show_requested = false;
         await this.loadManagedApplication(application, 'アプリケーション読込中');
     }
 
@@ -766,6 +835,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.host?.exitApplication();
         this.active_application_key = null;
         this.pending_application_key = null;
+        this.dispatch_data_key_after_install = false;
         this.visible = false;
         this.media_plane_adapter?.setApplicationVisible(false);
         this.unlockPanelForApplication();
