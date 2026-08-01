@@ -114,6 +114,7 @@ class KeyboardShortcutManager implements PlayerManager {
         const remocon_red_button = document.querySelector<HTMLDivElement>('.remote-control-button-red');
         const remocon_green_button = document.querySelector<HTMLDivElement>('.remote-control-button-green');
         const remocon_yellow_button = document.querySelector<HTMLDivElement>('.remote-control-button-yellow');
+        const remocon_element = this.document.querySelector<HTMLElement>('.remote-control');
 
         // 一般的なキーボードショートカットの定義
         // 一部の特殊なキーコンビネーションは表現しきれないため、キーボードイベント発生時の条件分岐で直接実装している
@@ -366,62 +367,6 @@ class KeyboardShortcutManager implements PlayerManager {
                 player_store.twitter_active_tab = 'Capture';
             }},
 
-            // ***** データ放送 *****
-
-            // Alt + D: ライブ視聴: リモコンの d ボタンを押す
-            {mode: 'Live', key: 'KeyD', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_data_button?.click();
-            }},
-
-            // Alt + Backspace: ライブ視聴: リモコンの戻るボタンを押す
-            {mode: 'Live', key: 'Backspace', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_back_button?.click();
-            }},
-
-            // Alt + Enter: ライブ視聴: リモコンの決定ボタンを押す
-            {mode: 'Live', key: 'Enter', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_select_button?.click();
-            }},
-
-            // Alt + ↑: ライブ視聴: リモコンの ↑ ボタンを押す
-            {mode: 'Live', key: 'ArrowUp', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_up_button?.click();
-            }},
-
-            // Alt + ←: ライブ視聴: リモコンの ← ボタンを押す
-            {mode: 'Live', key: 'ArrowLeft', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_left_button?.click();
-            }},
-
-            // Alt + →: ライブ視聴: リモコンの → ボタンを押す
-            {mode: 'Live', key: 'ArrowRight', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_right_button?.click();
-            }},
-
-            // Alt + ↓: ライブ視聴: リモコンの ↓ ボタンを押す
-            {mode: 'Live', key: 'ArrowDown', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_down_button?.click();
-            }},
-
-            // Alt + F9: ライブ視聴: リモコンの青ボタンを押す
-            {mode: 'Live', key: 'F9', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_blue_button?.click();
-            }},
-
-            // Alt + F10: ライブ視聴: リモコンの赤ボタンを押す
-            {mode: 'Live', key: 'F10', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_red_button?.click();
-            }},
-
-            // Alt + F11: ライブ視聴: リモコンの緑ボタンを押す
-            {mode: 'Live', key: 'F11', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_green_button?.click();
-            }},
-
-            // Alt + F12: ライブ視聴: リモコンの黄ボタンを押す
-            {mode: 'Live', key: 'F12', repeat: false, ctrl: false, shift: false, alt: true, handler: () => {
-                remocon_yellow_button?.click();
-            }},
         ];
 
         // ドキュメント全体のキーボードショートカットイベント
@@ -432,6 +377,47 @@ class KeyboardShortcutManager implements PlayerManager {
             // 日本語 IME による入力中は無視
             // event.keyCode === 229 は日本語 IME 変換確定時に発火するらしい (謎のテクニック)
             if (event.isComposing === true || event.keyCode === 229) {
+                return;
+            }
+
+            // 仮想リモコン内にフォーカスがある間は、通常の視聴画面ショートカットを止めて
+            // キーボード入力を仮想リモコンへ排他的に渡す。
+            // これにより方向キーがチャンネル切り替えやシークと二重発火することを防ぐ。
+            const active_element = this.document.activeElement;
+            if (remocon_element !== null && active_element !== null && remocon_element.contains(active_element)) {
+                let remocon_button: HTMLElement | null = null;
+
+                const fixed_key_buttons: Record<string, HTMLElement | null> = {
+                    KeyD: remocon_data_button,
+                    Backspace: remocon_back_button,
+                    Enter: remocon_select_button,
+                    ArrowUp: remocon_up_button,
+                    ArrowLeft: remocon_left_button,
+                    ArrowRight: remocon_right_button,
+                    ArrowDown: remocon_down_button,
+                    F9: remocon_blue_button,
+                    F10: remocon_red_button,
+                    F11: remocon_green_button,
+                    F12: remocon_yellow_button,
+                };
+                remocon_button = fixed_key_buttons[event.code] ?? null;
+
+                let remocon_id: number | null = null;
+                if (/^Digit[1-9]$/.test(event.code)) remocon_id = Number(event.code.slice(-1));
+                if (event.code === 'Digit0') remocon_id = 10;
+                if (event.code === 'Minus') remocon_id = 11;
+                if (event.code === 'Equal') remocon_id = 12;
+                if (/^Numpad[1-9]$/.test(event.code)) remocon_id = Number(event.code.slice(-1));
+                if (event.code === 'Numpad0') remocon_id = 10;
+                if (remocon_id !== null) {
+                    remocon_button = remocon_element.querySelector<HTMLElement>(`[data-remocon-id="${remocon_id}"]`);
+                }
+
+                if (remocon_button !== null) {
+                    remocon_button.click();
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
                 return;
             }
 

@@ -113,6 +113,9 @@ type ReceiverInfo = {
  * DPlayer の video を元の 16:9 コンテナから動かさず、データ放送の映像枠だけへ合わせる。
  * MSE 接続済みの video を iframe へ移動すると Chromium が MediaSource を閉じるため、
  * DOM の親子関係は維持したまま位置と大きさだけを更新する。
+ *
+ * 通常は iframe の背面 (z=1) に置く。既定寸法の object を前景 wrapper が映像窓として包む
+ * 放送ページだけは、iframe と同じ z=2 の後続 sibling にして映像窓を前へ戻す。
  */
 class DPlayerMediaPlaneAdapter implements AribMediaPlaneAdapter {
 
@@ -177,7 +180,7 @@ class DPlayerMediaPlaneAdapter implements AribMediaPlaneAdapter {
             objectFit: 'contain',
             background: '#000',
             pointerEvents: 'none',
-            zIndex: '1',
+            zIndex: plane.layer.externalPlacement === 'above-application' ? '2' : '1',
         });
     }
 
