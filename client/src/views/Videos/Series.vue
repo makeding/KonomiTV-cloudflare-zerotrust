@@ -8,8 +8,8 @@
                 <div class="series-programs-container">
                     <Breadcrumbs :crumbs="[
                         { name: 'ホーム', path: '/' },
-                        { name: 'ビデオをみる', path: '/videos/' },
-                        { name: series_title, path: `/videos/series/${series_id}`, disabled: true },
+                        { name: 'シリーズ', path: '/series/' },
+                        { name: series_title, path: `/series/${series_id}`, disabled: true },
                     ]" />
                     <RecordedProgramList
                         :title="series_title"
@@ -65,7 +65,7 @@ const sort_order = ref<'desc' | 'asc'>('desc');
 
 // シリーズ情報を取得
 const fetchSeries = async () => {
-    const result = await Series.fetchSeries(series_id.value);
+    const result = await Series.fetchSeriesSummary(series_id.value);
     if (result) {
         series_title.value = result.title;
     }

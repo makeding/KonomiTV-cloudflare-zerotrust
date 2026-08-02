@@ -6,7 +6,7 @@
             <span class="mt-1">テレビをみる</span>
         </v-btn>
         <v-btn class="bottom-navigation-button" to="/videos/"
-            :class="{'v-btn--active': $route.path.startsWith('/videos')}">
+            :class="{'v-btn--active': $route.path.startsWith('/videos') || $route.path.startsWith('/series')}">
             <Icon icon="fluent:movies-and-tv-20-regular" width="30px" />
             <span class="mt-1">ビデオをみる</span>
         </v-btn>

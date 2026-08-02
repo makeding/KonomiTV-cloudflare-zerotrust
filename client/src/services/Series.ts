@@ -18,7 +18,18 @@ export interface ISeries {
 /** シリーズ情報リストを表すインターフェース */
 export interface ISeriesList {
     total: number;
-    series_list: ISeries[];
+    series_list: ISeriesSummary[];
+}
+
+/** シリーズ一覧に表示する概要情報 */
+export interface ISeriesSummary {
+    id: number;
+    title: string;
+    description: string;
+    genres: { major: string; middle: string; }[];
+    recorded_programs_count: number;
+    created_at: string;
+    updated_at: string;
 }
 
 /** シリーズ放送期間を表すインターフェース */
@@ -102,6 +113,22 @@ class Series {
             return null;
         }
 
+        return response.data;
+    }
+
+
+    /**
+     * シリーズ概要を取得する
+     * @param series_id シリーズ ID
+     * @returns シリーズ概要 or シリーズ概要の取得に失敗した場合は null
+     */
+    static async fetchSeriesSummary(series_id: number): Promise<ISeriesSummary | null> {
+
+        const response = await APIClient.get<ISeriesSummary>(`/series/${series_id}/summary`);
+        if (response.type === 'error') {
+            APIClient.showGenericError(response, 'シリーズ概要を取得できませんでした。');
+            return null;
+        }
         return response.data;
     }
 }

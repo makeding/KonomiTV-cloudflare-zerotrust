@@ -1962,10 +1962,10 @@ aribb24.js@^1.11.0, aribb24.js@~1.11.5:
   resolved "https://registry.yarnpkg.com/aribb24.js/-/aribb24.js-1.11.5.tgz#fb4dfc5bc4b10625c0d92987bd4e833d3faa532e"
   integrity sha512-WEprzYs18FgAIxX885X7YLrgIsjmAecodm6tjmUUckX0kp2Lj9uSdOo+1vxgI7dtEEhhPSB5ocJhDIv560CRFg==
 
-aribb62.js@^0.1.7:
-  version "0.1.7"
-  resolved "https://registry.yarnpkg.com/aribb62.js/-/aribb62.js-0.1.7.tgz#6ddcb10d9c07fd01d38593f16e7ed9548e84b3e0"
-  integrity sha512-KWbkHejSThSvHAnWWtz/zEolJWcLeqMOUdSOG/HE53iQRCm+gZViJ7ydLx1ndc57Iq5Tavc/X21idJ+90a8sNg==
+aribb62.js@^0.1.8:
+  version "0.1.8"
+  resolved "https://registry.yarnpkg.com/aribb62.js/-/aribb62.js-0.1.8.tgz#6a21b94e88c4917e8b3545a417d22e44c3f9822a"
+  integrity sha512-KdCcBZAP+OPVcTFn0UVRNFhru/JlVMTT1ap3At1VBGqgzmlVfKMpfi31Z/Li0sydYJY6Cr7DwNhlFGy1XOHQMQ==
 
 array-buffer-byte-length@^1.0.1, array-buffer-byte-length@^1.0.2:
   version "1.0.2"
@@ -2707,15 +2707,15 @@ dotenv@^16.3.1:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
   integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
 
-"dplayer@github:makeding/DPlayer#100470633c3d1d5e118202e8ce405585ed1eb358":
+"dplayer@github:makeding/DPlayer#9475ab561b52a0173bfd11caeb82f5fb6e4ace5a":
   version "1.32.8"
-  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/100470633c3d1d5e118202e8ce405585ed1eb358"
+  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/9475ab561b52a0173bfd11caeb82f5fb6e4ace5a"
   dependencies:
     aribb24.js "~1.11.5"
-    aribb62.js "^0.1.7"
+    aribb62.js "^0.1.8"
     axios "^1.7.2"
     balloon-css "^1.2.0"
-    tlvdemux "^0.1.5"
+    tlvdemux "^0.1.6"
 
 dunder-proto@^1.0.0, dunder-proto@^1.0.1:
   version "1.0.1"
@@ -4236,10 +4236,10 @@ levn@^0.4.1:
     prelude-ls "^1.2.1"
     type-check "~0.4.0"
 
-libaribhtml5@^0.1.4:
-  version "0.1.4"
-  resolved "https://registry.yarnpkg.com/libaribhtml5/-/libaribhtml5-0.1.4.tgz#1488104ab56e621fe927c98ad57bed1bc8450bc4"
-  integrity sha512-Fi7hllSM13io2woHbmR4PiqZES7gVcJVgwfJLDa/ag57VKMugDRqZo+j+mitEDe7izbA83ooIoTTX0ZSjDgDig==
+libaribhtml5@^0.1.5:
+  version "0.1.5"
+  resolved "https://registry.yarnpkg.com/libaribhtml5/-/libaribhtml5-0.1.5.tgz#5793ec43a872281d09fe01c425217adefa8a3fcc"
+  integrity sha512-2DV4HJ4bqE8ped9wvzq6YGDlWLsBAoxDPgVt88ciHcyxenFIvzf7dSS0YFi/zzIoF7skDfBJDlQREMv3PHOWhg==
 
 locate-path@^6.0.0:
   version "6.0.0"
@@ -5716,10 +5716,10 @@ tinyglobby@^0.2.10, tinyglobby@^0.2.13:
     fdir "^6.5.0"
     picomatch "^4.0.4"
 
-tlvdemux@^0.1.5:
-  version "0.1.5"
-  resolved "https://registry.yarnpkg.com/tlvdemux/-/tlvdemux-0.1.5.tgz#2676799c8f6195d9e65f70bae0b0dc28bc365613"
-  integrity sha512-RseRtqKuzJ4zPabFbVW7zZQTb6WNu4mhy/+O29vdYMz/RjmN/hg4F9NxeOkkir6jA0+GwLNGD+nfnYH2Hj8t7A==
+tlvdemux@^0.1.6:
+  version "0.1.6"
+  resolved "https://registry.yarnpkg.com/tlvdemux/-/tlvdemux-0.1.6.tgz#3a180ceb6ae6281950689c4364b8aa6c28ab0792"
+  integrity sha512-As1WUjn0MLMy2U2jMq+KjZaT1uNPFk680qtrGJuHprSMVuPGdQMBJ/SDesUkAQEGiyEA8JhqaO2WW/vly4RHug==
 
 to-regex-range@^5.0.1:
   version "5.0.1"

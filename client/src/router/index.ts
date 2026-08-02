@@ -51,7 +51,16 @@ const router = createRouter({
         },
         {
             path: '/videos/series/:series_id',
-            name: 'Videos Series',
+            redirect: to => `/series/${to.params.series_id}`,
+        },
+        {
+            path: '/series/',
+            name: 'Series Home',
+            component: () => import('@/views/Series/Home.vue'),
+        },
+        {
+            path: '/series/:series_id',
+            name: 'Series Detail',
             component: () => import('@/views/Videos/Series.vue'),
         },
         {

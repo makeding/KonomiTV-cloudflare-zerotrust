@@ -21,6 +21,15 @@
                         <Icon class="navigation__link-icon" icon="fluent:movies-and-tv-20-regular" width="26px" />
                         <span v-if="!iconOnly" class="navigation__link-text">ビデオをみる</span>
                     </router-link>
+                    <router-link v-ripple class="navigation__link" active-class="navigation__link--active" to="/series/"
+                        :class="{
+                            'navigation__link--active': $route.path.startsWith('/series'),
+                            'navigation__link--icon-only': iconOnly,
+                        }"
+                        v-ftooltip.right="iconOnly ? 'シリーズ' : ''">
+                        <Icon class="navigation__link-icon" icon="fluent:video-clip-multiple-20-regular" width="26px" />
+                        <span v-if="!iconOnly" class="navigation__link-text">シリーズ</span>
+                    </router-link>
                     <router-link v-ripple class="navigation__link" active-class="navigation__link--active" to="/timetable/"
                         :class="{
                             'navigation__link--active': $route.path.startsWith('/timetable'),

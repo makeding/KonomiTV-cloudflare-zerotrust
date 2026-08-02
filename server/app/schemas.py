@@ -251,6 +251,19 @@ class RecordedPrograms(BaseModel):
 
 # ***** シリーズ *****
 
+class SeriesSummary(PydanticModel):
+    id: int
+    title: str
+    description: str
+    genres: list[Genre]
+    recorded_programs_count: int
+    created_at: datetime
+    updated_at: datetime
+
+class SeriesSummaryList(BaseModel):
+    total: int
+    series_list: list[SeriesSummary]
+
 class Series(PydanticModel):
     id: int
     title: str

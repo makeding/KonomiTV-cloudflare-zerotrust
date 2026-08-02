@@ -58,21 +58,10 @@ const sort_order = ref<'desc' | 'asc'>('desc');
 
 // 録画済み番組を取得
 const fetchPrograms = async () => {
-    // /videos API は混合一覧を返すため、追いかけ再生と録画済みをフロントエンド側で分離する。
-    // 録画番組数はローカルアプリ用途として現実的な件数に収まる想定なので、必要ページをまとめて取得してから絞り込む。
-    const first_page = await Videos.fetchVideos(sort_order.value, 1);
-    if (first_page) {
-        const all_programs = [...first_page.recorded_programs];
-        const total_pages = Math.ceil(first_page.total / 30);
-        for (let page = 2; page <= total_pages; page++) {
-            const result = await Videos.fetchVideos(sort_order.value, page);
-            if (result) {
-                all_programs.push(...result.recorded_programs);
-            }
-        }
-        const recorded_programs = all_programs.filter(program => program.recorded_video.status === 'Recorded');
-        programs.value = recorded_programs.slice((current_page.value - 1) * 30, current_page.value * 30);
-        total_programs.value = recorded_programs.length;
+    const result = await Videos.fetchVideos(sort_order.value, current_page.value, null, 'Recorded');
+    if (result) {
+        programs.value = result.recorded_programs;
+        total_programs.value = result.total;
     }
     is_loading.value = false;
 };

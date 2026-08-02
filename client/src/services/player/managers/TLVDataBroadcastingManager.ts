@@ -70,6 +70,25 @@ type TLVStreamEvent = {
     privateData: Uint8Array;
 };
 
+type TLVViewerParticipationNotification = {
+    contextId: number;
+    sourcePacketId: number;
+    eventMessageTag: number;
+    dataEventId: number;
+    messageGroupId: number;
+    version: number;
+    currentNext: boolean;
+    sectionNumber: number;
+    lastSectionNumber: number;
+    inputOffset: bigint;
+};
+
+type ViewerParticipationHost = AribReceiverHost & {
+    setApplicationInputActive?: (active: boolean) => void;
+    notifyViewerParticipationCorner?: (notification: TLVViewerParticipationNotification) => void;
+    resetViewerParticipationNotifications?: () => void;
+};
+
 type ReceiverStreamEvent = {
     source: {
         original_network_id?: number;
@@ -298,7 +317,9 @@ class TLVDataBroadcastingManager implements PlayerManager {
 
         const receiver_info = this.readReceiverInfo();
         this.media_plane_adapter = new DPlayerMediaPlaneAdapter(this.player);
-        this.host = new AribReceiverHost({
+        const receiver_options: ConstructorParameters<typeof AribReceiverHost>[0] & {
+            onViewerParticipation?: () => void;
+        } = {
             iframe: this.iframe,
             viewport: this.viewport,
             broadcastBaseUrl: '/data-broadcast/',
@@ -311,6 +332,12 @@ class TLVDataBroadcastingManager implements PlayerManager {
             mediaPlaneAdapter: this.media_plane_adapter,
             onCaptionSubscription: subscription => {
                 this.player.plugins.tlv?.setSubtitleSuppressedComponentTags(subscription.componentTags);
+            },
+            onViewerParticipation: () => {
+                this.player.notice(
+                    '視聴者参加型データ放送が始まりました。データボタンで操作できます。',
+                    5000,
+                );
             },
             onReplaceApplication: async request => {
                 const application = [...this.applications.values()].find(candidate =>
@@ -335,6 +362,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
                     if (this.dispatch_data_key_after_install) {
                         this.dispatch_data_key_after_install = false;
                         this.show_requested = false;
+                        this.setApplicationInputActive(true);
                         this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
                     } else if (this.show_requested) {
                         void this.enterApplication();
@@ -355,7 +383,8 @@ class TLVDataBroadcastingManager implements PlayerManager {
                     console.error('[TLVDataBroadcastingManager] Receiver runtime failed.', event.message);
                 }
             },
-        });
+        };
+        this.host = new AribReceiverHost(receiver_options);
         const host_window = window as RuntimeHostWindow;
         this.previous_installer = host_window.__ARIB_HTML5_INSTALL__;
         this.runtime_installer = target => {
@@ -371,6 +400,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.on('tlv_broadcast_clock', this.handleBroadcastClock);
         this.player.on('tlv_event_info', this.handleEventInfo);
         this.player.on('tlv_stream_event' as DPlayerType.Events, this.handleStreamEvent);
+        this.player.on('tlv_viewer_participation' as DPlayerType.Events, this.handleViewerParticipation);
         this.player.on('tlv_tracks', this.handleCaptionTracks);
         this.player.on('tlv_caption_data', this.handleCaptionData);
         this.initRemoconButtons();
@@ -387,6 +417,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.off('tlv_broadcast_clock', this.handleBroadcastClock);
         this.player.off('tlv_event_info', this.handleEventInfo);
         this.player.off('tlv_stream_event' as DPlayerType.Events, this.handleStreamEvent);
+        this.player.off('tlv_viewer_participation' as DPlayerType.Events, this.handleViewerParticipation);
         this.player.off('tlv_tracks', this.handleCaptionTracks);
         this.player.off('tlv_caption_data', this.handleCaptionData);
         this.remocon_abort_controller?.abort();
@@ -444,6 +475,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.plugins.tlv?.setSubtitleSuppressedComponentTags([]);
         this.host?.clearBroadcastClock();
         this.host?.clearProgramInfo();
+        (this.host as ViewerParticipationHost | null)?.resetViewerParticipationNotifications?.();
         this.exitApplication();
         this.toggleRemoconLoading(true);
         this.toggleRemoconEnabled(false);
@@ -681,6 +713,14 @@ class TLVDataBroadcastingManager implements PlayerManager {
         host.emitStreamEvent?.(value);
     };
 
+    private readonly handleViewerParticipation = (
+        detail?: Event | TLVViewerParticipationNotification,
+    ): void => {
+        const notification = detail as TLVViewerParticipationNotification;
+        if (!notification || notification.currentNext === false) return;
+        (this.host as ViewerParticipationHost | null)?.notifyViewerParticipationCorner?.(notification);
+    };
+
     private bytesToDomString(data: Uint8Array): string {
         let result = '';
         for (let offset = 0; offset < data.byteLength; offset += 8192) {
@@ -740,7 +780,10 @@ class TLVDataBroadcastingManager implements PlayerManager {
                     return;
                 }
                 const receiver_key = remocon_id !== null ? this.resolveNumberKey(remocon_id) : RECEIVER_KEY_MAP[key_code];
-                if (receiver_key !== undefined) this.host?.dispatchKey(receiver_key);
+                if (receiver_key !== undefined) {
+                    this.setApplicationInputActive(true);
+                    this.host?.dispatchKey(receiver_key);
+                }
             }, {signal: this.remocon_abort_controller?.signal});
         });
     }
@@ -749,6 +792,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         if (this.ready_application_key === null) {
             if (this.active_application_key !== null) {
                 this.show_requested = false;
+                this.setApplicationInputActive(true);
                 this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
             } else {
                 // demo と同様に、MH-AIT または入口 HTML がまだ揃っていない時の D キーを
@@ -764,6 +808,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         }
         if (application.key === this.active_application_key) {
             this.show_requested = false;
+            this.setApplicationInputActive(true);
             this.host?.dispatchKey(RECEIVER_KEY_MAP[20]);
             return;
         }
@@ -822,6 +867,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
             : this.applications.get(this.active_application_key) ?? null;
         const visible = application !== null && this.applicationIsUserVisible(application);
         this.visible = visible;
+        this.setApplicationInputActive(visible);
         this.media_plane_adapter?.setApplicationVisible(visible);
         if (visible) this.lockPanelForApplication();
         else this.unlockPanelForApplication();
@@ -842,6 +888,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.pending_application_key = null;
         this.dispatch_data_key_after_install = false;
         this.visible = false;
+        this.setApplicationInputActive(false);
         this.media_plane_adapter?.setApplicationVisible(false);
         this.unlockPanelForApplication();
         if (this.viewport !== null) this.viewport.style.opacity = '0';
@@ -863,6 +910,10 @@ class TLVDataBroadcastingManager implements PlayerManager {
         player_store.is_data_broadcasting_display = false;
         if (this.previous_remocon_display !== null) player_store.is_remocon_display = this.previous_remocon_display;
         this.previous_remocon_display = null;
+    }
+
+    private setApplicationInputActive(active: boolean): void {
+        (this.host as ViewerParticipationHost | null)?.setApplicationInputActive?.(active);
     }
 
     private resolveNumberKey(remocon_id: number): number | undefined {

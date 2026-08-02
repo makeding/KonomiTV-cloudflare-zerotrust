@@ -209,7 +209,7 @@ export default defineComponent({
         current_series_path(): string | null {
             const current_program = this.playerStore.recorded_program;
             if (!current_program?.series_id) return null;
-            return `/videos/series/${current_program.series_id}`;
+            return `/series/${current_program.series_id}`;
         },
 
         // Series タブが実際に表示中かどうか

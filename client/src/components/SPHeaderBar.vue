@@ -79,6 +79,9 @@ const showSearchButton = computed(() => {
 
 // 検索プレースホルダー
 const searchPlaceholder = computed(() => {
+    if (route.path.startsWith('/series')) {
+        return 'シリーズを検索...';
+    }
     return isVideoSection(route.path)
         ? '録画番組やシリーズを検索...'
         : '放送予定の番組を検索...';
@@ -93,6 +96,9 @@ const isVideoSection = (path: string) => {
 
 // 検索パスを取得
 const getSearchPath = () => {
+    if (route.path.startsWith('/series')) {
+        return '/series/';
+    }
     return isVideoSection(route.path)
         ? '/videos/search'
         : '/tv/search';

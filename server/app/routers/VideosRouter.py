@@ -608,6 +608,7 @@ async def VideosAPI(
     ids: Annotated[list[int] | None, Query(description='録画番組 ID のリスト。指定時は指定された ID の録画番組のみを返す。')] = None,
     channel_id: Annotated[str | None, Query(description='チャンネル ID 。指定時は同一チャンネルの録画番組に絞り込む。')] = None,
     genre: Annotated[str | None, Query(description='ジャンル名。指定時は genres に含まれる録画番組に絞り込む。')] = None,
+    recording_status: Annotated[Literal['Recording', 'Recorded', 'AnalysisFailed'] | None, Query(description='録画状態。指定時は同一状態の録画番組に絞り込む。')] = None,
 ):
     """
     すべての録画番組を一度に 30 件ずつ取得する。<br>
@@ -704,6 +705,9 @@ async def VideosAPI(
     if genre is not None and genre != '':
         filter_clauses.append('AND rp.genres LIKE ?')
         filter_params.append(f'%"{genre}"%')
+    if recording_status is not None:
+        filter_clauses.append('AND rv.status = ?')
+        filter_params.append(recording_status)
     filter_where_clause = '\n        '.join(filter_clauses)
 
     # ids が指定されている場合は、指定された ID の録画番組のみを返す
@@ -731,7 +735,7 @@ async def VideosAPI(
             params = [*target_ids, *filter_params, str(PAGE_SIZE), '0']  # OFFSET は 0 固定
 
             # 総数を取得
-            total_query = 'SELECT COUNT(*) as count FROM recorded_programs rp WHERE rp.id IN ({}) {}'.format(
+            total_query = 'SELECT COUNT(*) as count FROM recorded_programs rp JOIN recorded_videos rv ON rp.id = rv.recorded_program_id WHERE rp.id IN ({}) {}'.format(
                 ','.join(['?' for _ in ids]),
                 filter_where_clause,
             )
@@ -750,7 +754,7 @@ async def VideosAPI(
             params = [*ids, *filter_params, str(PAGE_SIZE), str((page - 1) * PAGE_SIZE)]
 
             # 総数を取得
-            total_query = 'SELECT COUNT(*) as count FROM recorded_programs rp WHERE rp.id IN ({}) {}'.format(
+            total_query = 'SELECT COUNT(*) as count FROM recorded_programs rp JOIN recorded_videos rv ON rp.id = rv.recorded_program_id WHERE rp.id IN ({}) {}'.format(
                 ','.join(['?' for _ in ids])
                 ,
                 filter_where_clause,
@@ -766,7 +770,7 @@ async def VideosAPI(
         params = [*filter_params, str(PAGE_SIZE), str((page - 1) * PAGE_SIZE)]
 
         # 総数を取得
-        total_query = f'SELECT COUNT(*) as count FROM recorded_programs rp WHERE 1=1 {filter_where_clause}'
+        total_query = f'SELECT COUNT(*) as count FROM recorded_programs rp JOIN recorded_videos rv ON rp.id = rv.recorded_program_id WHERE 1=1 {filter_where_clause}'
         total_params = filter_params
 
     try:
