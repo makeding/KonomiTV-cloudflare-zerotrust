@@ -24,7 +24,7 @@
         "comlink": "^4.4.1",
         "copy-image-clipboard": "^2.1.2",
         "dayjs": "^1.11.13",
-        "dplayer": "github:makeding/DPlayer#dc2254741753f6cb4a117d7b463da2cdffdffb4b",
+        "dplayer": "github:makeding/DPlayer#0e64331f9fcfbede1adfee62699d4489a7efa6fe",
         "floating-vue": "^5.2.2",
         "hls.js": "^1.6.9",
         "libaribhtml5": "^0.1.5",

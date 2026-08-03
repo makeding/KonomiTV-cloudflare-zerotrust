@@ -209,7 +209,7 @@ export default defineComponent({
     computed: {
         ...mapStores(useChannelsStore, useServerSettingsStore, useSettingsStore),
 
-        // ホーム画面専用に、同じ放送系列で現在番組も同一の地デジチャンネルを1枚のカードにまとめる
+        // ホーム画面専用に、同じ現在番組を放送している地デジチャンネルを1枚のカードにまとめる
         // ChannelsStore 側を変更すると視聴画面のサイドバーなどにも影響してしまうため、この画面だけで合成する
         home_channels_list_with_pinned(): Map<ChannelTypePretty, HomeChannel[]> {
             const home_channels_list_with_pinned = new Map<ChannelTypePretty, HomeChannel[]>();
@@ -315,7 +315,7 @@ export default defineComponent({
         },
 
         // ホーム画面に表示するチャンネルカードのリストを生成する
-        // 同じ放送系列・同じ現在番組のチャンネルは1つのカードにまとめ、その他は単独カードのまま表示する
+        // 同じ現在番組を放送している地デジチャンネルは1つのカードにまとめ、その他は単独カードのまま表示する
         buildHomeChannels(channels: ILiveChannel[]): HomeChannel[] {
             const home_channels: HomeChannel[] = [];
             const merged_home_channels = new Map<string, HomeChannel[]>();
@@ -334,7 +334,7 @@ export default defineComponent({
                     return this.canMergeHomeChannel(home_channel, channel);
                 });
 
-                // 既に同じ放送系列・同じ現在番組のカードが存在する場合は、そのカードへチャンネルを追加する
+                // 既に同じ現在番組のカードが存在する場合は、そのカードへチャンネルを追加する
                 if (merged_home_channel !== undefined) {
                     this.appendHomeChannel(merged_home_channel, channel);
                     continue;
@@ -418,26 +418,35 @@ export default defineComponent({
                 return null;
             }
 
-            const broadcast_network_key = this.getTerrestrialBroadcastNetworkKey(channel);
-            if (broadcast_network_key === null) {
-                return null;
-            }
-
-            // EPG の event_id / channel_id は局ごとに異なるため、同じ放送系列・同じ時間帯の番組だけを比較対象にする
-            // タイトルは放送局ごとの揺れが大きいため、この基礎キーとは別に canMergeHomeChannel() で互換判定する
-            return [
-                broadcast_network_key,
-                channel.program_present.start_time,
-                channel.program_present.end_time,
-                channel.program_present.duration,
-            ].join('\u0000');
+            // 独立局間で同時放送される購入番組も合成対象に含めるため、局名から推測した放送系列はキーに含めない
+            // 実際に同じ番組かどうかは、canMergeHomeChannel() で放送時間とタイトルの両方から判定する
+            return 'GR';
         },
 
         // 既存のホーム画面用チャンネルカードに、指定チャンネルを同一番組としてまとめられるか
         canMergeHomeChannel(home_channel: HomeChannel, channel: ILiveChannel): boolean {
             return home_channel.channels.some((home_channel_member) => {
-                return this.isSameHomeChannelProgramTitle(home_channel_member, channel);
+                return this.isSameHomeChannelProgramTime(home_channel_member, channel) &&
+                    this.isSameHomeChannelProgramTitle(home_channel_member, channel);
             });
+        },
+
+        // ホーム画面の合成カード向けに、2つのチャンネルの現在番組が同じ放送時間帯か判定する
+        isSameHomeChannelProgramTime(first_channel: ILiveChannel, second_channel: ILiveChannel): boolean {
+            if (first_channel.program_present === null || second_channel.program_present === null) {
+                return false;
+            }
+
+            const first_start_time = dayjs(first_channel.program_present.start_time).valueOf();
+            const first_end_time = dayjs(first_channel.program_present.end_time).valueOf();
+            const second_start_time = dayjs(second_channel.program_present.start_time).valueOf();
+            const second_end_time = dayjs(second_channel.program_present.end_time).valueOf();
+
+            // 局ごとに直前のローカル枠の切り方が異なると、同じ番組でも開始時刻と番組長が数分ずれることがある
+            // そのため時刻の完全一致ではなく、長い方の番組枠に対して80% 以上の時間が重なっているかを判定する
+            const overlap_duration = Math.max(0, Math.min(first_end_time, second_end_time) - Math.max(first_start_time, second_start_time));
+            const longer_duration = Math.max(first_end_time - first_start_time, second_end_time - second_start_time);
+            return longer_duration > 0 && overlap_duration / longer_duration >= 0.8;
         },
 
         // ホーム画面の合成カード向けに、2つのチャンネルの現在番組タイトルが同一番組相当か判定する
@@ -448,70 +457,68 @@ export default defineComponent({
 
             const first_title = this.normalizeProgramTitleForHomeChannelMerge(first_channel.program_present.title);
             const second_title = this.normalizeProgramTitleForHomeChannelMerge(second_channel.program_present.title);
+            if (first_title.length === 0 || second_title.length === 0) {
+                return false;
+            }
             if (first_title === second_title) {
                 return true;
             }
 
-            // 系列局によって「華丸丼と大吉麺」と「華丸丼と大吉麺 日本三景...」のように、
-            // 片方だけがサブタイトルを本文側へ展開することがあるため、十分長い前方一致は同一番組として扱う
+            // 局によって「ぽかぽか」と「ぽかぽかーリング最強決定戦...」のように、
+            // 片方だけがサブタイトルを本文側へ展開することがあるため、4文字以上の前方一致は同一番組として扱う
             const shorter_title_length = Math.min(first_title.length, second_title.length);
-            return shorter_title_length >= 6 &&
-                (first_title.startsWith(second_title) || second_title.startsWith(first_title));
+            if (shorter_title_length >= 4 &&
+                (first_title.startsWith(second_title) || second_title.startsWith(first_title))) {
+                return true;
+            }
+
+            // 表記揺れや局ごとの追加文字が少数に留まる場合は、編集距離に基づく一致率が80% 以上なら同一番組として扱う
+            return this.calculateHomeChannelProgramTitleSimilarity(first_title, second_title) >= 0.8;
         },
 
         // ホーム画面の同一番組判定向けに番組タイトルを正規化する
         // 放送局ごとの EPG で番組フラグやサブタイトルだけが揺れるケースがあるため、同じ番組枠と見なせる主タイトルに寄せる
         normalizeProgramTitleForHomeChannelMerge(title: string): string {
-            return title
-                .normalize('NFKC')
-                .replace(/\[[^\]]+\]/g, '')
-                .replace(/【[^】]+】/g, '')
+            let normalized_title = title.normalize('NFKC');
+
+            // サブタイトルの角括弧まで消すと番組名の意味を失うため、ProgramUtils が定義する ARIB 番組付属情報だけを除去する
+            for (const pattern of ProgramUtils.getEnclosedCharactersRemovalPatterns()) {
+                normalized_title = normalized_title.replace(pattern, '');
+            }
+
+            return normalized_title
                 .replace(/\s+/g, '')
                 .trim();
         },
 
-        // 地デジ局名から放送系列キーを取得する
-        // 独立局は放送エリア違いの重複とは見なさないため、ここで null にする
-        getTerrestrialBroadcastNetworkKey(channel: ILiveChannel): string | null {
-            const channel_name = channel.name.replace(/\s/g, '');
-            const broadcast_networks: {key: string; station_names: string[]}[] = [
-                {
-                    key: 'NHK-G',
-                    station_names: ['NHK総合'],
-                },
-                {
-                    key: 'NHK-E',
-                    station_names: ['NHKEテレ', 'NHKＥテレ', 'NHK教育'],
-                },
-                {
-                    key: 'NNN',
-                    station_names: ['日本テレビ', '日テレ', '読売テレビ', '中京テレビ', '札幌テレビ', '福岡放送'],
-                },
-                {
-                    key: 'ANN',
-                    station_names: ['テレビ朝日', 'ABCテレビ', 'メ～テレ', '北海道テレビ', '九州朝日放送'],
-                },
-                {
-                    key: 'JNN',
-                    station_names: ['TBS', 'MBS毎日放送', 'CBCテレビ', '北海道放送', 'RKB毎日放送'],
-                },
-                {
-                    key: 'TXN',
-                    station_names: ['テレビ東京', 'テレ東', 'テレビ大阪', 'テレビ愛知', 'テレビ北海道', 'TVQ九州放送'],
-                },
-                {
-                    key: 'FNN',
-                    station_names: ['フジテレビ', '関西テレビ', '東海テレビ', '北海道文化放送', 'テレビ西日本'],
-                },
-            ];
-
-            for (const broadcast_network of broadcast_networks) {
-                if (broadcast_network.station_names.some((station_name) => channel_name.includes(station_name))) {
-                    return broadcast_network.key;
-                }
+        // 2つの正規化済み番組タイトルがどの程度一致するかを算出する
+        calculateHomeChannelProgramTitleSimilarity(first_title: string, second_title: string): number {
+            const first_characters = Array.from(first_title);
+            const second_characters = Array.from(second_title);
+            const longer_title_length = Math.max(first_characters.length, second_characters.length);
+            if (longer_title_length === 0) {
+                return 1;
             }
 
-            return null;
+            // タイトルは通常数十文字程度のため、直前の1行だけを保持する Levenshtein 距離で十分軽量に比較できる
+            let previous_distances = second_characters.map((_, index) => index + 1);
+            previous_distances.unshift(0);
+
+            for (let first_index = 0; first_index < first_characters.length; first_index++) {
+                const current_distances = [first_index + 1];
+                for (let second_index = 0; second_index < second_characters.length; second_index++) {
+                    const substitution_cost = first_characters[first_index] === second_characters[second_index] ? 0 : 1;
+                    current_distances.push(Math.min(
+                        current_distances[second_index] + 1,
+                        previous_distances[second_index + 1] + 1,
+                        previous_distances[second_index] + substitution_cost,
+                    ));
+                }
+                previous_distances = current_distances;
+            }
+
+            const edit_distance = previous_distances[second_characters.length];
+            return 1 - edit_distance / longer_title_length;
         },
 
         // ホーム画面のカードに表示するチャンネル名を取得する
