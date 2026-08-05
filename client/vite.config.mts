@@ -8,11 +8,15 @@ import { comlink } from 'vite-plugin-comlink';
 import { VitePWA } from 'vite-plugin-pwa';
 import vuetify, { transformAssetUrls } from 'vite-plugin-vuetify';
 
+import { patchARIBVFSWorkerSource } from './vite.arib-vfs-worker.mts';
+
 const aribVfsWorkerPath = fileURLToPath(new URL('./node_modules/libaribhtml5/dist/sdk/arib-vfs-sw.js', import.meta.url));
 const readableStreamBrowserPath = fileURLToPath(new URL(
     './node_modules/@tsukumijima/aribts/node_modules/readable-stream/lib/ours/browser.js',
     import.meta.url,
 ));
+
+const loadARIBVFSWorkerSource = () => patchARIBVFSWorkerSource(readFileSync(aribVfsWorkerPath, 'utf-8'));
 
 const aribVfsWorkerPlugin = {
     name: 'konomitv-arib-vfs-worker',
@@ -20,14 +24,14 @@ const aribVfsWorkerPlugin = {
         server.middlewares.use('/data-broadcast/arib-vfs-sw.js', (_request, response) => {
             response.statusCode = 200;
             response.setHeader('Content-Type', 'text/javascript; charset=utf-8');
-            response.end(readFileSync(aribVfsWorkerPath));
+            response.end(loadARIBVFSWorkerSource());
         });
     },
-    generateBundle(this: {emitFile: (asset: {type: 'asset'; fileName: string; source: Uint8Array}) => void}) {
+    generateBundle(this: {emitFile: (asset: {type: 'asset'; fileName: string; source: string | Uint8Array}) => void}) {
         this.emitFile({
             type: 'asset',
             fileName: 'data-broadcast/arib-vfs-sw.js',
-            source: readFileSync(aribVfsWorkerPath),
+            source: loadARIBVFSWorkerSource(),
         });
     },
 };

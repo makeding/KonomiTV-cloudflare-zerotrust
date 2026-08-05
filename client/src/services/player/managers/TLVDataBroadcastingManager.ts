@@ -122,21 +122,6 @@ const RECEIVER_KEY_MAP: Record<number, number> = {
 
 const LEGACY_RECEIVER_INFO_PREFIX = 'KonomiTV-BMLBrowser_nvram_prefix=receiverinfo%2F';
 
-// 放送 HTML 内の location.href へ直接代入される外部 URL は Fetch / XHR の差し替えでは捕捉できない。
-// サーバー側の完全一致ホワイトリストと同じホストだけを同一オリジンの文書プロキシへ変換し、
-// QVC / NHK の HTML アプリケーションへ遷移した後も receiver runtime の管理下に留める。
-const ARIB_HTML5_DOCUMENT_PROXY_ALLOWED_HOSTS = new Set([
-    '4kdata-p.qvc.jp',
-    'api.nhk.or.jp',
-    'beacon.nhk.jp',
-    'img.nhk.jp',
-    'nhk.jp',
-    'shv.nhk.jp',
-    'tv-stream.nhk.jp',
-    'www.nhk-cs.jp',
-    'www.nhk.or.jp',
-]);
-
 type ReceiverInfo = {
     zipcode: string | null;
     prefecture: number | null;
@@ -962,20 +947,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
     }
 
     private injectRuntimeBootstrap(data: Uint8Array): Uint8Array {
-        let source = new TextDecoder().decode(data);
-
-        // location.href = 'https://…' のような直接ナビゲーションを、パスを保持する文書プロキシへ送る。
-        // API URL も同じ形式に変換され得るが、文書プロキシは GET / POST の双方を透過するため問題ない。
-        source = source.replace(/https?:\/\/[^\s'"<>]+/gi, value => {
-            try {
-                const url = new URL(value);
-                if (!ARIB_HTML5_DOCUMENT_PROXY_ALLOWED_HOSTS.has(url.hostname.toLowerCase())) return value;
-                return `/api/data-broadcasting/arib-html5/document/${url.protocol.slice(0, -1)}/` +
-                    `${encodeURIComponent(url.hostname.toLowerCase())}${url.pathname}${url.search}${url.hash}`;
-            } catch {
-                return value;
-            }
-        });
+        const source = new TextDecoder().decode(data);
         const bootstrap = '<script>top.__ARIB_HTML5_INSTALL__?.(window)</script>';
         const head = /<head(?:\s[^>]*)?>/i.exec(source);
         const prepared = head === null ? `${bootstrap}${source}` :

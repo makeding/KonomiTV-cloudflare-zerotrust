@@ -1,5 +1,8 @@
 <template>
-    <div class="remote-control-container" :class="{'remote-control-container--showing': modelValue}"
+    <div class="remote-control-container" :class="{
+            'remote-control-container--showing': modelValue,
+            'remote-control-container--data-broadcasting': dataBroadcasting,
+        }"
         @click="$emit('update:modelValue', false)">
         <div class="remote-control elevation-6" tabindex="0" @click.stop>
             <div v-ripple class="remote-control__close d-flex align-center rounded-circle cursor-pointer px-2 py-2"
@@ -69,6 +72,10 @@ export default defineComponent({
         modelValue: {
             type: Boolean as PropType<boolean>,
             required: true,
+        },
+        dataBroadcasting: {
+            type: Boolean as PropType<boolean>,
+            required: true,
         }
     },
     emits: {
@@ -96,6 +103,9 @@ export default defineComponent({
     &--showing {
         opacity: 1;
         visibility: visible;
+    }
+    &--data-broadcasting {
+        background: transparent;
     }
 
     .remote-control {

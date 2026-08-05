@@ -38,6 +38,7 @@
             </button>
             <Remocon class="watch-panel__remocon" v-if="show_remocon"
                 :modelValue="remocon_panel_active && playerStore.is_remocon_display === true"
+                :dataBroadcasting="playerStore.is_data_broadcasting_display"
                 @update:modelValue="playerStore.is_remocon_display = $event" />
         </div>
         <div class="watch-panel__navigation">
