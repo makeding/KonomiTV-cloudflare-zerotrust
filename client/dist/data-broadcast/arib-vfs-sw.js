@@ -6,6 +6,7 @@
       (_match, _quote, quoted, bare) => ` data-arib-romsound="${quoted ?? bare}"`
     );
   }
+  const DEFAULT_RECEIVER_DEVICE_IDENTIFIER = "4194c4ae4730";
   function createRuntimeBootstrap(scopePath = "/data-broadcast/") {
     const basePath = normalizeBasePath(scopePath);
     return `<script>
@@ -37,6 +38,9 @@
             modelname: 'unknown',
             baseurl: new URL(${JSON.stringify(basePath)}, location.origin).href
           }
+        },
+        getDeviceIdentifier: function (kind, callback) {
+          queueMicrotask(function () { callback(${JSON.stringify(DEFAULT_RECEIVER_DEVICE_IDENTIFIER)}) })
         }
       }
     })
@@ -268,6 +272,88 @@
     const path = normalizePath(`/${value || ""}`);
     return Boolean(enabled && path && resources.has(path));
   }
+
+  // location.href への直接代入は Fetch / XHR の差し替えでは捕捉できないため、
+  // 許可ホスト上の文書も VFS Worker の scope 内に写像して receiver runtime を維持する。
+  const EXTERNAL_PROXY_PREFIX = VFS_PREFIX + ".external/";
+  const EXTERNAL_PROXY_ALLOWED_HOSTS = new Set(["4kdata-p.qvc.jp","api.qvc.jp","api.nhk.or.jp","beacon.nhk.jp","img.nhk.jp","nhk.jp","qvc.jp","qvc.scene7.com","shv.nhk.jp","tv-stream.nhk.jp","www.nhk-cs.jp","www.nhk.or.jp"]);
+  function externalProxyRoot(scheme, hostname) {
+    return EXTERNAL_PROXY_PREFIX + scheme + "/" + hostname + "/";
+  }
+  function rewriteExternalProxyUrls(source) {
+    for (const hostname of EXTERNAL_PROXY_ALLOWED_HOSTS) {
+      const escapedHostname = hostname.replaceAll(".", "\\.");
+      const pattern = new RegExp("(?:https?:)?//" + escapedHostname + "(?:/|(?=[?#\\\"'\\\\s]|$))", "gi");
+      source = source.replace(pattern, value => {
+        const scheme = value.toLowerCase().startsWith("http:") ? "http" : "https";
+        return externalProxyRoot(scheme, hostname);
+      });
+    }
+    return source;
+  }
+  function resolveExternalProxyUrl(url) {
+    if (!url.pathname.startsWith(EXTERNAL_PROXY_PREFIX)) return null;
+    const relativePath = url.pathname.slice(EXTERNAL_PROXY_PREFIX.length);
+    const separator = relativePath.indexOf("/");
+    if (separator <= 0) return null;
+    const scheme = relativePath.slice(0, separator);
+    const hostAndPath = relativePath.slice(separator + 1);
+    const hostSeparator = hostAndPath.indexOf("/");
+    if (hostSeparator <= 0 || !["https", "http"].includes(scheme)) return null;
+    const hostname = hostAndPath.slice(0, hostSeparator).toLowerCase();
+    if (!EXTERNAL_PROXY_ALLOWED_HOSTS.has(hostname)) return null;
+    const path = hostAndPath.slice(hostSeparator + 1);
+    const upstreamUrl = new URL(scheme + "://" + hostname + "/" + path);
+    upstreamUrl.search = url.search;
+    return { upstreamUrl, rootPath: externalProxyRoot(scheme, hostname) };
+  }
+  async function serveExternalProxy(request, url) {
+    const resolved = resolveExternalProxyUrl(url);
+    if (!resolved) return new Response("Bad external broadcast path", { status: 400 });
+    const proxyUrl = new URL("/api/data-broadcasting/arib-html5/request", self.location.origin);
+    proxyUrl.searchParams.set("url", resolved.upstreamUrl.href);
+    const method = request.method === "HEAD" ? "GET" : request.method;
+    const response = await fetch(proxyUrl, {
+      method,
+      headers: request.headers,
+      body: method === "POST" ? await request.clone().arrayBuffer() : void 0,
+      credentials: "same-origin"
+    });
+    const headers = new Headers(response.headers);
+    const type = headers.get("Content-Type") || "application/octet-stream";
+    const rewriteHtml = /^text\/html(?:;|$)/i.test(type) || /^application\/xhtml\+xml(?:;|$)/i.test(type);
+    const rewriteCss = /^text\/css(?:;|$)/i.test(type);
+    const rewriteJavaScript = /(?:java|ecma)script/i.test(type);
+    if (!rewriteHtml && !rewriteCss && !rewriteJavaScript) {
+      return new Response(request.method === "HEAD" ? null : response.body, {
+        status: response.status,
+        headers
+      });
+    }
+    let source = rewriteExternalProxyUrls(await response.text());
+    if (rewriteHtml) {
+      source = prepareBroadcastHtml(source, {
+        basePath: resolved.rootPath,
+        scopePath: resolved.rootPath,
+        bootstrap: RUNTIME_BOOTSTRAP
+      });
+    } else if (rewriteCss) {
+      source = prepareBroadcastStylesheet(source, {
+        basePath: resolved.rootPath,
+        scopePath: resolved.rootPath
+      });
+    }
+    headers.delete("Content-Encoding");
+    headers.delete("Content-Length");
+    headers.set("Cache-Control", "no-store");
+    headers.set("Content-Security-Policy", "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-src 'none'");
+    headers.set("X-Content-Type-Options", "nosniff");
+    return new Response(request.method === "HEAD" ? null : source, {
+      status: response.status,
+      headers
+    });
+  }
+
   async function serve(request) {
     const path = normalizePath(request.url);
     if (!path) return new Response("Bad broadcast path", { status: 400 });
@@ -280,17 +366,20 @@
     const type = contentType(path, resource.contentType);
     let body = resource.data.slice(0);
     if (/^text\/html(?:;|$)/i.test(type)) {
-      const source = prepareBroadcastHtml(new TextDecoder().decode(resource.data), {
+      const source = prepareBroadcastHtml(rewriteExternalProxyUrls(new TextDecoder().decode(resource.data)), {
         basePath: broadcastRootPath(resolved.path),
         scopePath: VFS_PREFIX,
         bootstrap: RUNTIME_BOOTSTRAP
       });
       body = new TextEncoder().encode(source);
     } else if (/^text\/css(?:;|$)/i.test(type)) {
-      const source = prepareBroadcastStylesheet(new TextDecoder().decode(resource.data), {
+      const source = prepareBroadcastStylesheet(rewriteExternalProxyUrls(new TextDecoder().decode(resource.data)), {
         basePath: broadcastRootPath(resolved.path),
         scopePath: VFS_PREFIX
       });
+      body = new TextEncoder().encode(source);
+    } else if (/(?:java|ecma)script/i.test(type)) {
+      const source = rewriteExternalProxyUrls(new TextDecoder().decode(resource.data));
       body = new TextEncoder().encode(source);
     }
     return new Response(request.method === "HEAD" ? null : body, {
@@ -367,7 +456,13 @@
   });
   self.addEventListener("fetch", (event) => {
     const url = new URL(event.request.url);
-    if (url.origin !== self.location.origin || !url.pathname.startsWith(VFS_PREFIX) || event.request.method !== "GET" && event.request.method !== "HEAD") return;
+    if (url.origin !== self.location.origin || !url.pathname.startsWith(VFS_PREFIX)) return;
+    if (url.pathname.startsWith(EXTERNAL_PROXY_PREFIX)) {
+      if (event.request.method !== "GET" && event.request.method !== "HEAD" && event.request.method !== "POST") return;
+      event.respondWith(serveExternalProxy(event.request, url));
+      return;
+    }
+    if (event.request.method !== "GET" && event.request.method !== "HEAD") return;
     event.respondWith((async () => {
       await restorePersistentResources();
       if (!enabled || !hasResourceCandidate(url.pathname)) return fetch(event.request);

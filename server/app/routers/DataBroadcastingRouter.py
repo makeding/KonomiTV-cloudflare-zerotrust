@@ -36,6 +36,7 @@ ARIB_HTML5_EXTERNAL_PROXY_ALLOWED_HOSTS: frozenset[str] = frozenset({
     'beacon.nhk.jp',
     'img.nhk.jp',
     'nhk.jp',
+    'qvc.jp',
     'qvc.scene7.com',
     'shv.nhk.jp',
     'tv-stream.nhk.jp',

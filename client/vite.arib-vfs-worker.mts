@@ -5,6 +5,7 @@ const EXTERNAL_PROXY_ALLOWED_HOSTS = [
     'beacon.nhk.jp',
     'img.nhk.jp',
     'nhk.jp',
+    'qvc.jp',
     'qvc.scene7.com',
     'shv.nhk.jp',
     'tv-stream.nhk.jp',
@@ -22,9 +23,12 @@ const EXTERNAL_PROXY_RUNTIME = String.raw`
   }
   function rewriteExternalProxyUrls(source) {
     for (const hostname of EXTERNAL_PROXY_ALLOWED_HOSTS) {
-      for (const scheme of ["https", "http"]) {
-        source = source.replaceAll(scheme + "://" + hostname + "/", externalProxyRoot(scheme, hostname));
-      }
+      const escapedHostname = hostname.replaceAll(".", "\\.");
+      const pattern = new RegExp("(?:https?:)?//" + escapedHostname + "(?:/|(?=[?#\\\"'\\\\s]|$))", "gi");
+      source = source.replace(pattern, value => {
+        const scheme = value.toLowerCase().startsWith("http:") ? "http" : "https";
+        return externalProxyRoot(scheme, hostname);
+      });
     }
     return source;
   }
