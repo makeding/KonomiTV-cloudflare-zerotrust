@@ -1,13 +1,16 @@
 
 import asyncio
 import ipaddress
+import json
+import re
 import socket
 import time
-from typing import Annotated
+from typing import Annotated, cast
 from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 import httpx
+from aiohttp.abc import AbstractResolver, ResolveResult
 from fastapi import APIRouter, Form, HTTPException, Path, Query, Request, status
 from fastapi.responses import StreamingResponse
 from ping3 import ping
@@ -45,7 +48,7 @@ ARIB_HTML5_EXTERNAL_PROXY_MAX_RESPONSE_SIZE = 32 * 1024 * 1024
 ARIB_HTML5_EXTERNAL_PROXY_MAX_REDIRECTS = 3
 
 
-class ARIBHTML5ExternalProxyResolver(aiohttp.abc.AbstractResolver):
+class ARIBHTML5ExternalProxyResolver(AbstractResolver):
     """ ARIB HTML5 外部通信プロキシ用に、接続先を公開 IP アドレスだけへ制限する。 """
 
     def __init__(self) -> None:
@@ -68,7 +71,7 @@ class ARIBHTML5ExternalProxyResolver(aiohttp.abc.AbstractResolver):
         host: str,
         port: int = 0,
         family: socket.AddressFamily = socket.AF_INET,
-    ) -> list[aiohttp.abc.ResolveResult]:
+    ) -> list[ResolveResult]:
         """
         ホスト名を公開 IP アドレスへ解決する。
 
@@ -175,6 +178,35 @@ def ValidateARIBHTML5ExternalProxyURL(request_url: str) -> str:
 
     return request_url
 
+
+def ReplaceReceiverIdentityInARIBHTML5JSON(value: object) -> object:
+    """
+    ARIB HTML5 放送アプリが生成した JSON 内の開発用受信機名を互換値へ置換する。
+
+    Args:
+        value (object): JSON からデコードした値
+
+    Returns:
+        object: 文字列値に含まれる huggy を test へ置換した JSON 値
+    """
+
+    # JSON の文字列値に含まれる開発用受信機名だけを、大文字・小文字を区別せず置換する。
+    ## キー名は放送局 API の契約なので変更しない。
+    if isinstance(value, str):
+        return re.sub('huggy', 'test', value, flags=re.IGNORECASE)
+
+    # 入れ子になった denbun なども漏れなく処理する。
+    if isinstance(value, list):
+        return [ReplaceReceiverIdentityInARIBHTML5JSON(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: ReplaceReceiverIdentityInARIBHTML5JSON(item)
+            for key, item in value.items()
+        }
+
+    # 数値・真偽値・null はそのまま維持する。
+    return value
+
 # 以下の API 実装は web-bml での実装を Python に移植したもの (with GPT-4)
 # ref: https://github.com/tsukumijima/web-bml/blob/master/server/index.ts#L195-L296
 
@@ -219,6 +251,22 @@ async def ARIBHTML5BrowserRequestProxyAPI(
             request_body_chunks.append(request_body_chunk)
         request_body = b''.join(request_body_chunks)
 
+        # 放送アプリの JSON に libaribhtml5 の開発用受信機名 huggy が含まれる場合は、
+        ## 外部 API へ送る直前に互換用の test へ置換する。
+        ## JSON 以外の本文や壊れた JSON は、放送局固有の電文を破壊しないよう原文のまま転送する。
+        content_type = request.headers.get('Content-Type', '').split(';', maxsplit=1)[0].strip().lower()
+        if content_type == 'application/json' or content_type.endswith('+json'):
+            try:
+                decoded_request_body = cast(object, json.loads(request_body))
+                replaced_request_body = ReplaceReceiverIdentityInARIBHTML5JSON(decoded_request_body)
+                request_body = json.dumps(
+                    replaced_request_body,
+                    ensure_ascii = False,
+                    separators = (',', ':'),
+                ).encode('utf-8')
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+
     # 放送アプリが必要とする条件付き取得・Range・本文形式だけを上流へ渡す。
     ## Cookie・Authorization・Host・X-Forwarded-* など、KonomiTV 側の情報は絶対に転送しない。
     request_headers = {
@@ -227,7 +275,9 @@ async def ARIBHTML5BrowserRequestProxyAPI(
         'Cache-Control': request.headers.get('Cache-Control', 'no-cache'),
         'Pragma': 'no-cache',
     }
-    for header_name in ['Content-Type', 'If-Modified-Since', 'If-None-Match', 'Range']:
+    # QVC の BS4K データ放送 API は、放送アプリに同梱された X-API-Key を要求する。
+    ## 値はログや設定へ保存せず、このリクエストの上流転送だけに使う。
+    for header_name in ['Content-Type', 'If-Modified-Since', 'If-None-Match', 'Range', 'X-API-Key']:
         header_value = request.headers.get(header_name)
         if header_value is not None:
             request_headers[header_name] = header_value
