@@ -979,7 +979,8 @@ class TLVDataBroadcastingManager implements PlayerManager {
     private installNetworkProxy(target: RuntimeWindow): void {
         if (useSettingsStore().settings.enable_internet_access_from_data_broadcasting === false) return;
 
-        // 許可時も放送アプリからインターネットへ直結させず、KonomiTV の既存プロキシだけを通す。
+        // 許可時も放送アプリからインターネットへ直結させず、
+        // KonomiTV の ARIB HTML5 専用ホワイトリストプロキシだけを通す。
         // /api は本番では同一 origin、Vite 開発時は vite.config.mts の proxy が 7000 番へ転送する。
         const proxyUrl = (value: string): string | null => {
             let url: URL;
@@ -989,7 +990,9 @@ class TLVDataBroadcastingManager implements PlayerManager {
                 return null;
             }
             if (!['http:', 'https:'].includes(url.protocol) || url.origin === target.location.origin) return null;
-            return new URL(`/api/data-broadcasting/request/${url.href}`, target.location.origin).href;
+            const proxy_url = new URL('/api/data-broadcasting/arib-html5/request', target.location.origin);
+            proxy_url.searchParams.set('url', url.href);
+            return proxy_url.href;
         };
 
         const original_fetch = target.fetch.bind(target);
