@@ -32,7 +32,8 @@
                 <Icon class="switch-button-icon" icon="fluent:ios-arrow-left-24-filled" width="32px" style="transform: rotate(90deg)" />
             </div>
             <div v-ripple class="switch-button switch-button-panel"
-                :class="{'switch-button-panel--open': playerStore.is_panel_display || playerStore.is_data_broadcasting_display}"
+                :class="{'switch-button-panel--open': playerStore.is_data_broadcasting_display ?
+                    playerStore.is_data_broadcasting_panel_display : playerStore.is_panel_display}"
                 @click="togglePanel">
                 <Icon class="switch-button-icon" icon="fluent:navigation-16-filled" width="32px" />
             </div>
@@ -67,7 +68,11 @@ const playerStore = usePlayerStore();
 const settingsStore = useSettingsStore();
 
 const togglePanel = () => {
-    if (playerStore.is_data_broadcasting_display) return;
+    // データ放送中は通常のパネル設定を変更せず、今回のアプリケーション表示中だけ開閉状態を切り替える
+    if (playerStore.is_data_broadcasting_display) {
+        playerStore.is_data_broadcasting_panel_display = !playerStore.is_data_broadcasting_panel_display;
+        return;
+    }
     playerStore.is_panel_display = !playerStore.is_panel_display;
 };
 
@@ -629,6 +634,13 @@ _::-webkit-full-page-media, _:future, :root .dplayer-subtitle-icon[aria-label='�
     &.watch-player--data-broadcasting .watch-player__dplayer {
         position: relative;
         z-index: 1;
+    }
+
+    // データ放送パネルを折り畳んだ後も再表示できるよう、パネル切替ボタンだけは放送画面より前に置く。
+    // 切局ボタンはデータ放送アプリケーションの操作を妨げないよう従来どおり背面に残す。
+    &.watch-player--data-broadcasting .switch-button-panel {
+        position: relative;
+        z-index: 2;
     }
 
     .watch-player__button {

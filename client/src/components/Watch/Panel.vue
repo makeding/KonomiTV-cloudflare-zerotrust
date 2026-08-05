@@ -148,10 +148,10 @@ export default defineComponent({
     },
     methods: {
         closePanel(): void {
-            // データ放送中は単に表示フラグだけを下げても Manager 側のアプリケーションが残るため、
-            // 先に PlayerManager へ終了を要求してから通常の視聴パネルと同じように折り畳む。
+            // データ放送中のパネル表示は通常のユーザー設定と分離し、アプリケーションを終了せずに折り畳む。
             if (this.playerStore.is_data_broadcasting_display) {
-                this.playerStore.event_emitter.emit('ExitDataBroadcasting');
+                this.playerStore.is_data_broadcasting_panel_display = false;
+                return;
             }
             this.playerStore.is_panel_display = false;
         },
