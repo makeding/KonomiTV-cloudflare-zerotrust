@@ -6,7 +6,7 @@ import re
 import socket
 import time
 from typing import Annotated, cast
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import aiohttp
 import httpx
@@ -207,6 +207,59 @@ def ReplaceReceiverIdentityInARIBHTML5JSON(value: object) -> object:
     # 数値・真偽値・null はそのまま維持する。
     return value
 
+
+def RewriteARIBHTML5DocumentProxyURLs(source: str) -> str:
+    """
+    許可された外部ホストへの絶対 URL を、同一オリジンの文書プロキシ URL へ置換する。
+
+    Args:
+        source (str): HTML / JavaScript / CSS のソース
+
+    Returns:
+        str: 外部文書内でも iframe が receiver runtime の管理下に留まるよう URL を置換したソース
+    """
+
+    # location.href への直接代入は Fetch / XHR のように JavaScript API を差し替えて捕捉できない。
+    ## そのため、許可ホストへの絶対 URL はレスポンス本文の段階で同一オリジンのパスへ置換する。
+    ## API URL も同じ文書プロキシへ入るが、この経路は GET / POST の両方を透過するため挙動は維持される。
+    for hostname in ARIB_HTML5_EXTERNAL_PROXY_ALLOWED_HOSTS:
+        encoded_hostname = quote(hostname, safe='')
+        for scheme in ('https', 'http'):
+            source = source.replace(
+                f'{scheme}://{hostname}/',
+                f'/api/data-broadcasting/arib-html5/document/{scheme}/{encoded_hostname}/',
+            )
+    return source
+
+
+def InjectARIBHTML5DocumentRuntimeBootstrap(source: str) -> str:
+    """
+    外部 HTML 文書へ receiver runtime の導入コードを挿入する。
+
+    Args:
+        source (str): 外部サーバーから取得した HTML
+
+    Returns:
+        str: iframe の親ウィンドウから runtime を同期導入する bootstrap を含む HTML
+    """
+
+    # 文書プロキシは HonomiTV と同一オリジンなので、親ウィンドウが公開する installer を利用できる。
+    ## PlayerController の初期化直後など installer の公開がわずかに遅れる場合にも対応できるよう再試行する。
+    bootstrap = '''<script>
+(function installAribHtml5Runtime(attempt) {
+  var install = parent && parent.__ARIB_HTML5_INSTALL__;
+  if (typeof install === 'function') {
+    install(window);
+    return;
+  }
+  if (attempt < 100) setTimeout(function () { installAribHtml5Runtime(attempt + 1); }, 50);
+})(0);
+</script>'''
+    head = re.search(r'<head(?:\s[^>]*)?>', source, flags=re.IGNORECASE)
+    if head is None:
+        return bootstrap + source
+    return source[:head.end()] + bootstrap + source[head.end():]
+
 # 以下の API 実装は web-bml での実装を Python に移植したもの (with GPT-4)
 # ref: https://github.com/tsukumijima/web-bml/blob/master/server/index.ts#L195-L296
 
@@ -234,6 +287,59 @@ async def ARIBHTML5BrowserRequestProxyAPI(
         StreamingResponse: 外部サイトからのレスポンス
     """
 
+    return await ProxyARIBHTML5Request(request, request_url, rewrite_document_urls=False)
+
+
+@router.api_route(
+    '/arib-html5/document/{scheme}/{hostname}/{request_path:path}',
+    methods = ['GET', 'POST'],
+    summary = 'ARIB HTML5 データ放送外部文書プロキシ API',
+    response_description = '許可された外部ホスト上の文書または文書リソース。',
+)
+async def ARIBHTML5DocumentProxyAPI(
+    request: Request,
+    scheme: Annotated[str, Path(description='転送先 URL のスキーム。')],
+    hostname: Annotated[str, Path(description='転送先 URL のホスト名。')],
+    request_path: Annotated[str, Path(description='転送先 URL のパス。')],
+):
+    """
+    外部 HTML アプリケーションを同一オリジンに保ったまま中継する。<br>
+    location.href による遷移でも receiver runtime と Service Worker の管理から外れないようにする。
+
+    Args:
+        request (Request): 放送アプリからのプロキシリクエスト
+        scheme (str): 転送先 URL のスキーム
+        hostname (str): 転送先 URL のホスト名
+        request_path (str): 転送先 URL のパス
+
+    Returns:
+        StreamingResponse: 外部サイトからのレスポンス
+    """
+
+    # パス形式から転送先を復元し、通常の外部通信プロキシと同じ厳格な検証へ通す。
+    request_url = f'{scheme}://{hostname}/{request_path}'
+    if request.url.query:
+        request_url += f'?{request.url.query}'
+    return await ProxyARIBHTML5Request(request, request_url, rewrite_document_urls=True)
+
+
+async def ProxyARIBHTML5Request(
+    request: Request,
+    request_url: str,
+    rewrite_document_urls: bool,
+) -> StreamingResponse:
+    """
+    検証済みの ARIB HTML5 外部通信を上流へ転送する。
+
+    Args:
+        request (Request): 放送アプリからのプロキシリクエスト
+        request_url (str): 放送アプリが要求した転送先 URL
+        rewrite_document_urls (bool): 文書内 URL と runtime bootstrap を書き換えるか
+
+    Returns:
+        StreamingResponse: 外部サイトからのレスポンス
+    """
+
     current_url = ValidateARIBHTML5ExternalProxyURL(request_url)
 
     # POST 本文は視聴者参加やビーコン用途だけを想定し、巨大な本文をメモリへ読み込まない。
@@ -255,7 +361,12 @@ async def ARIBHTML5BrowserRequestProxyAPI(
         ## 外部 API へ送る直前に互換用の test へ置換する。
         ## JSON 以外の本文や壊れた JSON は、放送局固有の電文を破壊しないよう原文のまま転送する。
         content_type = request.headers.get('Content-Type', '').split(';', maxsplit=1)[0].strip().lower()
-        if content_type == 'application/json' or content_type.endswith('+json'):
+        parsed_current_url = urlsplit(current_url)
+        if (
+            parsed_current_url.hostname == '4kdata-p.qvc.jp' and
+            parsed_current_url.path.startswith('/v1/') and
+            (content_type == 'application/json' or content_type.endswith('+json'))
+        ):
             try:
                 decoded_request_body = cast(object, json.loads(request_body))
                 replaced_request_body = ReplaceReceiverIdentityInARIBHTML5JSON(decoded_request_body)
@@ -272,6 +383,8 @@ async def ARIBHTML5BrowserRequestProxyAPI(
     request_headers = {
         'Accept': request.headers.get('Accept', '*/*'),
         'Accept-Language': 'ja',
+        # 文書モードでは本文中の URL を置換するため、圧縮前のレスポンスを受け取る。
+        'Accept-Encoding': 'identity' if rewrite_document_urls else request.headers.get('Accept-Encoding', 'identity'),
         'Cache-Control': request.headers.get('Cache-Control', 'no-cache'),
         'Pragma': 'no-cache',
     }
@@ -382,6 +495,62 @@ async def ARIBHTML5BrowserRequestProxyAPI(
         for key, value in response.headers.items()
         if key.lower() in allowed_response_headers
     }
+
+    # 文書プロキシ配下のテキストリソースは、絶対 URL を同一オリジンの同じプロキシへ戻す。
+    ## これにより location.href、外部 JavaScript 内の API URL、CSS の画像 URL のいずれも
+    ## iframe を QVC / NHK の origin へ直接脱出させず、receiver runtime をページ遷移後も維持できる。
+    response_content_type = response.headers.get('Content-Type', '').lower()
+    rewrite_text_response = rewrite_document_urls and any(content_type_token in response_content_type for content_type_token in (
+        'text/html',
+        'application/xhtml+xml',
+        'text/css',
+        'javascript',
+    ))
+    if rewrite_text_response:
+        try:
+            response_body = await response.read()
+        except (aiohttp.ClientError, TimeoutError) as ex:
+            response.release()
+            await session.close()
+            raise HTTPException(
+                status_code = status.HTTP_502_BAD_GATEWAY,
+                detail = 'Failed to read an external document',
+            ) from ex
+        response.release()
+        await session.close()
+        if len(response_body) > ARIB_HTML5_EXTERNAL_PROXY_MAX_RESPONSE_SIZE:
+            raise HTTPException(
+                status_code = status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail = 'External response is too large',
+            )
+
+        # 放送 HTML/JavaScript は UTF-8 が前提だが、宣言のない古い文書でも不正バイトだけを置換して継続する。
+        rewritten_source = RewriteARIBHTML5DocumentProxyURLs(response_body.decode(response.charset or 'utf-8', errors='replace'))
+        if 'text/html' in response_content_type or 'application/xhtml+xml' in response_content_type:
+            rewritten_source = InjectARIBHTML5DocumentRuntimeBootstrap(rewritten_source)
+        rewritten_body = rewritten_source.encode('utf-8')
+        response_headers.pop('Content-Encoding', None)
+        response_headers['Content-Length'] = str(len(rewritten_body))
+        response_headers['Content-Type'] = response.headers.get('Content-Type', 'text/plain; charset=utf-8')
+
+        async def GenerateRewrittenResponseBody():
+            """
+            URL を置換済みの文書本文を返す。
+
+            Args:
+                なし
+
+            Yields:
+                bytes: 置換済みレスポンス本文
+            """
+
+            yield rewritten_body
+
+        return StreamingResponse(
+            GenerateRewrittenResponseBody(),
+            status_code = response.status,
+            headers = response_headers,
+        )
 
     async def GenerateResponseBody():
         """
