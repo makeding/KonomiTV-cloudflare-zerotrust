@@ -3,7 +3,7 @@
          @mousemove="playerStore.event_emitter.emit('SetControlDisplayTimer', {event: $event})">
         <div class="watch-panel__header">
             <div v-ripple class="panel-close-button"
-                @click="playerStore.is_data_broadcasting_display === false && (playerStore.is_panel_display = false)">
+                @click="closePanel">
                 <Icon class="panel-close-button__icon" icon="akar-icons:chevron-right" width="25px" />
                 <span class="panel-close-button__text">閉じる</span>
             </div>
@@ -145,6 +145,16 @@ export default defineComponent({
             }
             return this.panel_active_tab === 'RecordedProgram' || this.panel_active_tab === 'Series';
         }
+    },
+    methods: {
+        closePanel(): void {
+            // データ放送中は単に表示フラグだけを下げても Manager 側のアプリケーションが残るため、
+            // 先に PlayerManager へ終了を要求してから通常の視聴パネルと同じように折り畳む。
+            if (this.playerStore.is_data_broadcasting_display) {
+                this.playerStore.event_emitter.emit('ExitDataBroadcasting');
+            }
+            this.playerStore.is_panel_display = false;
+        },
     }
 });
 
@@ -153,11 +163,15 @@ export default defineComponent({
 
 .watch-panel {
     display: flex;
+    position: relative;
     flex-direction: column;
     flex-shrink: 0;
     width: 352px;
     height: 100%;
     background: rgb(var(--v-theme-background));
+    // データ放送中は DPlayer 全体が z-index: 1 になるため、パネルにも stacking context を作り、
+    // リモコンだけでなくヘッダーの「閉じる」と下部ナビゲーションも確実に操作できるようにする。
+    z-index: 2;
     @include tablet-vertical {
         width: 100%;
         height: auto;

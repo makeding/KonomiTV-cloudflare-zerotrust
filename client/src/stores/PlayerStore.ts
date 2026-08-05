@@ -56,6 +56,8 @@ export type PlayerEvents = {
     SeekRequest: {
         playback_position: number;  // シーク先の再生位置 (秒)
     }
+    // UI コンポーネントから実行中のデータ放送アプリケーションの終了を要求する
+    ExitDataBroadcasting: undefined;
 };
 
 

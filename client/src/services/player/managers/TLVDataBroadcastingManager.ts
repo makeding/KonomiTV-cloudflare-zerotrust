@@ -403,6 +403,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.on('tlv_viewer_participation' as DPlayerType.Events, this.handleViewerParticipation);
         this.player.on('tlv_tracks', this.handleCaptionTracks);
         this.player.on('tlv_caption_data', this.handleCaptionData);
+        usePlayerStore().event_emitter.on('ExitDataBroadcasting', this.handleExitDataBroadcasting);
         this.initRemoconButtons();
         await this.beginSession();
         this.handleCaptionTracks();
@@ -420,6 +421,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.off('tlv_viewer_participation' as DPlayerType.Events, this.handleViewerParticipation);
         this.player.off('tlv_tracks', this.handleCaptionTracks);
         this.player.off('tlv_caption_data', this.handleCaptionData);
+        usePlayerStore().event_emitter.off('ExitDataBroadcasting', this.handleExitDataBroadcasting);
         this.remocon_abort_controller?.abort();
         this.remocon_abort_controller = null;
         this.session_generation += 1;
@@ -897,6 +899,12 @@ class TLVDataBroadcastingManager implements PlayerManager {
             this.iframe.style.display = 'none';
         }
     }
+
+    private readonly handleExitDataBroadcasting = (): void => {
+        // 視聴パネルの「閉じる」は、画面だけを隠して入力先を残すのではなく、
+        // receiver runtime のライフサイクルを通してアプリケーションを確実に終了する。
+        this.exitApplication();
+    };
 
     private lockPanelForApplication(): void {
         const player_store = usePlayerStore();
