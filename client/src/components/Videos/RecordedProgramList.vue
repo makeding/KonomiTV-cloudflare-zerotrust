@@ -58,9 +58,21 @@
                 }">
                 <div class="recorded-program-list__empty-content">
                     <Icon class="recorded-program-list__empty-icon" :icon="emptyIcon" width="54px" height="54px" />
-                    <h2 v-html="emptyMessage"></h2>
+                    <!-- 空メッセージは外部文字列をテキストとして表示し、改行は固定の <br> 要素として構造的に描画する -->
+                    <!-- 検索 query などの外部文字列が HTML として解釈される反射型 XSS を防ぐため、v-html は使わない -->
+                    <h2>
+                        <template v-for="(line, index) in emptyMessageLines" :key="index">
+                            <br v-if="index > 0" class="d-sm-none">
+                            {{ line }}
+                        </template>
+                    </h2>
                     <div class="recorded-program-list__empty-submessage"
-                        v-if="emptySubMessage" v-html="emptySubMessage"></div>
+                        v-if="emptySubMessage">
+                        <template v-for="(line, index) in emptySubMessageLines" :key="index">
+                            <br v-if="index > 0" class="d-sm-none">
+                            {{ line }}
+                        </template>
+                    </div>
                 </div>
             </div>
             <div class="recorded-program-list__grid-content">
@@ -87,7 +99,7 @@
 </template>
 <script lang="ts" setup>
 
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { IOfflineDownloadJob, IOfflineVideo } from '@/services/OfflineVideos';
@@ -112,8 +124,10 @@ const props = withDefaults(defineProps<{
     showBackButton?: boolean;
     showEmptyMessage?: boolean;
     emptyIcon?: string;
-    emptyMessage?: string;
-    emptySubMessage?: string;
+    // 空メッセージは外部文字列をテキストとして表示するため HTML は受け取らない
+    // 改行を入れたい場合は配列で行を渡し、行間へ固定の <br> 要素を挿入する
+    emptyMessage?: string | string[];
+    emptySubMessage?: string | string[];
     isLoading?: boolean;
     isSearching?: boolean;
     forMylist?: boolean;
@@ -132,7 +146,7 @@ const props = withDefaults(defineProps<{
     showEmptyMessage: true,
     emptyIcon: 'fluent:search-20-regular',
     emptyMessage: '録画番組が見つかりませんでした。',
-    emptySubMessage: 'サーバー設定で録画フォルダのパスを<br class="d-sm-none">正しく設定できているか確認してください。',
+    emptySubMessage: () => ['サーバー設定で録画フォルダのパスを', '正しく設定できているか確認してください。'],
     isLoading: false,
     isSearching: false,
     forMylist: false,
@@ -161,6 +175,11 @@ const sort_order = ref<SortOrder | MylistSortOrder>(props.sortOrder);
 const displayPrograms = ref<IRecordedProgram[]>([...props.programs]);
 // 内部で管理する合計数
 const displayTotal = ref<number>(props.total);
+
+// 空メッセージの行配列 (文字列で渡された場合は 1 行として扱い、行間へ固定の <br> 要素を挿入する)
+// テキスト補間で表示するため、検索 query などの外部文字列が HTML として解釈されない
+const emptyMessageLines = computed<string[]>(() => Array.isArray(props.emptyMessage) ? props.emptyMessage : [props.emptyMessage]);
+const emptySubMessageLines = computed<string[]>(() => Array.isArray(props.emptySubMessage) ? props.emptySubMessage : [props.emptySubMessage]);
 
 // props の page が変更されたら current_page を更新
 watch(() => props.page, (newPage) => {

@@ -21,7 +21,7 @@
                         :showEmptyMessage="!is_loading"
                         :emptyIcon="'fluent:history-20-regular'"
                         :emptyMessage="'まだ視聴履歴がありません。'"
-                        :emptySubMessage="'録画番組を30秒以上みると、<br class=\'d-sm-none\'>視聴履歴に追加されます。'"
+                        :emptySubMessage="['録画番組を30秒以上みると、', '視聴履歴に追加されます。']"
                         :forWatchedHistory="true"
                         @update:page="updatePage" />
                 </div>

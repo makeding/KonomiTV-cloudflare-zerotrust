@@ -45,8 +45,8 @@
                         :showMoreButton="true"
                         :showEmptyMessage="!is_loading"
                         :emptyIcon="'ic:round-playlist-play'"
-                        :emptyMessage="'あとで観たい番組を<br class=\'d-sm-none\'>マイリストに保存できます。'"
-                        :emptySubMessage="'録画番組の右上にある ＋ ボタンから、<br class=\'d-sm-none\'>番組をマイリストに追加できます。'"
+                        :emptyMessage="['あとで観たい番組を', 'マイリストに保存できます。']"
+                        :emptySubMessage="['録画番組の右上にある ＋ ボタンから、', '番組をマイリストに追加できます。']"
                         :isLoading="is_loading"
                         :forMylist="true"
                         @more="$router.push('/mylist/')" />
@@ -60,7 +60,7 @@
                         :showEmptyMessage="!is_loading"
                         :emptyIcon="'fluent:history-20-regular'"
                         :emptyMessage="'まだ視聴履歴がありません。'"
-                        :emptySubMessage="'録画番組を30秒以上みると、<br class=\'d-sm-none\'>視聴履歴に追加されます。'"
+                        :emptySubMessage="['録画番組を30秒以上みると、', '視聴履歴に追加されます。']"
                         :isLoading="is_loading"
                         :forWatchedHistory="true"
                         @more="$router.push('/watched-history/')" />
