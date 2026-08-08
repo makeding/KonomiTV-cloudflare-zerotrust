@@ -539,16 +539,17 @@ class LiveStream:
         disconnect() とは違い、LiveStreamClient の操作元ではなくエンコードタスク側から操作することを想定している
         """
 
-        # すべてのクライアントの接続を切断する
-        for client in self._clients:
+        # 走査中に接続クライアントのリストを変更すると1件おきに通知が飛ばされるため、
+        # 現時点のクライアント全員へ切断を通知してからリストをまとめて空にする
+        clients = self._clients.copy()
+        for client in clients:
             # mpegts クライアントのみ、Queue に None を追加して接続切断を通知する
             if client.client_type == 'mpegts':
                 client.writeStreamData(None)
-            self.disconnect(client)
-            del client
+            logging.info(f'{self.log_prefix} Client Disconnected. Client ID: {client.client_id}')
 
-        # 念のためクライアントが入るリストを空にする
-        self._clients = []
+        # 全クライアントへの通知が完了した後で、接続クライアントのリストを空にする
+        self._clients.clear()
 
 
     def getStatus(self) -> LiveStreamStatus:
@@ -654,8 +655,8 @@ class LiveStream:
         # ストリームデータの書き込み時刻
         now = time.time()
 
-        # 接続している全てのクライアントの Queue にストリームデータを書き込む
-        for client in self._clients:
+        # timeout client を削除しても後続クライアントへの配信を飛ばさないよう、現在のクライアント一覧を走査する
+        for client in self._clients.copy():
 
             # タイムアウト秒数は 10 秒
             timeout = 10
