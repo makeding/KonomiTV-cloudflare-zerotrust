@@ -14,6 +14,7 @@ import type {
 } from 'libaribhtml5';
 
 import PlayerManager from '@/services/player/PlayerManager';
+import useChannelsStore from '@/stores/ChannelsStore';
 import usePlayerStore from '@/stores/PlayerStore';
 import useSettingsStore from '@/stores/SettingsStore';
 import { dayjs } from '@/utils';
@@ -226,6 +227,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
 
     private readonly player: DPlayer;
     private readonly playback_mode: 'Live' | 'Video';
+    private readonly receiver_default_background_color: number;
     private readonly remocon_element: HTMLElement;
     private readonly remocon_data_broadcasting_element: HTMLElement;
     private viewport: HTMLDivElement | null = null;
@@ -255,6 +257,15 @@ class TLVDataBroadcastingManager implements PlayerManager {
     constructor(player: DPlayer, playback_mode: 'Live' | 'Video') {
         this.player = player;
         this.playback_mode = playback_mode;
+        const network_id = playback_mode === 'Live' ?
+            useChannelsStore().channel.current.network_id :
+            usePlayerStore().recorded_program.network_id;
+        const service_id = playback_mode === 'Live' ?
+            useChannelsStore().channel.current.service_id :
+            usePlayerStore().recorded_program.service_id;
+        // 放送局側が LCT 背景色を送っていない場合の実機互換色。
+        // NHK BS8K (NID11-SID102) は黒、それ以外の BS4K サービスは白を使う。
+        this.receiver_default_background_color = network_id === 11 && service_id === 102 ? 0x000000 : 0xffffff;
         this.remocon_element = document.querySelector('.watch-panel__remocon')!;
         this.remocon_data_broadcasting_element = this.remocon_element.querySelector('.remote-control-data-broadcasting')!;
     }
@@ -385,6 +396,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
             },
         };
         this.host = new AribReceiverHost(receiver_options);
+        this.applyLayoutBackgroundColor(null);
         const host_window = window as RuntimeHostWindow;
         this.previous_installer = host_window.__ARIB_HTML5_INSTALL__;
         this.runtime_installer = target => {
@@ -398,6 +410,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.on('tlv_application_resource', this.handleApplicationResource);
         this.player.on('tlv_application_state', this.handleApplicationState);
         this.player.on('tlv_broadcast_clock', this.handleBroadcastClock);
+        this.player.on('tlv_layout_configuration', this.handleLayoutConfiguration);
         this.player.on('tlv_event_info', this.handleEventInfo);
         this.player.on('tlv_stream_event' as DPlayerType.Events, this.handleStreamEvent);
         this.player.on('tlv_viewer_participation' as DPlayerType.Events, this.handleViewerParticipation);
@@ -415,6 +428,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.off('tlv_application_resource', this.handleApplicationResource);
         this.player.off('tlv_application_state', this.handleApplicationState);
         this.player.off('tlv_broadcast_clock', this.handleBroadcastClock);
+        this.player.off('tlv_layout_configuration', this.handleLayoutConfiguration);
         this.player.off('tlv_event_info', this.handleEventInfo);
         this.player.off('tlv_stream_event' as DPlayerType.Events, this.handleStreamEvent);
         this.player.off('tlv_viewer_participation' as DPlayerType.Events, this.handleViewerParticipation);
@@ -425,6 +439,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.session_generation += 1;
         this.exitApplication();
         this.unlockPanelForApplication();
+        this.host?.setLctBackgroundColor(null);
         this.host?.destroy();
         this.host = null;
         this.viewport?.remove();
@@ -475,6 +490,9 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.plugins.tlv?.setSubtitleSuppressedComponentTags([]);
         this.host?.clearBroadcastClock();
         this.host?.clearProgramInfo();
+        // レイアウト設定は選局中のサービス / セッションだけに属するため、
+        // 非同期の VFS 構築より先に消して、前のチャンネルの LCT 背景色を残さない。
+        this.applyLayoutBackgroundColor(null);
         (this.host as ViewerParticipationHost | null)?.resetViewerParticipationNotifications?.();
         this.exitApplication();
         this.toggleRemoconLoading(true);
@@ -503,6 +521,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
     private replayApplicationSnapshot(): void {
         const plugin = this.player.plugins.tlv;
         if (plugin === undefined) return;
+        this.syncLayoutConfiguration();
         const resources = plugin.applicationResources();
         const applications = plugin.applications();
         console.log('[TLVDataBroadcastingManager] Replaying current demux snapshot.', {
@@ -682,6 +701,21 @@ class TLVDataBroadcastingManager implements PlayerManager {
         }) | undefined;
         const clock = plugin?.broadcastClock?.();
         if (clock !== null && clock !== undefined) this.handleBroadcastClock(clock);
+    }
+
+    private readonly handleLayoutConfiguration = (detail?: Event | DPlayerType.TLVLayoutConfiguration | null): void => {
+        const layout_configuration = detail as DPlayerType.TLVLayoutConfiguration | null | undefined;
+        this.applyLayoutBackgroundColor(layout_configuration?.backgroundColorRgb ?? null);
+    };
+
+    private applyLayoutBackgroundColor(background_color_rgb: number | null): void {
+        // LCT がある場合は放送局指定を優先し、ない場合だけサービス別の実機互換色へ戻す。
+        this.host?.setLctBackgroundColor(background_color_rgb ?? this.receiver_default_background_color);
+    }
+
+    private syncLayoutConfiguration(): void {
+        // リスナー登録前に受信済みの LCT も、DPlayer が保持するスナップショットから復元する。
+        this.handleLayoutConfiguration(this.player.plugins.tlv?.layoutConfiguration() ?? null);
     }
 
     private readonly handleStreamEvent = (detail?: Event | TLVStreamEvent): void => {

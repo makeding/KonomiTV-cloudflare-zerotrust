@@ -1,0 +1,558 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: huggy <i@huggy.moe>
+Date: Tue, 11 Aug 2026 00:00:00 +0900
+Subject: [PATCH] avformat: add libaribtlv demuxer
+
+---
+diff --git a/configure b/configure
+index 1759694..4f692c0 100755
+--- a/configure
++++ b/configure
+@@ -217,6 +217,7 @@ External library support:
+   --enable-libaom          enable AV1 video encoding/decoding via libaom [no]
+   --enable-libaribb24      enable ARIB text and caption decoding via libaribb24 [no]
+   --enable-libaribcaption  enable ARIB text and caption decoding via libaribcaption [no]
++  --enable-libaribtlv      enable ARIB MMT/TLV demuxing via libaribtlv [no]
+   --enable-libass          enable libass subtitles rendering,
+                            needed for subtitles and ass filter [no]
+   --enable-libbluray       enable BluRay reading using libbluray [no]
+@@ -2036,6 +2037,7 @@ EXTERNAL_LIBRARY_LIST="
+     lcms2
+     libaom
+     libaribcaption
++    libaribtlv
+     libass
+     libbluray
+     libbs2b
+@@ -3761,6 +3763,7 @@ libaom_av1_encoder_deps="libaom"
+ libaom_av1_encoder_select="extract_extradata_bsf dovi_rpuenc"
+ libaribb24_decoder_deps="libaribb24"
+ libaribcaption_decoder_deps="libaribcaption"
++libaribtlv_demuxer_deps="libaribtlv"
+ libcelt_decoder_deps="libcelt"
+ libcodec2_decoder_deps="libcodec2"
+ libcodec2_encoder_deps="libcodec2"
+@@ -7238,6 +7241,7 @@ enabled libaribb24        && { check_pkg_config libaribb24 "aribb24 > 1.0.3" "ar
+                                { enabled gpl && require_pkg_config libaribb24 aribb24 "aribb24/aribb24.h" arib_instance_new; } ||
+                                die "ERROR: libaribb24 requires version higher than 1.0.3 or --enable-gpl."; }
+ enabled libaribcaption    && require_pkg_config libaribcaption "libaribcaption >= 1.1.1" "aribcaption/aribcaption.h" aribcc_context_alloc
++enabled libaribtlv        && require_pkg_config libaribtlv "libaribtlv >= 0.2.0" "aribtlv/aribtlv.h" aribtlv_duration_probe_create
+ enabled lv2               && require_pkg_config lv2 lilv-0 "lilv/lilv.h" lilv_world_new
+ enabled libiec61883       && require libiec61883 libiec61883/iec61883.h iec61883_cmp_connect -lraw1394 -lavc1394 -lrom1394 -liec61883
+ enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/ass.h ass_library_init
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index 4786a93..17a03c1 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -671,6 +671,7 @@ OBJS-$(CONFIG_YUV4MPEGPIPE_MUXER)        += yuv4mpegenc.o
+ OBJS-$(CONFIG_AVISYNTH_DEMUXER)          += avisynth.o
+ OBJS-$(CONFIG_CHROMAPRINT_MUXER)         += chromaprint.o
+ OBJS-$(CONFIG_LIBGME_DEMUXER)            += libgme.o
++OBJS-$(CONFIG_LIBARIBTLV_DEMUXER)        += libaribtlv.o
+ OBJS-$(CONFIG_LIBMODPLUG_DEMUXER)        += libmodplug.o
+ OBJS-$(CONFIG_LIBOPENMPT_DEMUXER)        += libopenmpt.o
+ OBJS-$(CONFIG_VAPOURSYNTH_DEMUXER)       += vapoursynth.o
+diff --git a/libavformat/allformats.c b/libavformat/allformats.c
+index 6ec361f..f1186cf 100644
+--- a/libavformat/allformats.c
++++ b/libavformat/allformats.c
+@@ -580,6 +580,7 @@ extern const FFInputFormat  ff_avisynth_demuxer;
+ extern const FFOutputFormat ff_chromaprint_muxer;
+ extern const FFInputFormat  ff_dvdvideo_demuxer;
+ extern const FFInputFormat  ff_libgme_demuxer;
++extern const FFInputFormat  ff_libaribtlv_demuxer;
+ extern const FFInputFormat  ff_libmodplug_demuxer;
+ extern const FFInputFormat  ff_libopenmpt_demuxer;
+ extern const FFInputFormat  ff_vapoursynth_demuxer;
+diff --git a/libavformat/libaribtlv.c b/libavformat/libaribtlv.c
+new file mode 100644
+index 0000000..3da1248
+--- /dev/null
++++ b/libavformat/libaribtlv.c
+@@ -0,0 +1,482 @@
++/*
++ * ARIB MMT/TLV demuxer using libaribtlv
++ * Copyright (c) 2026 huggy
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include <aribtlv/aribtlv.h>
++
++#include <inttypes.h>
++#include <limits.h>
++#include <string.h>
++
++#include "libavutil/channel_layout.h"
++#include "libavutil/intreadwrite.h"
++#include "libavutil/mem.h"
++#include "libavutil/opt.h"
++#include "libavutil/rational.h"
++
++#include "avformat.h"
++#include "demux.h"
++#include "internal.h"
++
++#define ARIBTLV_READ_SIZE (64 * 1024)
++
++typedef struct LibaribtlvTrack {
++    uint64_t id;
++    int stream_index;
++} LibaribtlvTrack;
++
++typedef struct LibaribtlvPacket {
++    AVPacket *packet;
++    struct LibaribtlvPacket *next;
++} LibaribtlvPacket;
++
++typedef struct LibaribtlvContext {
++    const AVClass *class;
++    aribtlv_demuxer *demuxer;
++    AVFormatContext *format;
++    LibaribtlvTrack *tracks;
++    size_t track_count;
++    LibaribtlvPacket *queue_head;
++    LibaribtlvPacket *queue_tail;
++    int64_t service;
++    int64_t bytes_read;
++    int eof;
++    int fatal_error;
++} LibaribtlvContext;
++
++static int libaribtlv_track_index(const LibaribtlvContext *ctx, uint64_t id)
++{
++    size_t i;
++
++    for (i = 0; i < ctx->track_count; i++) {
++        if (ctx->tracks[i].id == id)
++            return ctx->tracks[i].stream_index;
++    }
++    return -1;
++}
++
++static enum AVMediaType libaribtlv_media_type(aribtlv_track_kind kind)
++{
++    switch (kind) {
++    case ARIBTLV_TRACK_VIDEO:    return AVMEDIA_TYPE_VIDEO;
++    case ARIBTLV_TRACK_AUDIO:    return AVMEDIA_TYPE_AUDIO;
++    case ARIBTLV_TRACK_SUBTITLE: return AVMEDIA_TYPE_SUBTITLE;
++    default:                     return AVMEDIA_TYPE_UNKNOWN;
++    }
++}
++
++static enum AVCodecID libaribtlv_codec_id(aribtlv_codec codec)
++{
++    switch (codec) {
++    case ARIBTLV_CODEC_HEVC:     return AV_CODEC_ID_HEVC;
++    case ARIBTLV_CODEC_AAC_LATM: return AV_CODEC_ID_AAC_LATM;
++    case ARIBTLV_CODEC_TTML:     return AV_CODEC_ID_TTML;
++    default:                     return AV_CODEC_ID_NONE;
++    }
++}
++
++static void libaribtlv_on_track(void *opaque, const aribtlv_track_info *track)
++{
++    LibaribtlvContext *ctx = opaque;
++    LibaribtlvTrack *tracks;
++    AVStream *st;
++    int stream_index;
++
++    if (ctx->fatal_error)
++        return;
++
++    stream_index = libaribtlv_track_index(ctx, track->track_id);
++    if (stream_index >= 0) {
++        st = ctx->format->streams[stream_index];
++        st->discard = AVDISCARD_DEFAULT;
++    } else {
++        st = avformat_new_stream(ctx->format, NULL);
++        if (!st) {
++            ctx->fatal_error = AVERROR(ENOMEM);
++            return;
++        }
++        tracks = av_realloc_array(ctx->tracks, ctx->track_count + 1,
++                                  sizeof(*ctx->tracks));
++        if (!tracks) {
++            ctx->fatal_error = AVERROR(ENOMEM);
++            return;
++        }
++        ctx->tracks = tracks;
++        ctx->tracks[ctx->track_count].id = track->track_id;
++        ctx->tracks[ctx->track_count].stream_index = st->index;
++        ctx->track_count++;
++    }
++
++    st->id                   = track->packet_id;
++    st->codecpar->codec_type = libaribtlv_media_type(track->kind);
++    st->codecpar->codec_id   = libaribtlv_codec_id(track->codec);
++    st->codecpar->codec_tag  = 0;
++    avpriv_set_pts_info(st, 64, 1, track->timescale ? track->timescale : 1);
++    if (ctx->format->duration != AV_NOPTS_VALUE)
++        st->duration = av_rescale_q(ctx->format->duration, AV_TIME_BASE_Q,
++                                    st->time_base);
++
++    if (track->language && track->language[0])
++        av_dict_set(&st->metadata, "language", track->language, 0);
++    if (track->has_audio) {
++        st->codecpar->sample_rate = track->audio_sample_rate;
++        if (track->audio_channels)
++            av_channel_layout_default(&st->codecpar->ch_layout,
++                                      track->audio_channels);
++        if (track->audio_main_component)
++            st->disposition |= AV_DISPOSITION_DEFAULT;
++    }
++}
++
++static void libaribtlv_on_track_removed(void *opaque,
++                                        const aribtlv_track_info *track)
++{
++    LibaribtlvContext *ctx = opaque;
++    int stream_index = libaribtlv_track_index(ctx, track->track_id);
++
++    if (stream_index >= 0)
++        ctx->format->streams[stream_index]->discard = AVDISCARD_ALL;
++}
++
++static void libaribtlv_on_access_unit(void *opaque,
++                                      const aribtlv_access_unit *unit)
++{
++    LibaribtlvContext *ctx = opaque;
++    LibaribtlvPacket *queued;
++    AVStream *st;
++    AVPacket *packet;
++    AVRational source_time_base;
++    int stream_index;
++    int ret;
++
++    if (ctx->fatal_error)
++        return;
++    if (unit->size > INT_MAX) {
++        ctx->fatal_error = AVERROR_INVALIDDATA;
++        return;
++    }
++
++    stream_index = libaribtlv_track_index(ctx, unit->track_id);
++    if (stream_index < 0)
++        return;
++    st = ctx->format->streams[stream_index];
++
++    queued = av_mallocz(sizeof(*queued));
++    packet = av_packet_alloc();
++    if (!queued || !packet) {
++        av_free(queued);
++        av_packet_free(&packet);
++        ctx->fatal_error = AVERROR(ENOMEM);
++        return;
++    }
++    ret = av_new_packet(packet, unit->size);
++    if (ret < 0) {
++        av_free(queued);
++        av_packet_free(&packet);
++        ctx->fatal_error = ret;
++        return;
++    }
++    memcpy(packet->data, unit->data, unit->size);
++
++    source_time_base = (AVRational) { 1, unit->pts.timescale ? unit->pts.timescale : 1 };
++    packet->pts = av_rescale_q(unit->pts.value, source_time_base, st->time_base);
++    source_time_base.den = unit->dts.timescale ? unit->dts.timescale : 1;
++    packet->dts = av_rescale_q(unit->dts.value, source_time_base, st->time_base);
++    packet->stream_index = stream_index;
++    packet->pos = unit->input_offset <= INT64_MAX ? unit->input_offset : -1;
++    if (unit->random_access)
++        packet->flags |= AV_PKT_FLAG_KEY;
++
++    queued->packet = packet;
++    if (ctx->queue_tail)
++        ctx->queue_tail->next = queued;
++    else
++        ctx->queue_head = queued;
++    ctx->queue_tail = queued;
++}
++
++static void libaribtlv_on_error(void *opaque, const aribtlv_error *error)
++{
++    LibaribtlvContext *ctx = opaque;
++
++    av_log(ctx->format, error->recoverable ? AV_LOG_WARNING : AV_LOG_ERROR,
++           "libaribtlv at byte %"PRIu64": %s\n", error->input_offset,
++           error->message ? error->message : "demuxing error");
++    if (!error->recoverable)
++        ctx->fatal_error = AVERROR_INVALIDDATA;
++}
++
++static int libaribtlv_push_input(AVFormatContext *s)
++{
++    LibaribtlvContext *ctx = s->priv_data;
++    uint8_t buffer[ARIBTLV_READ_SIZE];
++    int ret;
++
++    if (ctx->eof)
++        return AVERROR_EOF;
++
++    ret = avio_read(s->pb, buffer, sizeof(buffer));
++    if (ret == AVERROR_EOF || (ret == 0 && avio_feof(s->pb))) {
++        ctx->eof = 1;
++        ret = aribtlv_demuxer_flush(ctx->demuxer);
++        if (ret < 0)
++            return ctx->fatal_error ? ctx->fatal_error : AVERROR_INVALIDDATA;
++        return ctx->fatal_error ? ctx->fatal_error : AVERROR_EOF;
++    }
++    if (ret < 0)
++        return ret;
++    if (ret == 0)
++        return AVERROR(EAGAIN);
++
++    ctx->bytes_read += ret;
++    ret = aribtlv_demuxer_push(ctx->demuxer, buffer, ret);
++    if (ret < 0)
++        return ctx->fatal_error ? ctx->fatal_error : AVERROR_INVALIDDATA;
++    return ctx->fatal_error;
++}
++
++static int libaribtlv_probe(const AVProbeData *p)
++{
++    int best_run = 0;
++    size_t start;
++
++    for (start = 0; start + 4 <= p->buf_size; start++) {
++        size_t pos = start;
++        int run = 0;
++
++        while (pos + 4 <= p->buf_size) {
++            uint8_t type;
++            size_t packet_size;
++
++            if (p->buf[pos] != 0x7f)
++                break;
++            type = p->buf[pos + 1];
++            if (type != 0x01 && type != 0x02 && type != 0x03 &&
++                type != 0xfe && type != 0xff)
++                break;
++            packet_size = 4U + AV_RB16(p->buf + pos + 2);
++            if (packet_size > p->buf_size - pos)
++                break;
++            run++;
++            pos += packet_size;
++        }
++        best_run = FFMAX(best_run, run);
++        if (best_run >= 4)
++            return AVPROBE_SCORE_MAX * 3 / 4;
++    }
++
++    if (best_run >= 2)
++        return AVPROBE_SCORE_EXTENSION + 1;
++    if (best_run == 1)
++        return AVPROBE_SCORE_RETRY;
++    return 0;
++}
++
++static void libaribtlv_probe_duration(AVFormatContext *s)
++{
++    aribtlv_duration_probe_options options;
++    aribtlv_duration_probe *probe = NULL;
++    aribtlv_range_request request;
++    aribtlv_duration_info duration;
++    uint8_t *buffer = NULL;
++    int64_t source_size;
++    int64_t restore_offset;
++    int ret;
++
++    if (!(s->pb->seekable & AVIO_SEEKABLE_NORMAL))
++        return;
++    source_size = avio_size(s->pb);
++    restore_offset = avio_tell(s->pb);
++    if (source_size <= 0 || restore_offset < 0)
++        return;
++
++    probe = aribtlv_duration_probe_create();
++    buffer = av_malloc(ARIBTLV_READ_SIZE);
++    if (!probe || !buffer)
++        goto done;
++    aribtlv_duration_probe_options_init(&options);
++    if (aribtlv_duration_probe_begin(probe, source_size, &options) < 0)
++        goto done;
++
++    while (aribtlv_duration_probe_get_state(probe) ==
++           ARIBTLV_DURATION_PROBE_NEED_RANGE) {
++        uint64_t absolute_offset;
++        uint64_t remaining;
++
++        ret = aribtlv_duration_probe_next_range(probe, &request);
++        if (ret != 1 || request.offset > INT64_MAX || request.length > INT64_MAX ||
++            request.offset > (uint64_t)source_size ||
++            request.length > (uint64_t)source_size - request.offset) {
++            break;
++        }
++        if (avio_seek(s->pb, request.offset, SEEK_SET) < 0) {
++            aribtlv_duration_probe_fail_range(probe, request.request_id);
++            break;
++        }
++
++        absolute_offset = request.offset;
++        remaining = request.length;
++        while (remaining) {
++            int chunk = FFMIN(remaining, (uint64_t)ARIBTLV_READ_SIZE);
++            int bytes_read;
++
++            bytes_read = avio_read(s->pb, buffer, chunk);
++            if (bytes_read <= 0) {
++                aribtlv_duration_probe_fail_range(probe, request.request_id);
++                remaining = 0;
++                break;
++            }
++            remaining -= bytes_read;
++            ret = aribtlv_duration_probe_push_range(probe, request.request_id,
++                                                    absolute_offset, buffer,
++                                                    bytes_read,
++                                                    remaining == 0);
++            if (ret < 0) {
++                remaining = 0;
++                break;
++            }
++            absolute_offset += bytes_read;
++        }
++    }
++
++    if (aribtlv_duration_probe_get_state(probe) == ARIBTLV_DURATION_PROBE_COMPLETE &&
++        aribtlv_duration_probe_get_duration(probe, &duration) == ARIBTLV_OK &&
++        duration.status == ARIBTLV_DURATION_COMPLETE && duration.value.timescale &&
++        duration.value.timescale <= INT_MAX) {
++        s->duration = av_rescale_q(duration.value.value,
++                                  (AVRational){ 1, duration.value.timescale },
++                                  AV_TIME_BASE_Q);
++    }
++
++done:
++    av_free(buffer);
++    aribtlv_duration_probe_destroy(probe);
++    avio_seek(s->pb, restore_offset, SEEK_SET);
++}
++
++static int libaribtlv_read_header(AVFormatContext *s)
++{
++    LibaribtlvContext *ctx = s->priv_data;
++    aribtlv_callbacks callbacks;
++    aribtlv_config config;
++    int64_t read_limit = FFMAX(s->probesize, 1024 * 1024);
++    int ret;
++
++    ctx->format = s;
++    libaribtlv_probe_duration(s);
++    aribtlv_callbacks_init(&callbacks);
++    callbacks.on_track = libaribtlv_on_track;
++    callbacks.on_track_removed = libaribtlv_on_track_removed;
++    callbacks.on_access_unit = libaribtlv_on_access_unit;
++    callbacks.on_error = libaribtlv_on_error;
++    aribtlv_config_init(&config);
++    config.collect_application_resources = 0;
++
++    ctx->demuxer = aribtlv_demuxer_create(&config, &callbacks, ctx);
++    if (!ctx->demuxer)
++        return AVERROR(ENOMEM);
++    if (ctx->service >= 0) {
++        ret = aribtlv_demuxer_select_service(ctx->demuxer, (uint32_t)ctx->service);
++        if (ret < 0)
++            return AVERROR(EINVAL);
++    }
++
++    s->ctx_flags |= AVFMTCTX_NOHEADER;
++    while (!s->nb_streams && ctx->bytes_read < read_limit) {
++        ret = libaribtlv_push_input(s);
++        if (ret < 0 && ret != AVERROR_EOF)
++            return ret;
++        if (ret == AVERROR_EOF)
++            break;
++    }
++    if (!s->nb_streams)
++        return AVERROR_INVALIDDATA;
++    return 0;
++}
++
++static int libaribtlv_read_packet(AVFormatContext *s, AVPacket *pkt)
++{
++    LibaribtlvContext *ctx = s->priv_data;
++    LibaribtlvPacket *queued;
++    int ret;
++
++    while (!ctx->queue_head) {
++        ret = libaribtlv_push_input(s);
++        if (ret < 0)
++            return ret;
++    }
++
++    queued = ctx->queue_head;
++    ctx->queue_head = queued->next;
++    if (!ctx->queue_head)
++        ctx->queue_tail = NULL;
++    av_packet_move_ref(pkt, queued->packet);
++    av_packet_free(&queued->packet);
++    av_free(queued);
++    return 0;
++}
++
++static int libaribtlv_read_close(AVFormatContext *s)
++{
++    LibaribtlvContext *ctx = s->priv_data;
++    LibaribtlvPacket *queued;
++
++    aribtlv_demuxer_destroy(ctx->demuxer);
++    ctx->demuxer = NULL;
++    while (ctx->queue_head) {
++        queued = ctx->queue_head;
++        ctx->queue_head = queued->next;
++        av_packet_free(&queued->packet);
++        av_free(queued);
++    }
++    ctx->queue_tail = NULL;
++    av_freep(&ctx->tracks);
++    ctx->track_count = 0;
++    return 0;
++}
++
++#define OFFSET(x) offsetof(LibaribtlvContext, x)
++#define DEC AV_OPT_FLAG_DECODING_PARAM
++static const AVOption libaribtlv_options[] = {
++    { "service", "select compressed-IP context/service (-1 for all)",
++      OFFSET(service), AV_OPT_TYPE_INT64, { .i64 = -1 }, -1, UINT32_MAX, DEC },
++    { NULL }
++};
++
++static const AVClass libaribtlv_class = {
++    .class_name = "libaribtlv demuxer",
++    .item_name  = av_default_item_name,
++    .option     = libaribtlv_options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++const FFInputFormat ff_libaribtlv_demuxer = {
++    .p.name         = "libaribtlv",
++    .p.long_name    = NULL_IF_CONFIG_SMALL("ARIB MMT/TLV (libaribtlv)"),
++    .p.extensions   = "mmt,mmts,tlv",
++    .p.flags        = AVFMT_TS_DISCONT,
++    .p.priv_class   = &libaribtlv_class,
++    .priv_data_size = sizeof(LibaribtlvContext),
++    .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
++    .read_probe     = libaribtlv_probe,
++    .read_header    = libaribtlv_read_header,
++    .read_packet    = libaribtlv_read_packet,
++    .read_close     = libaribtlv_read_close,
++};
+
+-- 
+2.54.0
+

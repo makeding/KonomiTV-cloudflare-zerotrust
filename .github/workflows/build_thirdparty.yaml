@@ -24,14 +24,14 @@ env:
   # Poetry のバージョン
   POETRY_VERSION: '1.8.5'
   # FFmpeg のバージョン
-  ## 公式 FFmpeg の固定タグに、msg7086-forks/FFmpeg:mmt 由来の MMT/TLV 対応パッチを適用してビルドする
+  ## 公式 FFmpeg の固定タグに、libaribtlv を利用する MMT/TLV 対応パッチを適用してビルドする
   ## ビルド環境には BtbN/FFmpeg-Builds の公開済み Docker イメージを使うが、FFmpeg 本体は必ずここで再ビルドする
-  ## ref: https://github.com/FFmpeg/FFmpeg/releases/tag/n8.1
-  ## ref: https://github.com/msg7086-forks/FFmpeg/commits/mmt/
+  ## ref: https://github.com/FFmpeg/FFmpeg/releases/tag/n8.1.2
+  ## ref: https://github.com/makeding/libaribtlv/releases/tag/v0.2.0
   ## ref: https://github.com/BtbN/FFmpeg-Builds
-  ## MMT/TLV パッチ元コミット: 249ad3c36ad36594dcf91c3ef7cf7f5716fc8a19..6c4e1554b6380dafc4939125dfdbf5292ce5f431
-  FFMPEG_SOURCE_TAG: 'n8.1'
+  FFMPEG_SOURCE_TAG: 'n8.1.2'
   FFMPEG_BUILDS_COMMIT_HASH: '8c736b2d6fe5da2a10a8896d01e53bfb0ca4f665'
+  LIBARIBTLV_COMMIT_HASH: '91bafe32479141c660a334cc03aed1f9869a18a5'
   # QSVEncC・NVEncC・VCEEncC・rkmppenc のバージョン
   ## ref: https://github.com/rigaya/QSVEnc/releases
   ## ref: https://github.com/rigaya/NVEnc/releases
@@ -92,9 +92,9 @@ jobs:
           cd FFmpeg-Builds/
           git checkout ${{ env.FFMPEG_BUILDS_COMMIT_HASH }}
 
-      # 公式 FFmpeg のソースに MMT/TLV パッチを適用し、従来と同じ GPL shared 構成でビルド
+      # libaribtlv を静的リンクした FFmpeg に MMT/TLV パッチを適用し、従来と同じ GPL shared 構成でビルド
       ## FFmpeg-Builds の build.sh には FFmpeg 本体向けパッチフックがないため、
-      ## ビルド用コンテナーへ patches/ffmpeg/ を read-only mount し、configure より前に git am する処理を追加する
+      ## ビルド用コンテナーへ patches/ffmpeg/ を read-only mount し、configure より前に git apply する処理を追加する
       - name: Build Patched FFmpeg
         working-directory: FFmpeg-Builds/
         env:
@@ -102,7 +102,9 @@ jobs:
           FFMPEG_REPO_OVERRIDE: https://github.com/FFmpeg/FFmpeg.git
           GIT_BRANCH_OVERRIDE: ${{ env.FFMPEG_SOURCE_TAG }}
         run: |
-          sed -i '/^    cd ffmpeg$/a\    git config user.name "KonomiTV Build Bot"\n    git config user.email "noreply@konomi.tv"\n    git am /ffmpeg-patches/*.patch' build.sh
+          sed -i '/^    rm -rf ffmpeg prefix$/c\    rm -rf ffmpeg prefix libaribtlv\n\n    git clone --filter=blob:none https://github.com/makeding/libaribtlv.git libaribtlv\n    cd libaribtlv\n    git checkout ${{ env.LIBARIBTLV_COMMIT_HASH }}\n    cmake -GNinja -S . -B build -DCMAKE_TOOLCHAIN_FILE="\\$FFBUILD_CMAKE_TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/ffbuild/prefix -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF\n    cmake --build build -j"\\$(nproc)"\n    cmake --install build\n    sed -i "s/^Cflags:/Cflags: -DARIBTLV_STATIC/" /ffbuild/prefix/lib/pkgconfig/libaribtlv.pc\n    export PKG_CONFIG_PATH="/ffbuild/prefix/lib/pkgconfig:\\$PKG_CONFIG_PATH"\n    export FF_CONFIGURE="\\$FF_CONFIGURE --enable-libaribtlv"\n    cd /ffbuild' build.sh
+          sed -i '/^    cd ffmpeg$/a\    git apply /ffmpeg-patches/*.patch' build.sh
+          sed -i '/^    make install install-doc$/a\    cp /ffbuild/libaribtlv/LICENSE /ffbuild/prefix/share/doc/ffmpeg/LICENSE-libaribtlv.txt' build.sh
           sed -i 's|-v "$BUILD_SCRIPT":/build.sh|-v "$BUILD_SCRIPT":/build.sh -v "$FFMPEG_PATCH_DIR":/ffmpeg-patches:ro|' build.sh
 
           # build.sh は GITHUB_REPOSITORY からイメージ名を組み立てるため、公式イメージを実行中のリポジリ名に付け替える
@@ -215,6 +217,7 @@ jobs:
           mkdir thirdparty/FFmpeg/
           cp ffmpeg-*/bin/* thirdparty/FFmpeg/
           cp ffmpeg-*/LICENSE.txt thirdparty/FFmpeg/License.txt
+          cp ffmpeg-*/doc/LICENSE-libaribtlv.txt thirdparty/FFmpeg/License-libaribtlv.txt
           rm thirdparty/FFmpeg/ffplay.exe
 
           # QSVEncC のアーカイブのダウンロード
@@ -424,6 +427,7 @@ jobs:
           cp ffmpeg-*/bin/* thirdparty/FFmpeg/
           cp -r ffmpeg-*/lib/* thirdparty/FFmpeg/
           cp ffmpeg-*/LICENSE.txt thirdparty/FFmpeg/License.txt
+          cp ffmpeg-*/doc/LICENSE-libaribtlv.txt thirdparty/FFmpeg/License-libaribtlv.txt
           rm -rf thirdparty/FFmpeg/pkgconfig
           mv thirdparty/FFmpeg/ffmpeg thirdparty/FFmpeg/ffmpeg.elf
           mv thirdparty/FFmpeg/ffprobe thirdparty/FFmpeg/ffprobe.elf
@@ -527,6 +531,7 @@ jobs:
           cp ffmpeg-*/bin/* thirdparty/FFmpeg/
           cp -r ffmpeg-*/lib/* thirdparty/FFmpeg/
           cp ffmpeg-*/LICENSE.txt thirdparty/FFmpeg/License.txt
+          cp ffmpeg-*/doc/LICENSE-libaribtlv.txt thirdparty/FFmpeg/License-libaribtlv.txt
           rm -rf thirdparty/FFmpeg/pkgconfig
           mv thirdparty/FFmpeg/ffmpeg thirdparty/FFmpeg/ffmpeg.elf
           mv thirdparty/FFmpeg/ffprobe thirdparty/FFmpeg/ffprobe.elf
