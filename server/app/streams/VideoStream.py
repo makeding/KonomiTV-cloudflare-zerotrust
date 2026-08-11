@@ -20,7 +20,7 @@ from tortoise import transactions
 
 from app import logging
 from app.config import Config
-from app.constants import QUALITY_TYPES
+from app.constants import VIDEO_QUALITY_TYPES
 from app.models.RecordedProgram import RecordedProgram
 from app.models.RecordedVideo import RecordedVideo
 from app.schemas import KeyFrame, SegmentMapEntry
@@ -131,7 +131,7 @@ class VideoStream:
         cls,
         session_id: str,
         recorded_program: RecordedProgram,
-        quality: QUALITY_TYPES,
+        quality: VIDEO_QUALITY_TYPES,
         encoding_options: StreamEncodingOptions | None = None,
         is_new_session_allowed: bool = False,
     ) -> VideoStream:
@@ -256,7 +256,7 @@ class VideoStream:
         self,
         session_id: str,
         recorded_program: RecordedProgram,
-        quality: QUALITY_TYPES,
+        quality: VIDEO_QUALITY_TYPES,
         encoding_options: StreamEncodingOptions | None = None,
         is_new_session_allowed: bool = False,
     ) -> None:
@@ -266,7 +266,7 @@ class VideoStream:
         Args:
             session_id (str): セッション ID
             recorded_program (RecordedProgram): 録画番組の情報
-            quality (QUALITY_TYPES): 映像の品質 (1080p-60fps ~ 240p)
+            quality (VIDEO_QUALITY_TYPES): 映像の品質 (copy / 1080p-60fps ~ 240p)
             encoding_options (StreamEncodingOptions | None): ベース画質に追加するエンコードオプション
             is_new_session_allowed (bool): セッションが存在しない場合に新規作成を許可するかどうか
         """
@@ -275,7 +275,7 @@ class VideoStream:
         # Singleton のためインスタンスの生成は __new__() で行うが、__init__() も定義しておかないと補完がうまく効かない
         self.session_id: str
         self.recorded_program: RecordedProgram
-        self.quality: QUALITY_TYPES
+        self.quality: VIDEO_QUALITY_TYPES
         self.encoding_options: StreamEncodingOptions
         self._segment_duration_seconds: float
         self._segments: list[VideoStreamSegment]

@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.config import Config
-from app.constants import LIVE_QUALITY_TYPES, QUALITY, QUALITY_TYPES
+from app.constants import (
+    LIVE_QUALITY_TYPES,
+    QUALITY,
+    QUALITY_TYPES,
+    VIDEO_QUALITY_TYPES,
+)
 
 
 @dataclass(frozen=True)
@@ -91,13 +96,13 @@ class StreamQualityWithOptions:
     API パスの品質指定を、ベース画質と追加エンコードオプションへ分解した結果を表す
 
     Args:
-        quality (QUALITY_TYPES): ベース画質
+        quality (VIDEO_QUALITY_TYPES): 録画ストリーミングで利用する画質
         encoding_options (StreamEncodingOptions): ベース画質に追加するエンコードオプション
     """
 
-    # QUALITY に定義されているベース画質
-    ## API パスには 720p-hevc-10bit-24fps のようにオプション付きの品質が渡されるが、エンコード処理にはこの値だけを渡す
-    quality: QUALITY_TYPES
+    # 録画ストリーミングで利用する画質
+    ## copy は QUALITY に含まれず、FFmpeg stream copy を使う録画専用の特殊な品質として扱う
+    quality: VIDEO_QUALITY_TYPES
 
     # ベース画質に追加するエンコードオプション
     ## HEVC 10bit や 24fps モードは、ベース画質から分けてストリーム ID やエンコード引数へ渡す
@@ -133,6 +138,14 @@ def SplitQualityAndEncodingOptions(quality: str) -> StreamQualityWithOptions | N
     Returns:
         StreamQualityWithOptions | None: 分解結果 (不正な品質指定の場合は None)
     """
+
+    # MPEG-TS パススルーは画質変換を一切行わない録画専用の品質として扱う
+    ## エンコードオプションは元映像の変換を要求する値なので、常にデフォルト値のまま使う
+    if quality == 'copy':
+        return StreamQualityWithOptions(
+            quality = 'copy',
+            encoding_options = StreamEncodingOptions(),
+        )
 
     # -10bit / -24fps は buildSuffix() と同じ順序でのみ受け付ける
     ## 末尾から剥がすことで、1080p-60fps-hevc のようにベース画質自体が -hevc を含むケースを安全に扱う
@@ -185,7 +198,7 @@ def SplitLiveQualityAndEncodingOptions(quality: str) -> LiveStreamQualityWithOpt
 
     # 通常のライブ品質は録画配信と同じ分解ロジックを利用する
     stream_quality = SplitQualityAndEncodingOptions(quality)
-    if stream_quality is None:
+    if stream_quality is None or stream_quality.quality == 'copy':
         return None
 
     return LiveStreamQualityWithOptions(

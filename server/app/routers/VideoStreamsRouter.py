@@ -95,6 +95,44 @@ async def ValidateQuality(quality: Annotated[str, Path(description='映像の品
     return stream_quality
 
 
+def ValidateVideoCopyQuality(recorded_program: RecordedProgram, stream_quality: StreamQualityWithOptions) -> None:
+    """
+    MPEG-TS パススルー品質を利用できる録画か検証する
+
+    Args:
+        recorded_program (RecordedProgram): 配信対象の録画番組
+        stream_quality (StreamQualityWithOptions): リクエストされた録画ストリーミング品質
+
+    Returns:
+        None
+    """
+
+    # 通常の再エンコード品質では追加の制約を設けない
+    if stream_quality.quality != 'copy':
+        return
+
+    recorded_video = recorded_program.recorded_video
+    is_copy_compatible = (
+        recorded_video.status == 'Recorded' and
+        recorded_video.container_format == 'MPEG-TS' and
+        recorded_video.video_codec in ['H.264', 'H.265'] and
+        recorded_video.video_scan_type == 'Progressive' and
+        recorded_video.has_video_stream_changes is False
+    )
+    if is_copy_compatible is False:
+        logging.error(
+            f'[VideoStreamsRouter][ValidateVideoCopyQuality] Specified video is not compatible with stream copy. '
+            f'[video_id: {recorded_program.id}, status: {recorded_video.status}, '
+            f'container_format: {recorded_video.container_format}, video_codec: {recorded_video.video_codec}, '
+            f'video_scan_type: {recorded_video.video_scan_type}, '
+            f'has_video_stream_changes: {recorded_video.has_video_stream_changes}]'
+        )
+        raise HTTPException(
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail = 'Specified video is not compatible with stream copy',
+        )
+
+
 @router.get(
     '/{video_id}/raw-mmts/mpegts',
     summary = '録画番組 Raw MMTS ストリーム API',
@@ -172,6 +210,9 @@ async def VideoHLSPlaylistAPI(
     この M3U8 プレイリストは仮想的なもので、すべてのセグメントデータがエンコード済みとは限らない。セグメントはリクエストされ次第随時生成される。
     """
 
+    # MPEG-TS パススルー品質では、元映像をそのまま配信できる録画だけを受け付ける
+    ValidateVideoCopyQuality(recorded_program, stream_quality)
+
     # 品質とオプション指定に対応する録画視聴セッションを作成または取得
     video_stream = VideoStream(
         session_id,
@@ -215,6 +256,9 @@ async def VideoHLSSegmentAPI(
     呼び出された時点でエンコードされていない場合は既存のエンコードタスクが終了され、<br>
     sequence の HLS セグメントが含まれる範囲から新たにエンコードタスクが開始される。
     """
+
+    # MPEG-TS パススルー品質では、元映像をそのまま配信できる録画だけを受け付ける
+    ValidateVideoCopyQuality(recorded_program, stream_quality)
 
     # 品質とオプション指定に対応する録画視聴セッションを取得
     video_stream = VideoStream(session_id, recorded_program, stream_quality.quality, stream_quality.encoding_options)
@@ -268,6 +312,9 @@ async def VideoHLSBufferAPI(
     どのイベントでも配信される JSON 構造は同じ。<br>
     エンコードタスクが終了した場合は、接続を終了する。
     """
+
+    # MPEG-TS パススルー品質では、元映像をそのまま配信できる録画だけを受け付ける
+    ValidateVideoCopyQuality(recorded_program, stream_quality)
 
     # 品質とオプション指定に対応する録画視聴セッションを取得
     video_stream = VideoStream(session_id, recorded_program, stream_quality.quality, stream_quality.encoding_options)
@@ -329,6 +376,9 @@ async def VideoHLSKeepAliveAPI(
     ストリーミングセッションを維持するために、この API は録画番組の視聴を続けている間、定期的に呼び出さなければならない。<br>
     この API が定期的に呼び出されなくなった場合、一定時間後にストリーミング用 HLS セグメントの生成が停止され、メモリ上のデータが破棄される。
     """
+
+    # MPEG-TS パススルー品質では、元映像をそのまま配信できる録画だけを受け付ける
+    ValidateVideoCopyQuality(recorded_program, stream_quality)
 
     # 品質とオプション指定に対応する録画視聴セッションを取得
     video_stream = VideoStream(session_id, recorded_program, stream_quality.quality, stream_quality.encoding_options)

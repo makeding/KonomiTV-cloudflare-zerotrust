@@ -192,6 +192,37 @@ class VideoEncodingTask:
         return result
 
 
+    def buildFFmpegCopyOptions(self, output_ts_offset: float) -> list[str]:
+        """
+        再エンコードせず MPEG-TS を再多重化する FFmpeg オプションを組み立てる
+
+        Args:
+            output_ts_offset (float): 出力 TS のタイムスタンプオフセット (秒)
+
+        Returns:
+            list[str]: FFmpeg に渡すオプションが連なる配列
+        """
+
+        # tsreadex で単一サービス化・音声正規化・字幕 ID3 化した全ストリームをそのまま再多重化する
+        ## 映像だけでなく音声とデータも copy することで、既に変換済みの録画へ再び非可逆変換を加えない
+        options = [
+            '-f', 'mpegts',
+            '-analyzeduration', '1500000',
+            '-i', 'pipe:0',
+            '-map', '0:v:0',
+            '-map', '0:a:0',
+            '-map', '0:a:1',
+            '-map', '0:d?',
+            '-ignore_unknown',
+            '-codec', 'copy',
+            '-output_ts_offset', str(output_ts_offset),
+            '-y',
+            '-f', 'mpegts',
+            'pipe:1',
+        ]
+        return options
+
+
     def buildHWEncCOptions(self,
         quality: QUALITY_TYPES,
         encoder_type: Literal['QSVEncC', 'NVEncC', 'VCEEncC', 'rkmppenc'],
@@ -397,6 +428,11 @@ class VideoEncodingTask:
         # エンコーダーの種類を取得
         CONFIG = Config()
         ENCODER_TYPE = CONFIG.general.encoder
+
+        # MPEG-TS パススルーでは、設定されたハードウェアエンコーダーを使わず FFmpeg の stream copy に固定する
+        ## tsreadex と後段の HLS 分割処理は維持し、映像・音声・字幕の再エンコードだけを行わない
+        if self.video_stream.quality == 'copy':
+            ENCODER_TYPE = 'FFmpeg'
 
         # 映像 PID や映像ストリーム構成が途中で変わる録画（マルチ編成開始/終了での解像度変更時など）に関して、HWEncC 系エンコーダーは
         # --avhw だと録画マージン区間 -> 本編での解像度切り替えに対応できずクラッシュし、--avsw の場合はエラーこそ出ないがデコードがめちゃくちゃになる問題がある
@@ -990,7 +1026,10 @@ class VideoEncodingTask:
                 # FFmpeg
                 if ENCODER_TYPE == 'FFmpeg':
                     # オプションを取得
-                    encoder_options = self.buildFFmpegOptions(self.video_stream.quality, output_ts_offset)
+                    if self.video_stream.quality == 'copy':
+                        encoder_options = self.buildFFmpegCopyOptions(output_ts_offset)
+                    else:
+                        encoder_options = self.buildFFmpegOptions(self.video_stream.quality, output_ts_offset)
                     logging.info(f'{self.video_stream.log_prefix} FFmpeg Commands:\nffmpeg {" ".join(encoder_options)}')
 
                     # エンコーダープロセスを作成・実行
@@ -1009,7 +1048,9 @@ class VideoEncodingTask:
                 # HWEncC
                 else:
                     # オプションを取得
-                    encoder_options = self.buildHWEncCOptions(self.video_stream.quality, ENCODER_TYPE, output_ts_offset)
+                    quality = self.video_stream.quality
+                    assert quality != 'copy'
+                    encoder_options = self.buildHWEncCOptions(quality, ENCODER_TYPE, output_ts_offset)
                     logging.info(f'{self.video_stream.log_prefix} {ENCODER_TYPE} Commands:\n{ENCODER_TYPE} {" ".join(encoder_options)}')
 
                     # エンコーダープロセスを作成・実行

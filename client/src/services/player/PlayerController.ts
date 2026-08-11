@@ -59,9 +59,10 @@ class PlayerController {
     // 視聴履歴の更新間隔 (秒)
     private static readonly WATCHED_HISTORY_UPDATE_INTERVAL = 10;
 
-    // BS4K/BS8K の TLV/MMT を変換せずに再生する特殊な画質の表示名
+    // 元ストリームを再エンコードせずに再生する特殊な画質の表示名
     private static readonly PASSTHROUGH_PRIMARY_QUALITY_NAME = 'TLV パススルー';
     private static readonly PASSTHROUGH_SECONDARY_QUALITY_NAME = 'TLV パススルー（降雨放送）';
+    private static readonly MPEGTS_PASSTHROUGH_QUALITY_NAME = 'MPEG-TS パススルー';
     private static readonly PASSTHROUGH_LEGACY_QUALITY_NAMES = ['Raw MMTS', 'TLV パススルー'];
     private static readonly PASSTHROUGH_LEGACY_SECONDARY_QUALITY_NAMES = ['TLV パススルー（降雨対応）'];
 
@@ -368,6 +369,29 @@ class PlayerController {
         // HEVC 10bit は通信節約モード中の対応環境にだけ透過的に要求する
         // MediaCapabilities で滑らかに再生できると判断できない場合は、通常の HEVC 8bit に留めて互換性を優先する
         const is_hevc_10bit_playback = is_hevc_playback === true && await PlayerUtils.isHEVC10bitVideoSupported();
+
+        // 再エンコード済みの MPEG-TS 録画は、ブラウザが元コーデックを再生できる場合だけ FFmpeg stream copy を利用できる
+        // 録画中・インターレース・映像構成切り替えありのファイルは、固定 HLS セグメントへ安全に分割できないため対象外にする
+        const recorded_video = this.playback_mode === 'Video' ? player_store.recorded_program.recorded_video : null;
+        const is_mpegts_passthrough_available = recorded_video !== null &&
+            recorded_video.status === 'Recorded' &&
+            recorded_video.container_format === 'MPEG-TS' &&
+            recorded_video.video_scan_type === 'Progressive' &&
+            recorded_video.has_video_stream_changes === false &&
+            (
+                (
+                    recorded_video.video_codec === 'H.264' &&
+                    recorded_video.video_codec_profile !== 'High 10'
+                ) ||
+                (
+                    recorded_video.video_codec === 'H.265' &&
+                    is_hevc_playback === true &&
+                    (
+                        recorded_video.video_codec_profile !== 'Main 10' ||
+                        is_hevc_10bit_playback === true
+                    )
+                )
+            );
 
         // upstream の mpegts.js には旧 mmts.js fork の Worker 内 HEVC 対応判定 API がない。
         // HEVC 再生時だけ Worker を無効化し、未検証の Worker 経路へ入らないようにする。
@@ -847,6 +871,16 @@ class PlayerController {
                             });
                         }
 
+                        // H.264 / H.265 へ変換済みの MPEG-TS は、FFmpeg で再エンコードせず HLS へ再多重化する
+                        if (is_mpegts_passthrough_available === true) {
+                            const session_id = crypto.randomUUID().split('-')[0];
+                            qualities.push({
+                                name: PlayerController.MPEGTS_PASSTHROUGH_QUALITY_NAME,
+                                type: 'hls',
+                                url: `${streaming_api_base_url}/copy/playlist?session_id=${session_id}`,
+                            });
+                        }
+
                         // 画質リストを作成
                         for (const quality_name of VIDEO_STREAMING_QUALITIES) {
                             // 画質ごとに異なるセッション ID を生成 (セッション ID は UUID の - で区切って一番左側のみを使う)
@@ -879,11 +913,21 @@ class PlayerController {
                     } else if (is_mmts_recorded_video === true) {
                         // MMT/TLV 録画ファイルは raw 直通再生を既定にする
                         default_quality = PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME;
+                    } else if (is_mpegts_passthrough_available === true) {
+                        // 変換済み MPEG-TS 録画は、再エンコードを行わない画質を既定にする
+                        default_quality = PlayerController.MPEGTS_PASSTHROUGH_QUALITY_NAME;
                     } else {
                         default_quality = this.quality_profile.video_streaming_quality;
                     }
                     // MMT/TLV 以外の録画番組で raw 直通画質のレジューム情報が残っている場合は通常画質に戻す
                     if (default_quality === PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME && is_mmts_recorded_video === false) {
+                        default_quality = this.quality_profile.video_streaming_quality;
+                    }
+                    // MPEG-TS パススルーを利用できない録画へ画質情報が持ち越された場合は通常画質に戻す
+                    if (
+                        default_quality === PlayerController.MPEGTS_PASSTHROUGH_QUALITY_NAME &&
+                        is_mpegts_passthrough_available === false
+                    ) {
                         default_quality = this.quality_profile.video_streaming_quality;
                     }
                     const tile_info = player_store.recorded_program.recorded_video.thumbnail_info?.tile ?? null;

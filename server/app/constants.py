@@ -224,6 +224,10 @@ QUALITY_TYPES = Literal[
     '240p-hevc',
 ]
 
+# 録画ストリーミング専用の品質の種類 (型定義)
+## copy は既に H.264 / H.265 へ変換済みの MPEG-TS を、FFmpeg で再エンコードせず HLS へ再多重化する特殊な品質。
+VIDEO_QUALITY_TYPES = QUALITY_TYPES | Literal['copy']
+
 # ライブストリーミング専用の品質の種類 (型定義)
 ## raw-mmts は BS4K の MMTS を Mirakurun から decode=0 で受け取り、そのままブラウザへ配信する特殊な品質。
 ## エンコードを行わないため QUALITY には含めず、ライブストリーム側だけで扱う。
