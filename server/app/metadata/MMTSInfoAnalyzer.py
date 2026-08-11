@@ -231,7 +231,20 @@ class MMTSInfoAnalyzer:
 
         recording_time = self.__analyzeRecordingTime(tables)
         event = self.__selectBestEvent(events, file_modified_at, recording_time)
-        media_info = self.__analyzeMediaInfo(tables, event.duration)
+        event_end_time = event.start_time + timedelta(seconds=event.duration)
+
+        # MH-TOT の先頭・末尾時刻を取得できた場合は、EPG 上の番組時間ではなく実際に収録された範囲を動画の時長とする。
+        ## 番組の途中で録画が終了したファイルに MH-EIT の番組時長を流用すると、一覧表示やシーク位置が実ファイルより長くなる。
+        if recording_time is not None:
+            recording_start_time, recording_end_time = recording_time
+            recorded_duration = (recording_end_time - recording_start_time).total_seconds()
+        else:
+            # MH-TOT を十分に取得できない場合だけ、従来どおり MH-EIT の番組時間を録画時間として使用する。
+            recording_start_time = event.start_time
+            recording_end_time = event_end_time
+            recorded_duration = event.duration
+
+        media_info = self.__analyzeMediaInfo(tables, recorded_duration)
         channel = self.__buildChannel(service)
 
         # MMT/TLV 本体は FFprobe で扱えないため、MPT と MH-EIT から KonomiTV が必要とする最小メディア情報を復元する。
@@ -242,8 +255,8 @@ class MMTSInfoAnalyzer:
             file_size = file_size,
             file_created_at = file_created_at,
             file_modified_at = file_modified_at,
-            recording_start_time = event.start_time,
-            recording_end_time = event.start_time + timedelta(seconds=media_info.duration),
+            recording_start_time = recording_start_time,
+            recording_end_time = recording_end_time,
             duration = media_info.duration,
             container_format = 'MMT/TLV',
             video_codec = 'H.265',
@@ -276,14 +289,17 @@ class MMTSInfoAnalyzer:
             detail = event.detail,
             genres = event.genres,
             start_time = event.start_time,
-            end_time = event.start_time + timedelta(seconds=event.duration),
+            end_time = event_end_time,
             duration = event.duration,
             is_free = event.is_free,
             secondary_audio_type = event.secondary_audio_type,
             secondary_audio_language = event.secondary_audio_language,
-            recording_start_margin = 0.0,
-            recording_end_margin = max(media_info.duration - event.duration, 0.0),
-            is_partially_recorded = False,
+            recording_start_margin = max((event.start_time - recording_start_time).total_seconds(), 0.0),
+            recording_end_margin = max((recording_end_time - event_end_time).total_seconds(), 0.0),
+            is_partially_recorded = (
+                event.start_time < recording_start_time or
+                recording_end_time < event_end_time
+            ),
             # 必須フィールドのため作成日時・更新日時は適当に現在時刻を入れている
             # この値は参照されず、DB の値は別途自動生成される
             created_at = datetime.now(tz=JST),
