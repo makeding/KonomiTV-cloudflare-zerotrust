@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import pathlib
+import weakref
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import ClassVar, Literal, cast
 
 import anyio
@@ -31,7 +32,6 @@ from app.utils.ProcessLimiter import ProcessLimiter
 from app.utils.RecordingStatusProvider import (
     ActiveRecordingFilePaths,
     GetActiveRecordingFilePaths,
-    GetEPGStationRecentRecordedFilePaths,
     IsActiveRecordingFilePath,
 )
 from app.utils.TSInformation import TSInformation
@@ -70,6 +70,14 @@ class RecordedVideoSummary:
     duration: float
 
 
+class RecordedFileMetadataNotStableError(Exception):
+    """録画ファイルが更新中で、安全にメタデータを再解析できないことを表す例外。"""
+
+
+class RecordedFileMetadataRefreshError(Exception):
+    """録画ファイルのメタデータ再解析が完了しなかったことを表す例外。"""
+
+
 class RecordedScanTask:
     """
     録画フォルダの監視とメタデータの DB への同期を行うタスク
@@ -85,10 +93,6 @@ class RecordedScanTask:
     # スキャン対象の拡張子
     SCAN_TARGET_EXTENSIONS: ClassVar[list[str]] = ['.ts', '.m2t', '.m2ts', '.mts', '.mp4', '.mmts']
 
-    # MetadataAnalyzer がファイルハッシュ計算に必要とする最小ファイルサイズ (3 * 1MiB)
-    # これ未満の録画ファイルは解析しても必ず ValueError になるため、直近 EPGStation 同期では入口でスキップする。
-    MINIMUM_ANALYZABLE_FILE_SIZE_BYTES: ClassVar[int] = 3 * 1024 * 1024
-
     # 録画中ファイルの更新イベントを間引く間隔 (ログ出力用) (秒)
     UPDATE_THROTTLE_SECONDS: ClassVar[int] = 30
 
@@ -100,12 +104,6 @@ class RecordedScanTask:
 
     # 録画バックエンドから取得した録画中ファイルパスのキャッシュ有効時間 (秒)
     ACTIVE_RECORDING_PATHS_CACHE_SECONDS: ClassVar[int] = 5
-
-    # 録画バックエンドが把握している録画中ファイルを同期する間隔 (秒)
-    ACTIVE_RECORDING_SYNC_INTERVAL_SECONDS: ClassVar[int] = 5
-
-    # EPGStation が把握している直近録画済み一覧を同期する間隔 (秒)
-    EPGSTATION_RECENT_RECORDED_SYNC_INTERVAL_SECONDS: ClassVar[int] = 60
 
     # 録画中ファイルの最小データ長 (秒)
     MINIMUM_RECORDING_SECONDS: ClassVar[int] = 60
@@ -160,30 +158,9 @@ class RecordedScanTask:
         self._active_recording_paths_cache: ActiveRecordingFilePaths | None = None
         self._active_recording_paths_cache_updated_at: datetime | None = None
         self._active_recording_paths_lock = asyncio.Lock()
-        # 録画バックエンドが把握している録画中ファイルパスのログ出力重複を抑えるため、直前の状態を保持する。
-        ## 参照箇所: __syncActiveRecordingFiles()
-        ## 前提条件: 文字列化済みパスの集合だけを保持し、ファイル実体にはアクセスしない。
-        self._active_recording_paths_log_signature: tuple[bool, tuple[str, ...]] | None = None
-        # EPGStation の直近録画済み一覧で一度実体を確認したファイルパスを保持する。
-        ## 参照箇所: __syncEPGStationRecentRecordedFiles()
-        ## 前提条件: 直近20件の範囲外へ押し出された録画を削除扱いしないため、実在を確認できたパスだけを削除追跡対象にする。
-        self._epgstation_tracked_recorded_paths: set[str] = set()
-        # EPGStation の直近録画済み一覧同期のログ出力重複を抑えるため、直前の状態を保持する。
-        ## 参照箇所: __syncEPGStationRecentRecordedFiles()
-        ## 前提条件: 件数とページ数だけを保持し、ファイル実体にはアクセスしない。
-        self._epgstation_recent_recorded_log_signature: tuple[int, int, int] | None = None
-        # EPGStation の直近録画済み一覧で解析に失敗したファイルの状態を保持する。
-        ## 参照箇所: __syncEPGStationRecentRecordedFiles()
-        ## 前提条件: 同じ file_path / file_size / file_modified_at のままなら、次回以降も同じ解析失敗になる可能性が高い。
-        ## そのため未変更の失敗ファイルは再解析せず、以降の正常ファイルの同期を塞がないようにする。
-        self._epgstation_failed_recorded_file_signatures: dict[str, tuple[int, datetime]] = {}
-
         # タスクの状態管理
         self._is_running = False
         self._task: asyncio.Task[None] | None = None
-        # 録画バックエンドが把握している録画中ファイルだけを同期するタスクの状態管理
-        self._is_active_recording_sync_running = False
-        self._active_recording_sync_task: asyncio.Task[None] | None = None
 
         # 録画フォルダ以下の一括スキャンを実行中かどうか
         self._is_batch_scan_running = False
@@ -191,8 +168,16 @@ class RecordedScanTask:
         # バックグラウンドタスクの状態管理
         self._background_tasks: dict[anyio.Path, asyncio.Task[None]] = {}
 
-        # ファイルパスごとのロックを管理する辞書
-        self._file_locks: dict[anyio.Path, asyncio.Lock] = {}
+        # 再生開始前のファイルメタデータ再解析タスクをファイルパスごとに共有する。
+        ## 参照箇所: refreshRecordedFileMetadataIfNeeded()
+        ## 前提条件: 同じ録画への複数リクエストが重なっても、重い解析処理は常に 1 回だけ実行する。
+        self._metadata_refresh_tasks: dict[anyio.Path, asyncio.Task[None]] = {}
+        # _metadata_refresh_tasks 辞書自体へのアクセスを保護するためのロック
+        self._metadata_refresh_tasks_lock = asyncio.Lock()
+
+        # ファイルパスごとのロックを弱参照で管理し、処理完了後に参照されなくなったロックを自動的に解放する。
+        ## 待機中のタスクはロックへの強参照を保持するため、処理中に別ロックが生成されることはない。
+        self._file_locks: weakref.WeakValueDictionary[anyio.Path, asyncio.Lock] = weakref.WeakValueDictionary()
         # _file_locks 辞書自体へのアクセスを保護するためのロック
         self._file_locks_dict_lock = asyncio.Lock()
         # 録画専用チャンネルの枝番計算と保存を直列化するためのロック
@@ -232,408 +217,6 @@ class RecordedScanTask:
             return self._active_recording_paths_cache
 
 
-    async def __syncActiveRecordingFiles(self) -> None:
-        """
-        録画バックエンドが把握している録画中ファイルだけを DB と同期する。
-        """
-
-        active_recording_file_paths = await self.__getActiveRecordingFilePaths()
-
-        # 録画バックエンドから信頼できる結果が得られない場合は、従来のファイル監視による推測に任せる。
-        if active_recording_file_paths.is_reliable is False:
-            return
-
-        # EPGStation / EDCB への問い合わせが動いていることを確認しやすいよう、
-        # active path の状態が変化したときだけ info レベルで要約を出力する。
-        current_signature = (
-            active_recording_file_paths.is_reliable,
-            tuple(sorted(active_recording_file_paths.paths)),
-        )
-        if current_signature != self._active_recording_paths_log_signature:
-            self._active_recording_paths_log_signature = current_signature
-            logging.info(
-                f'Active recording paths from {active_recording_file_paths.backend}: '
-                f'{len(active_recording_file_paths.paths)} candidate(s).'
-            )
-
-        # EPGStation は録画ファイル名だけを返す構成があるため、RecordingStatusProvider 側で recorded_folders 配下に展開済みの候補を総当たりする。
-        # 存在するファイルだけを処理対象にすることで、全録画フォルダのスキャンを避ける。
-        processed_paths: set[str] = set()
-        for active_path in sorted(active_recording_file_paths.paths):
-            file_path = anyio.Path(active_path)
-            if file_path.suffix.lower() not in self.SCAN_TARGET_EXTENSIONS:
-                continue
-            if str(file_path) in processed_paths:
-                continue
-            if await self.isFileExists(file_path) is False:
-                continue
-            processed_paths.add(str(file_path))
-
-            # active list に載っているファイルは録画中として管理対象に入れてから通常の単一ファイル処理へ渡す。
-            ## 既に DB が Recording なら processRecordedFile() 側で早期 return するため、5 秒間隔でも重い再解析は避けられる。
-            stat = await file_path.stat()
-            file_modified_at = datetime.fromtimestamp(stat.st_mtime, tz=JST)
-            self._recording_files[file_path] = FileRecordingInfo(
-                last_modified = file_modified_at,
-                last_checked = datetime.now(tz=JST),
-                file_size = stat.st_size,
-                mtime_continuous_start_at = file_modified_at,
-            )
-            await self.processRecordedFile(file_path)
-
-        # DB に残っている Recording レコードのうち、録画バックエンドの active list に存在しないものは録画完了候補として処理する。
-        ## 件数は通常ごく少数なので、全録画フォルダのスキャンよりはるかに軽い。
-        recording_video_rows = await RecordedVideo.filter(status='Recording').values('file_path', 'recorded_program_id')
-        for row in recording_video_rows:
-            file_path_str = row['file_path']
-            if IsActiveRecordingFilePath(file_path_str, active_recording_file_paths.paths) is True:
-                continue
-            file_path = anyio.Path(file_path_str)
-            self._recording_files.pop(file_path, None)
-            if await self.isFileExists(file_path) is True:
-                await self.processRecordedFile(file_path)
-            else:
-                await RecordedProgram.filter(id=row['recorded_program_id']).delete()
-                logging.info(
-                    f'{file_path}: Deleted stale Recording record for non-existent file. '
-                    f'[recorded_program_id: {row["recorded_program_id"]}]'
-                )
-
-
-    async def __syncEPGStationRecentRecordedFiles(self) -> None:
-        """
-        EPGStation が把握している直近の録画済みファイルを DB と同期する。
-        """
-
-        # EDCB / Mirakurun / ファイル監視だけの構成では EPGStation の録画済み一覧を参照しない。
-        if self.config.general.backend != 'EPGStation':
-            return
-
-        recent_recorded_file_paths = await GetEPGStationRecentRecordedFilePaths(self.config)
-
-        # EPGStation が落ちている/応答できない場合は、次回の定期同期で必ず再試行する。
-        ## ここで既存の追跡状態を消すと、一時的な EPGStation 障害を削除扱いしてしまうため何もしない。
-        if recent_recorded_file_paths.is_reliable is False:
-            return
-
-        # EPGStation への録画済み一覧問い合わせが動いていることを確認しやすいよう、
-        # 取得件数・ページ数・総件数が変化したときだけ info レベルで要約を出力する。
-        current_signature = (
-            len(recent_recorded_file_paths.paths),
-            recent_recorded_file_paths.requested_pages,
-            recent_recorded_file_paths.total,
-        )
-        if current_signature != self._epgstation_recent_recorded_log_signature:
-            self._epgstation_recent_recorded_log_signature = current_signature
-            logging.info(
-                f'Recent recorded paths from EPGStation: '
-                f'{len(recent_recorded_file_paths.paths)} candidate(s), '
-                f'{recent_recorded_file_paths.requested_pages} page(s), '
-                f'total: {recent_recorded_file_paths.total}.'
-            )
-
-        # 人力調査用に、EPGStation 側から取得できた候補パスをそのままログに出す。
-        # この一覧と後続の DB 照合ログを突き合わせることで、「EPGStation にはあるが HonomiTV に入っていない」ファイルを特定できる。
-        epgstation_candidate_paths = sorted(recent_recorded_file_paths.paths)
-        if len(epgstation_candidate_paths) > 0:
-            logging.info(
-                '[RecordedScanTask][EPGStation] Recent recorded candidate paths:\n' +
-                '\n'.join([f'  - {path}' for path in epgstation_candidate_paths])
-            )
-
-        # EPGStation の録画済み一覧にはファイル名だけが含まれる構成があるため、RecordingStatusProvider 側で
-        # recorded_folders 配下に展開済みの候補を総当たりする。実在するファイルだけを処理対象にすることで、
-        # 全録画フォルダのスキャンを避けつつ、録画完了後に watchfiles イベントを取り逃したケースを補完する。
-        processed_paths: set[str] = set()
-        processed_basenames: set[str] = set()
-        local_missing_paths: list[str] = []
-        too_small_paths: list[str] = []
-        db_saved_paths: list[str] = []
-        db_missing_paths: list[str] = []
-        unchanged_failed_paths: list[str] = []
-        basename_resolved_paths: list[str] = []
-        basename_resolved_path_cache: dict[str, anyio.Path | None] = {}
-
-        async def resolveEPGStationRecordedPath(recorded_path: str) -> anyio.Path | None:
-            """
-            EPGStation の録画済み候補パスから、KonomiTV 側で実在する録画ファイルパスを解決する。
-
-            Args:
-                recorded_path (str): EPGStation から取得した録画ファイル候補パス。
-
-            Returns:
-                anyio.Path | None: 実在する録画ファイルパス。見つからない、または複数候補があり一意に決められない場合は None。
-            """
-
-            file_path = anyio.Path(recorded_path)
-            if await self.isFileExists(file_path) is True:
-                return file_path
-
-            # EPGStation の /api/recorded は videoFiles[].filename としてファイル名だけを返し、DB 内部の相対ディレクトリを API に出さない。
-            # そのため recorded_folders 直下だけでなく配下全体を basename で探し、サブディレクトリ配置の録画も拾えるようにする。
-            # 複数ヒットする場合は別番組を誤って入庫しないよう、解決不能として扱う。
-            basename = pathlib.Path(recorded_path).name
-            if basename == '':
-                return None
-            if basename in basename_resolved_path_cache:
-                return basename_resolved_path_cache[basename]
-
-            matched_paths: list[anyio.Path] = []
-            for recorded_folder in self.recorded_folders:
-                try:
-                    async for matched_path in recorded_folder.rglob(basename):
-                        if await self.isFileExists(matched_path) is True:
-                            matched_paths.append(matched_path)
-                            if len(matched_paths) >= 2:
-                                logging.warning(
-                                    f'[RecordedScanTask][EPGStation] Multiple basename matches skipped: '
-                                    f'{recorded_path} -> {", ".join([str(path) for path in matched_paths])}'
-                                )
-                                basename_resolved_path_cache[basename] = None
-                                return None
-                except Exception as ex:
-                    logging.warning(
-                        f'[RecordedScanTask][EPGStation] Failed to search recorded folder by basename: '
-                        f'{recorded_folder} [{basename}]',
-                        exc_info=ex,
-                    )
-                    continue
-
-            if len(matched_paths) == 1:
-                basename_resolved_paths.append(f'{recorded_path} -> {matched_paths[0]}')
-                logging.info(f'[RecordedScanTask][EPGStation] Basename resolved: {recorded_path} -> {matched_paths[0]}')
-                basename_resolved_path_cache[basename] = matched_paths[0]
-                return matched_paths[0]
-
-            basename_resolved_path_cache[basename] = None
-            return None
-
-        async def syncSingleEPGStationRecordedPath(recorded_path: str) -> None:
-            """
-            EPGStation の直近録画済み候補 1 件だけを DB と同期する。
-
-            Args:
-                recorded_path (str): EPGStation から取得した録画ファイル候補パス。
-
-            Returns:
-                None
-            """
-
-            file_path = anyio.Path(recorded_path)
-            if file_path.suffix.lower() not in self.SCAN_TARGET_EXTENSIONS:
-                return
-            if str(file_path) in processed_paths:
-                return
-            resolved_file_path = await resolveEPGStationRecordedPath(recorded_path)
-            if resolved_file_path is None:
-                # 相対パス候補と絶対パス候補が同じファイル名で重複している場合、絶対パス側で処理済みなら相対パスの missing ログは出さない。
-                # EPGStation のレスポンス形式によっては同じ録画が複数の候補パスに展開されるため、ログを重複させると問題箇所が見えづらくなる。
-                if pathlib.Path(str(file_path)).name in processed_basenames:
-                    return
-                local_missing_paths.append(str(file_path))
-                logging.info(f'[RecordedScanTask][EPGStation] Local missing, skipped: {file_path}')
-                return
-            file_path = resolved_file_path
-            if str(file_path) in processed_paths:
-                return
-            processed_paths.add(str(file_path))
-            processed_basenames.add(pathlib.Path(str(file_path)).name)
-            self._epgstation_tracked_recorded_paths.add(str(file_path))
-
-            # 前回の EPGStation 同期で解析に失敗し、その後ファイルサイズと更新日時が変わっていないファイルは再解析しない。
-            # 破損ファイルや短すぎるファイルを毎分 processRecordedFile() に流し続けると、直近録画済み同期キューが毎回そこで無駄に詰まるため。
-            stat = await file_path.stat()
-            file_modified_at = datetime.fromtimestamp(stat.st_mtime, tz=JST)
-            file_signature = (stat.st_size, file_modified_at)
-
-            # MetadataAnalyzer.__calculateFileHash() は 3MiB 未満のファイルを必ず解析失敗扱いにする。
-            # 既に入口で判定できる短すぎるファイルは processRecordedFile() に渡さず、同期キューを先へ進める。
-            if stat.st_size < self.MINIMUM_ANALYZABLE_FILE_SIZE_BYTES:
-                self._epgstation_failed_recorded_file_signatures[str(file_path)] = file_signature
-                too_small_paths.append(f'{file_path} [{stat.st_size} bytes]')
-                logging.warning(
-                    f'[RecordedScanTask][EPGStation] Too small file skipped: '
-                    f'{file_path} ({stat.st_size} bytes)'
-                )
-                return
-
-            failed_signature = self._epgstation_failed_recorded_file_signatures.get(str(file_path))
-            if failed_signature == file_signature:
-                unchanged_failed_paths.append(str(file_path))
-                logging.warning(f'[RecordedScanTask][EPGStation] Previously failed unchanged file skipped: {file_path}')
-                return
-
-            existing_recorded_video = await RecordedVideo.get_or_none(
-                file_path = str(file_path),
-            ).only('id', 'status', 'file_size', 'file_modified_at')
-            should_force_update = (
-                existing_recorded_video is not None and
-                existing_recorded_video.status == 'Recording'
-            )
-            if should_force_update is True:
-                logging.info(
-                    f'[RecordedScanTask][EPGStation] Completed file is still marked Recording. '
-                    f'Forcing metadata refresh: {file_path} '
-                    f'[db_size: {existing_recorded_video.file_size}, actual_size: {stat.st_size}]'
-                )
-
-            logging.info(f'[RecordedScanTask][EPGStation] Sync started: {file_path}')
-            try:
-                await self.processRecordedFile(file_path, force_update=should_force_update)
-            except Exception as ex:
-                self._epgstation_failed_recorded_file_signatures[str(file_path)] = file_signature
-                db_missing_paths.append(str(file_path))
-                logging.error(f'[RecordedScanTask][EPGStation] Failed to sync recorded file: {file_path}', exc_info=ex)
-                return
-            db_recorded_video = await RecordedVideo.get_or_none(
-                file_path = str(file_path),
-            ).select_related('recorded_program')
-            if db_recorded_video is not None:
-                self._epgstation_failed_recorded_file_signatures.pop(str(file_path), None)
-                db_saved_paths.append(
-                    f'{file_path} '
-                    f'[id: {db_recorded_video.recorded_program.id}, '
-                    f'status: {db_recorded_video.status}, '
-                    f'title: {db_recorded_video.recorded_program.title}]'
-                )
-                logging.info(
-                    f'[RecordedScanTask][EPGStation] DB saved: {file_path} '
-                    f'[id: {db_recorded_video.recorded_program.id}, '
-                    f'status: {db_recorded_video.status}, '
-                    f'title: {db_recorded_video.recorded_program.title}]'
-                )
-            else:
-                self._epgstation_failed_recorded_file_signatures[str(file_path)] = file_signature
-                db_missing_paths.append(str(file_path))
-                logging.warning(f'[RecordedScanTask][EPGStation] DB missing after sync: {file_path}')
-
-        for recorded_path in epgstation_candidate_paths:
-            try:
-                await syncSingleEPGStationRecordedPath(recorded_path)
-            except asyncio.CancelledError:
-                raise
-            except Exception as ex:
-                # EPGStation 由来の候補 1 件が stat / DB 照合 / ログ整形などで失敗しても、残り候補の同期は必ず続行する。
-                # ここで例外を外へ出すと定期同期タスク全体が止まり、後続の正常な録画が DB に入らなくなる。
-                db_missing_paths.append(recorded_path)
-                logging.error(
-                    f'[RecordedScanTask][EPGStation] Unexpected error while syncing recorded candidate: {recorded_path}',
-                    exc_info=ex,
-                )
-                continue
-
-        # EPGStation 候補に対するローカル存在確認と DB 入庫結果をまとめて出す。
-        # 1 行ずつの通常ログだけでは「どこまで進んだか」「どのファイルが入っていないか」を追いにくいため、同期 1 回ごとの終端で一覧化する。
-        logging.info(
-            '[RecordedScanTask][EPGStation] Recent recorded sync result: '
-            f'local_missing={len(local_missing_paths)}, '
-            f'basename_resolved={len(basename_resolved_paths)}, '
-            f'too_small={len(too_small_paths)}, '
-            f'unchanged_failed={len(unchanged_failed_paths)}, '
-            f'db_saved={len(db_saved_paths)}, '
-            f'db_missing={len(db_missing_paths)}.'
-        )
-        if len(local_missing_paths) > 0:
-            logging.info(
-                '[RecordedScanTask][EPGStation] Local missing paths:\n' +
-                '\n'.join([f'  - {path}' for path in local_missing_paths])
-            )
-        if len(basename_resolved_paths) > 0:
-            logging.info(
-                '[RecordedScanTask][EPGStation] Basename resolved paths:\n' +
-                '\n'.join([f'  - {path}' for path in basename_resolved_paths])
-            )
-        if len(too_small_paths) > 0:
-            logging.warning(
-                '[RecordedScanTask][EPGStation] Too small paths skipped:\n' +
-                '\n'.join([f'  - {path}' for path in too_small_paths])
-            )
-        if len(unchanged_failed_paths) > 0:
-            logging.warning(
-                '[RecordedScanTask][EPGStation] Previously failed unchanged paths skipped:\n' +
-                '\n'.join([f'  - {path}' for path in unchanged_failed_paths])
-            )
-        if len(db_missing_paths) > 0:
-            logging.warning(
-                '[RecordedScanTask][EPGStation] DB missing paths after sync:\n' +
-                '\n'.join([f'  - {path}' for path in db_missing_paths])
-            )
-
-        # EPGStation の直近一覧で一度実体確認できたファイルについて、後からファイル実体が消えた場合は
-        # EPGStation 側で削除された可能性が高い。直近20件から押し出されただけの古い録画を誤削除しないよう、
-        # 「過去に実在確認済み」かつ「現在ファイルが存在しない」パスだけを DB から削除する。
-        tracked_recorded_paths = list(self._epgstation_tracked_recorded_paths)
-        for offset in range(0, len(tracked_recorded_paths), 100):
-            tracked_recorded_path_chunk = tracked_recorded_paths[offset:offset + 100]
-            db_recorded_video_rows = await RecordedVideo.filter(
-                file_path__in = tracked_recorded_path_chunk,
-            ).values('file_path', 'recorded_program_id')
-            for row in db_recorded_video_rows:
-                file_path = anyio.Path(row['file_path'])
-                if await self.isFileExists(file_path) is True:
-                    continue
-                await RecordedProgram.filter(id=row['recorded_program_id']).delete()
-                self._epgstation_tracked_recorded_paths.discard(row['file_path'])
-                logging.info(f'{file_path}: Deleted EPGStation-tracked record for non-existent file.')
-
-
-    async def __syncActiveRecordingFilesLoop(self) -> None:
-        """
-        録画バックエンドが把握している録画中ファイルを定期的に同期し続ける。
-        """
-
-        next_recent_recorded_sync_at = datetime.now(tz=JST)
-        while self._is_active_recording_sync_running:
-            try:
-                await self.__syncActiveRecordingFiles()
-                now = datetime.now(tz=JST)
-                if now >= next_recent_recorded_sync_at:
-                    await self.__syncEPGStationRecentRecordedFiles()
-                    next_recent_recorded_sync_at = now + timedelta(
-                        seconds = self.EPGSTATION_RECENT_RECORDED_SYNC_INTERVAL_SECONDS,
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as ex:
-                logging.error('Error in active recording file sync:', exc_info=ex)
-
-            await asyncio.sleep(self.ACTIVE_RECORDING_SYNC_INTERVAL_SECONDS)
-
-
-    async def startActiveRecordingSync(self) -> None:
-        """
-        録画バックエンドが把握している録画中ファイルだけを同期するタスクを開始する。
-        """
-
-        # 既に実行中の場合は何もしない
-        if self._is_active_recording_sync_running:
-            return
-        self._is_active_recording_sync_running = True
-
-        # バックグラウンドタスクとして実行
-        self._active_recording_sync_task = asyncio.create_task(self.__syncActiveRecordingFilesLoop())
-
-
-    async def stopActiveRecordingSync(self) -> None:
-        """
-        録画バックエンドが把握している録画中ファイルだけを同期するタスクを停止する。
-        """
-
-        # 既に停止中の場合は何もしない
-        if not self._is_active_recording_sync_running:
-            return
-
-        # 実行中タスクを停止
-        self._is_active_recording_sync_running = False
-        if self._active_recording_sync_task is not None:
-            self._active_recording_sync_task.cancel()
-            try:
-                await self._active_recording_sync_task
-            except asyncio.CancelledError:
-                pass
-            self._active_recording_sync_task = None
-
-
     async def start(self) -> None:
         """
         録画フォルダの監視タスクを開始する
@@ -645,10 +228,6 @@ class RecordedScanTask:
             return
         self._is_running = True
 
-        # 全録画フォルダのスキャン・監視を使う通常構成でも、録画バックエンドの active list 同期は独立して起動する。
-        ## 呼び出し側が全録画フォルダのスキャン・監視を無効化したい場合は startActiveRecordingSync() だけを呼び出せばよい。
-        await self.startActiveRecordingSync()
-
         # バックグラウンドタスクとして実行
         self._task = asyncio.create_task(self.run())
 
@@ -658,9 +237,6 @@ class RecordedScanTask:
         録画フォルダの監視タスクを停止する
         このメソッドはサーバー終了時に app.py から自動的に呼ばれる
         """
-
-        # active recording sync は start() と独立して起動できるため、stop() からも必ず停止する。
-        await self.stopActiveRecordingSync()
 
         # 既に停止中の場合は何もしない
         if not self._is_running:
@@ -1014,6 +590,178 @@ class RecordedScanTask:
         logging.info(f'Manual scan completed for file: {file_path_str}')
 
 
+    async def refreshRecordedFileMetadataIfNeeded(self, recorded_video: RecordedVideo) -> bool:
+        """
+        録画済みファイルの実体が DB 上のファイル情報から変化している場合、安全にメタデータを再解析する。
+
+        Args:
+            recorded_video (RecordedVideo): 再生または詳細取得の対象となる録画ファイル情報。
+
+        Returns:
+            bool: ファイル情報に差分があり、共有再解析タスクの完了を待った場合は True。
+
+        Raises:
+            RecordedFileMetadataNotStableError: ファイルがまだ外部プロセスから更新されている可能性がある場合。
+            RecordedFileMetadataRefreshError: ファイルの確認またはメタデータ再解析が完了しなかった場合。
+        """
+
+        # 録画中ファイルは意図的にサイズが増え続けるため、追いかけ再生経路では差分検出を行わない。
+        if recorded_video.status == 'Recording':
+            return False
+
+        file_path = anyio.Path(recorded_video.file_path)
+        try:
+            stat = await file_path.stat()
+        except (FileNotFoundError, OSError) as ex:
+            raise RecordedFileMetadataRefreshError(f'Failed to stat recorded file: {file_path}') from ex
+
+        file_created_at = datetime.fromtimestamp(stat.st_ctime, tz=JST)
+        file_modified_at = datetime.fromtimestamp(stat.st_mtime, tz=JST)
+        file_metadata_changed = (
+            recorded_video.file_created_at != file_created_at or
+            recorded_video.file_modified_at != file_modified_at or
+            recorded_video.file_size != stat.st_size
+        )
+        if file_metadata_changed is False:
+            return False
+
+        # 更新直後のファイルを強制解析すると、外部トランスコードの一時出力を完成品として保存しかねない。
+        ## 最終更新から録画完了判定と同じ時間が経過するまでは、呼び出し元へ再試行可能なエラーとして返す。
+        if (datetime.now(tz=JST) - file_modified_at).total_seconds() < self.RECORDING_COMPLETE_SECONDS:
+            raise RecordedFileMetadataNotStableError(f'Recorded file is still being updated: {file_path}')
+
+        # 詳細取得と HLS の複数リクエストが同時に来ても、ファイルパスごとに再解析タスクを 1 個だけ生成する。
+        async with self._metadata_refresh_tasks_lock:
+            refresh_task = self._metadata_refresh_tasks.get(file_path)
+            if refresh_task is None:
+                refresh_task = asyncio.create_task(self.__refreshRecordedFileMetadata(file_path))
+                self._metadata_refresh_tasks[file_path] = refresh_task
+                refresh_task.add_done_callback(
+                    lambda completed_task: self.__handleMetadataRefreshTaskDone(file_path, completed_task)
+                )
+
+        try:
+            # クライアント切断で共有タスクまでキャンセルされないよう shield() し、他の待機リクエストを完走させる。
+            await asyncio.shield(refresh_task)
+        finally:
+            # 最後に完了を観測したリクエストが、同じタスクだけを管理辞書から取り除く。
+            async with self._metadata_refresh_tasks_lock:
+                if self._metadata_refresh_tasks.get(file_path) is refresh_task and refresh_task.done():
+                    self._metadata_refresh_tasks.pop(file_path, None)
+
+        # processRecordedFile() は解析失敗をログへ記録して戻るため、DB のファイル情報が実体と一致したことを明示的に検証する。
+        refreshed_recorded_video = await RecordedVideo.get_or_none(file_path=str(file_path)).only(
+            'file_created_at',
+            'file_modified_at',
+            'file_size',
+        )
+        if (
+            refreshed_recorded_video is None or
+            refreshed_recorded_video.file_created_at != file_created_at or
+            refreshed_recorded_video.file_modified_at != file_modified_at or
+            refreshed_recorded_video.file_size != stat.st_size
+        ):
+            raise RecordedFileMetadataRefreshError(f'Failed to refresh recorded file metadata: {file_path}')
+
+        return True
+
+
+    def __handleMetadataRefreshTaskDone(
+        self,
+        file_path: anyio.Path,
+        completed_task: asyncio.Task[None],
+    ) -> None:
+        """
+        共有メタデータ再解析タスクの完了後クリーンアップを予約する。
+
+        Args:
+            file_path (anyio.Path): 完了した再解析タスクに対応する録画ファイルのパス。
+            completed_task (asyncio.Task[None]): 完了した共有再解析タスク。
+
+        Returns:
+            None
+        """
+
+        # 全リクエストが切断された場合も例外を回収し、完了済みタスクを管理辞書へ残さない。
+        if completed_task.cancelled() is False:
+            completed_task.exception()
+        asyncio.create_task(self.__removeMetadataRefreshTask(file_path, completed_task))
+
+
+    async def __removeMetadataRefreshTask(
+        self,
+        file_path: anyio.Path,
+        completed_task: asyncio.Task[None],
+    ) -> None:
+        """
+        完了した共有メタデータ再解析タスクを管理辞書から取り除く。
+
+        Args:
+            file_path (anyio.Path): 完了した再解析タスクに対応する録画ファイルのパス。
+            completed_task (asyncio.Task[None]): 削除対象の共有再解析タスク。
+
+        Returns:
+            None
+        """
+
+        async with self._metadata_refresh_tasks_lock:
+            if self._metadata_refresh_tasks.get(file_path) is completed_task:
+                self._metadata_refresh_tasks.pop(file_path, None)
+
+
+    async def __refreshRecordedFileMetadata(self, file_path: anyio.Path) -> None:
+        """
+        共有タスク内で録画ファイルのメタデータを再解析する。
+
+        Args:
+            file_path (anyio.Path): 再解析する録画ファイルのパス。
+
+        Returns:
+            None
+
+        Raises:
+            RecordedFileMetadataNotStableError: ファイルが再解析開始前に更新された場合。
+        """
+
+        # タスク生成待ちの間にファイルや DB が更新された可能性があるため、重い解析の直前にもう一度照合する。
+        stat = await file_path.stat()
+        file_created_at = datetime.fromtimestamp(stat.st_ctime, tz=JST)
+        file_modified_at = datetime.fromtimestamp(stat.st_mtime, tz=JST)
+        existing_recorded_video = await RecordedVideo.get_or_none(file_path=str(file_path)).only(
+            'file_created_at',
+            'file_modified_at',
+            'file_size',
+        )
+        if (
+            existing_recorded_video is not None and
+            existing_recorded_video.file_created_at == file_created_at and
+            existing_recorded_video.file_modified_at == file_modified_at and
+            existing_recorded_video.file_size == stat.st_size
+        ):
+            return
+
+        if (datetime.now(tz=JST) - file_modified_at).total_seconds() < self.RECORDING_COMPLETE_SECONDS:
+            raise RecordedFileMetadataNotStableError(f'Recorded file changed before metadata refresh: {file_path}')
+
+        # バックエンドまたはファイル監視が録画中と認識している場合は、古い mtime だけを根拠に完成品とみなさない。
+        active_recording_file_paths = await self.__getActiveRecordingFilePaths()
+        if (
+            IsActiveRecordingFilePath(str(file_path), active_recording_file_paths.paths) is True or
+            file_path in self._recording_files
+        ):
+            raise RecordedFileMetadataNotStableError(f'Recorded file is active before metadata refresh: {file_path}')
+
+        logging.info(
+            f'{file_path}: File metadata changed outside HonomiTV. '
+            f'Refreshing recorded video metadata before playback.'
+        )
+        await self.processRecordedFile(
+            file_path = file_path,
+            force_update = True,
+            files_only = True,
+        )
+
+
     async def processRecordedFile(
         self,
         file_path: anyio.Path,
@@ -1054,10 +802,6 @@ class RecordedScanTask:
                 # ファイル変更イベント発火後に即座にファイルが削除される可能性も考慮
                 if not await self.isFileExists(file_path):
                     logging.warning(f'{file_path}: File does not exist after acquiring lock! ignored.')
-                    # ロック管理辞書から不要になったロックを削除
-                    async with self._file_locks_dict_lock:
-                        if file_path in self._file_locks and not file_lock.locked():
-                           self._file_locks.pop(file_path, None)
                     return
 
                 # ファイルの状態をチェック
@@ -1228,6 +972,7 @@ class RecordedScanTask:
                 # 同一ファイルパスで既存レコードがあり、ハッシュが変化している場合、
                 # 時長差異をチェックして転码された同一動画かどうかを判定する
                 is_transcoded_same_video = False
+                preserve_analysis_metadata = False
                 if existing_db_recorded_video_after_analyze is not None:
                     # ファイルパスは同じ（これは既に前提条件として満たされている）
                     # ハッシュが変化している（上の if 文でスキップされていない = ハッシュ変化）
@@ -1271,6 +1016,9 @@ class RecordedScanTask:
                     # 3秒という閾値は、転码時の微小な時間差を許容しつつ、全く別の動画との誤判定を防ぐバランス
                     if duration_diff <= self.TRANSCODE_DURATION_TOLERANCE:
                         is_transcoded_same_video = True
+                        # files_only モードでは再生成しない CM 区間だけを、同一内容と判断できる場合に限って保持する。
+                        ## キーフレームとセグメントマップはファイル内部の位置に依存するため、後段で常に破棄する。
+                        preserve_analysis_metadata = files_only
                         logging.info(
                             f'{file_path}: Detected transcoded video '
                             f'(duration diff: {duration_diff:.2f}s, '
@@ -1341,6 +1089,7 @@ class RecordedScanTask:
                     existing_db_recorded_video_after_analyze,
                     is_transcoded_same_video,
                     files_only,
+                    preserve_analysis_metadata,
                 )
                 logging.info(f'{file_path}: {"Updated" if existing_db_recorded_video_after_analyze else "Saved"} metadata to DB. (status: {recorded_program.recorded_video.status})')
 
@@ -1369,11 +1118,6 @@ class RecordedScanTask:
 
             except Exception as ex:
                 logging.error(f'{file_path}: Error processing file inside lock:', exc_info=ex)
-            finally:
-                # 不要になったロックを管理辞書から削除 (ロックが解放された後に行う)
-                async with self._file_locks_dict_lock:
-                     if file_path in self._file_locks and not file_lock.locked():
-                        self._file_locks.pop(file_path, None)
 
 
     @staticmethod
@@ -1483,6 +1227,7 @@ class RecordedScanTask:
         existing_db_recorded_video: RecordedVideo | None,
         is_transcoded_update: bool = False,
         preserve_program_metadata: bool = False,
+        preserve_analysis_metadata: bool = False,
     ) -> None:
         """
         録画ファイルのメタデータ解析結果を DB に保存する
@@ -1495,6 +1240,7 @@ class RecordedScanTask:
             existing_db_recorded_video (RecordedVideo | None): 既に DB に永続化されている録画ファイルの RecordedVideo レコード
             is_transcoded_update (bool): 転码更新モードかどうか（デフォルト: False）
             preserve_program_metadata (bool): 番組情報を既存レコードから保持するかどうか（デフォルト: False）
+            preserve_analysis_metadata (bool): ファイル位置に依存しない既存解析情報を保持するかどうか（デフォルト: False）
         """
 
         # トランザクション配下に入れることでパフォーマンスが向上する
@@ -1652,9 +1398,10 @@ class RecordedScanTask:
             ## 新規録画と同じ空状態へ戻し、次回再生時に現在のファイルからオンデマンドで解決する
             db_recorded_video.key_frames = []
             db_recorded_video.segment_map = []
-            # この時点では CM 区間情報は未解析なので、明示的に未解析を表す None を設定する (デフォルトで None だが念のため)
-            # 「解析したが CM 区間がなかった/検出に失敗した」場合、CMSectionsDetector 側で [] が設定される
-            db_recorded_video.cm_sections = None
+            # files_only で同じ内容のトランスコードと確認できた場合は、再生成しない既存 CM 区間を保持する。
+            ## それ以外は未解析を表す None に戻し、通常のバックグラウンド解析で再生成できる状態にする。
+            if preserve_analysis_metadata is False:
+                db_recorded_video.cm_sections = None
             await db_recorded_video.save()
 
 
@@ -2150,11 +1897,6 @@ class RecordedScanTask:
 
             except Exception as ex:
                 logging.error(f'{file_path}: Error handling file deletion inside lock:', exc_info=ex)
-            finally:
-                # 不要になったロックを管理辞書から削除 (ロックが解放された後に行う)
-                async with self._file_locks_dict_lock:
-                    if file_path in self._file_locks and not file_lock.locked():
-                        self._file_locks.pop(file_path, None)
 
 
     async def __checkRecordingCompletion(self) -> None:

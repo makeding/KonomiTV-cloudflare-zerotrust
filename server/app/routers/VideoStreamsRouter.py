@@ -9,6 +9,11 @@ from fastapi.responses import FileResponse, Response
 from sse_starlette.sse import EventSourceResponse
 
 from app import logging
+from app.metadata.RecordedScanTask import (
+    RecordedFileMetadataNotStableError,
+    RecordedFileMetadataRefreshError,
+    RecordedScanTask,
+)
 from app.models.RecordedProgram import RecordedProgram
 from app.streams.StreamEncodingOptions import (
     SplitQualityAndEncodingOptions,
@@ -38,43 +43,40 @@ async def ValidateVideoID(video_id: Annotated[int, Path(description='録画番�
             detail = 'Specified video_id was not found',
         )
 
-    # 録画中ファイルは再生中もファイルサイズが伸び続けるため、差分検出をそのまま適用すると
-    ## 追いかけ再生のセグメント要求ごとに自動再解析が走り、エンコード入力と同じ TS への I/O が競合してしまう。
-    ## 録画完了後だけ転码検出用の軽量チェックを行う。
-    if recorded_program.recorded_video.status != 'Recording':
-        # 被動検出: ファイルサイズの差異をチェックし、大きく変化している場合は自動的に再解析
-        # (例: HEVC 転码で 50% 以上ファイルサイズが縮小された場合など)
-        import anyio
+    # 詳細 API を経由せずストリームへ直接アクセスした場合も、古いコーデック情報でセッションを生成しないよう同期する。
+    ## 同じファイルの並行リクエストは RecordedScanTask 側で 1 個の再解析タスクへ合流する。
+    try:
+        is_refreshed = await RecordedScanTask().refreshRecordedFileMetadataIfNeeded(recorded_program.recorded_video)
+    except RecordedFileMetadataNotStableError as ex:
+        logging.warning(
+            f'[VideoStreamsRouter][ValidateVideoID] Recorded file is still being updated. [video_id: {video_id}]'
+        )
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = 'Recorded video file is still being updated. Please retry shortly.',
+            headers = {'Retry-After': str(RecordedScanTask.RECORDING_COMPLETE_SECONDS)},
+        ) from ex
+    except RecordedFileMetadataRefreshError as ex:
+        logging.error(
+            f'[VideoStreamsRouter][ValidateVideoID] Failed to refresh recorded file metadata. [video_id: {video_id}]'
+        )
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = 'Failed to refresh recorded video metadata. Please retry shortly.',
+            headers = {'Retry-After': '5'},
+        ) from ex
 
-        from app.metadata.RecordedScanTask import RecordedScanTask
-
-        file_path = anyio.Path(recorded_program.recorded_video.file_path)
-        try:
-            if await file_path.is_file():
-                actual_file_size = (await file_path.stat()).st_size
-                db_file_size = recorded_program.recorded_video.file_size
-
-                # ファイルサイズの差異が 20% 以上の場合、転码された可能性が高い
-                if db_file_size > 0:
-                    size_diff_ratio = abs(actual_file_size - db_file_size) / db_file_size
-                    if size_diff_ratio > 0.20:  # 20% 以上の差異
-                        logging.info(
-                            f'[VideoStreamsRouter][ValidateVideoID] File size changed significantly '
-                            f'(DB: {db_file_size:,} bytes → Actual: {actual_file_size:,} bytes, '
-                            f'diff: {size_diff_ratio*100:.1f}%). Triggering automatic reanalysis...'
-                        )
-                        # バックグラウンドで再解析を実行（files_only=True でメタデータのみ更新）
-                        # 再生開始を遅延させないため await せずにバックグラウンドタスクとして実行
-                        import asyncio
-                        background_task = asyncio.create_task(RecordedScanTask().processRecordedFile(
-                            file_path = file_path,
-                            force_update = True,
-                            files_only = True,  # CM 解析・サムネイル生成はスキップ
-                        ))
-                        background_task.add_done_callback(lambda task: task.exception() if task.cancelled() is False else None)
-        except Exception as ex:
-            # ファイルサイズチェックに失敗しても再生は継続できるようエラーをログに出力するのみ
-            logging.warning(f'[VideoStreamsRouter][ValidateVideoID] Failed to check file size: {ex}')
+    # 再解析後の ORM インスタンスを返し、新しく生成される VideoStream が必ず最新の技術情報を保持するようにする。
+    if is_refreshed is True:
+        refreshed_recorded_program = await RecordedProgram.filter(id=video_id).get_or_none() \
+            .select_related('recorded_video') \
+            .select_related('channel')
+        if refreshed_recorded_program is None:
+            raise HTTPException(
+                status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail = 'Specified video_id was not found after metadata refresh',
+            )
+        recorded_program = refreshed_recorded_program
 
     return recorded_program
 

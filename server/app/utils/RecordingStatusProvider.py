@@ -16,8 +16,6 @@ from app.utils.edcb.CtrlCmdUtil import CtrlCmdUtil
 
 
 EPGSTATION_API_TIMEOUT_SECONDS = 5.0
-EPGSTATION_RECORDED_SYNC_PAGE_COUNT = 1
-EPGSTATION_RECORDED_SYNC_PAGE_LIMIT = 20
 
 
 @dataclass(slots=True)
@@ -33,24 +31,6 @@ class ActiveRecordingFilePaths:
 
     paths: set[str]
     backend: Literal['EDCB', 'EPGStation', 'FileSystem']
-    is_reliable: bool
-
-
-@dataclass(slots=True)
-class RecentRecordedFilePaths:
-    """
-    EPGStation が把握している直近の録画済みファイルパスの一覧。
-
-    Attributes:
-        paths: 直近の録画済み一覧から抽出した録画ファイルパス候補の集合。
-        total: EPGStation 側の録画済み総件数。取得できない場合は 0。
-        requested_pages: EPGStation に問い合わせたページ数。
-        is_reliable: EPGStation へ正常に問い合わせでき、paths が直近一覧として信頼できる場合は True。
-    """
-
-    paths: set[str]
-    total: int
-    requested_pages: int
     is_reliable: bool
 
 
@@ -305,24 +285,6 @@ def _ExtractEPGStationRecordingFilePaths(payload: Any) -> set[str]:
     return extracted_paths
 
 
-def _ExtractEPGStationRecordedTotal(payload: Any) -> int:
-    """
-    EPGStation の録画済み一覧 API レスポンスから総件数を抽出する。
-
-    Args:
-        payload (Any): EPGStation API の JSON レスポンス。
-
-    Returns:
-        int: 抽出された総件数。取得できない場合は 0。
-    """
-
-    if isinstance(payload, dict):
-        total = payload.get('total')
-        if isinstance(total, int):
-            return total
-    return 0
-
-
 async def _GetActiveRecordingFilePathsFromEPGStation(config: ServerSettings) -> ActiveRecordingFilePaths:
     """
     EPGStation から現在録画中のファイルパス一覧を取得する。
@@ -400,88 +362,6 @@ async def _GetActiveRecordingFilePathsFromEPGStation(config: ServerSettings) -> 
             )
 
     return ActiveRecordingFilePaths(paths=set(), backend='EPGStation', is_reliable=False)
-
-
-async def GetEPGStationRecentRecordedFilePaths(config: ServerSettings) -> RecentRecordedFilePaths:
-    """
-    EPGStation から直近の録画済みファイルパス一覧を取得する。
-
-    Args:
-        config (ServerSettings): サーバー設定。
-
-    Returns:
-        RecentRecordedFilePaths: EPGStation から取得した直近の録画済みファイルパス一覧。
-    """
-
-    if config.general.backend != 'EPGStation':
-        return RecentRecordedFilePaths(paths=set(), total=0, requested_pages=0, is_reliable=False)
-
-    base_url = str(config.general.epgstation_url).rstrip('/')
-    recorded_paths: set[str] = set()
-    total = 0
-    requested_pages = 0
-
-    async with HTTPX_CLIENT() as client:
-        for page_index in range(EPGSTATION_RECORDED_SYNC_PAGE_COUNT):
-            offset = page_index * EPGSTATION_RECORDED_SYNC_PAGE_LIMIT
-            endpoint_url = (
-                f'{base_url}/api/recorded?'
-                f'isHalfWidth=false&'
-                f'hasOriginalFile=true&'
-                f'offset={offset}&'
-                f'limit={EPGSTATION_RECORDED_SYNC_PAGE_LIMIT}'
-            )
-            try:
-                # 録画済み一覧は録画中同期より重いため、短い timeout で失敗させて次回の定期同期に任せる。
-                response = await client.get(endpoint_url, timeout=EPGSTATION_API_TIMEOUT_SECONDS)
-            except (httpx.NetworkError, httpx.TimeoutException) as ex:
-                logging.warning(
-                    f'[RecordingStatusProvider][EPGStation] Failed to request recent recorded list. '
-                    f'[offset: {offset}] ({type(ex).__name__}: {ex})'
-                )
-                return RecentRecordedFilePaths(paths=set(), total=0, requested_pages=requested_pages, is_reliable=False)
-            except Exception as ex:
-                logging.warning(
-                    f'[RecordingStatusProvider][EPGStation] Failed to request recent recorded list. [offset: {offset}]',
-                    exc_info=ex,
-                )
-                return RecentRecordedFilePaths(paths=set(), total=0, requested_pages=requested_pages, is_reliable=False)
-
-            if response.status_code != 200:
-                logging.warning(
-                    f'[RecordingStatusProvider][EPGStation] Unexpected status code from recent recorded list: '
-                    f'{response.status_code} [{endpoint_url}]'
-                )
-                return RecentRecordedFilePaths(paths=set(), total=0, requested_pages=requested_pages, is_reliable=False)
-
-            try:
-                payload = response.json()
-            except Exception as ex:
-                logging.warning(
-                    f'[RecordingStatusProvider][EPGStation] Failed to parse recent recorded list. [offset: {offset}]',
-                    exc_info=ex,
-                )
-                return RecentRecordedFilePaths(paths=set(), total=0, requested_pages=requested_pages, is_reliable=False)
-
-            requested_pages += 1
-            if page_index == 0:
-                total = _ExtractEPGStationRecordedTotal(payload)
-            recorded_paths.update(_ExtractEPGStationRecordingFilePaths(payload))
-
-            # 取得済み件数が総件数に到達した場合は、それ以上空ページを叩かない。
-            if total > 0 and offset + EPGSTATION_RECORDED_SYNC_PAGE_LIMIT >= total:
-                break
-
-    logging.debug(
-        f'[RecordingStatusProvider][EPGStation] Recent recorded paths: {len(recorded_paths)} '
-        f'[pages: {requested_pages}, total: {total}]'
-    )
-    return RecentRecordedFilePaths(
-        paths = _ExpandRecordingPathCandidatesSet(recorded_paths, config),
-        total = total,
-        requested_pages = requested_pages,
-        is_reliable = True,
-    )
 
 
 async def GetActiveRecordingFilePaths(config: ServerSettings) -> ActiveRecordingFilePaths:

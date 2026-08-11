@@ -25,7 +25,11 @@ from tortoise import connections
 
 from app import logging, schemas
 from app.constants import JST, STATIC_DIR, THUMBNAILS_DIR
-from app.metadata.RecordedScanTask import RecordedScanTask
+from app.metadata.RecordedScanTask import (
+    RecordedFileMetadataNotStableError,
+    RecordedFileMetadataRefreshError,
+    RecordedScanTask,
+)
 from app.metadata.ThumbnailGenerator import ThumbnailGenerator
 from app.metadata.TSInfoAnalyzer import TSInfoAnalyzer
 from app.models.RecordedProgram import RecordedProgram
@@ -1307,6 +1311,29 @@ async def VideoAPI(
     """
     指定された録画番組を取得する。
     """
+
+    # 外部トランスコードでファイルが置き換わっていた場合は、プレイヤーへ古いコーデック情報を返す前に同期的に再解析する。
+    ## ここを詳細 API に限定し、ダウンロード・サムネイル・削除など同じ依存関係を使う別 API では重い解析を発生させない。
+    try:
+        is_refreshed = await RecordedScanTask().refreshRecordedFileMetadataIfNeeded(recorded_program.recorded_video)
+    except RecordedFileMetadataNotStableError as ex:
+        logging.warning(f'[VideosRouter][VideoAPI] Recorded file is still being updated. [video_id: {recorded_program.id}]')
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = 'Recorded video file is still being updated. Please retry shortly.',
+            headers = {'Retry-After': str(RecordedScanTask.RECORDING_COMPLETE_SECONDS)},
+        ) from ex
+    except RecordedFileMetadataRefreshError as ex:
+        logging.error(f'[VideosRouter][VideoAPI] Failed to refresh recorded file metadata. [video_id: {recorded_program.id}]')
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = 'Failed to refresh recorded video metadata. Please retry shortly.',
+            headers = {'Retry-After': '5'},
+        ) from ex
+
+    # 解析前の ORM インスタンスには古い値が残るため、DB 保存後は関連レコードを含めて取り直す。
+    if is_refreshed is True:
+        recorded_program = await GetRecordedProgram(recorded_program.id)
 
     return recorded_program
 
