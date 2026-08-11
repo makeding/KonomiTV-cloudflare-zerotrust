@@ -81,7 +81,8 @@ class RecordedFileMetadataRefreshError(Exception):
 class RecordedScanTask:
     """
     録画フォルダの監視とメタデータの DB への同期を行うタスク
-    サーバーの起動中は常時稼働し続け、以下の処理を担う
+    Mirakurun 構成ではサーバーの起動中に常時稼働し、以下の処理を担う
+    EDCB / EPGStation 構成では常駐せず、手動スキャンと再生前のオンデマンド再解析だけを担う
     - サーバー起動時の録画フォルダの一括スキャン・同期
     - 録画フォルダ以下のファイルシステム変更の監視を開始し、変更があれば随時メタデータを解析後、DB に永続化
     - 録画中ファイルの状態管理
@@ -220,7 +221,7 @@ class RecordedScanTask:
     async def start(self) -> None:
         """
         録画フォルダの監視タスクを開始する
-        このメソッドはサーバー起動時に app.py から自動的に呼ばれ、サーバーの起動中は常時稼働し続ける
+        Mirakurun 構成のサーバー起動時だけ app.py から呼ばれ、サーバーの起動中は常時稼働し続ける
         """
 
         # 既に実行中の場合は何もしない
@@ -235,7 +236,7 @@ class RecordedScanTask:
     async def stop(self) -> None:
         """
         録画フォルダの監視タスクを停止する
-        このメソッドはサーバー終了時に app.py から自動的に呼ばれる
+        監視タスクが起動済みの場合に、サーバー終了時の app.py から呼ばれる
         """
 
         # 既に停止中の場合は何もしない
@@ -257,7 +258,7 @@ class RecordedScanTask:
         """
         録画フォルダ以下の一括スキャンと DB への同期と録画フォルダ以下のファイルシステム変更の監視を開始し、
         変更があれば随時メタデータを解析後、DB に永続化する
-        このメソッドは start() 経由でサーバー起動時に app.py から自動的に呼ばれ、サーバーの起動中は常時稼働し続ける
+        Mirakurun 構成では start() 経由でサーバー起動時に呼ばれ、サーバーの起動中は常時稼働し続ける
         """
 
         try:
@@ -643,6 +644,10 @@ class RecordedScanTask:
         try:
             # クライアント切断で共有タスクまでキャンセルされないよう shield() し、他の待機リクエストを完走させる。
             await asyncio.shield(refresh_task)
+        except (RecordedFileMetadataNotStableError, RecordedFileMetadataRefreshError):
+            raise
+        except Exception as ex:
+            raise RecordedFileMetadataRefreshError(f'Failed to refresh recorded file metadata: {file_path}') from ex
         finally:
             # 最後に完了を観測したリクエストが、同じタスクだけを管理辞書から取り除く。
             async with self._metadata_refresh_tasks_lock:
