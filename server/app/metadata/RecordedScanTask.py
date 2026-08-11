@@ -685,28 +685,10 @@ class RecordedScanTask:
         # 全リクエストが切断された場合も例外を回収し、完了済みタスクを管理辞書へ残さない。
         if completed_task.cancelled() is False:
             completed_task.exception()
-        asyncio.create_task(self.__removeMetadataRefreshTask(file_path, completed_task))
-
-
-    async def __removeMetadataRefreshTask(
-        self,
-        file_path: anyio.Path,
-        completed_task: asyncio.Task[None],
-    ) -> None:
-        """
-        完了した共有メタデータ再解析タスクを管理辞書から取り除く。
-
-        Args:
-            file_path (anyio.Path): 完了した再解析タスクに対応する録画ファイルのパス。
-            completed_task (asyncio.Task[None]): 削除対象の共有再解析タスク。
-
-        Returns:
-            None
-        """
-
-        async with self._metadata_refresh_tasks_lock:
-            if self._metadata_refresh_tasks.get(file_path) is completed_task:
-                self._metadata_refresh_tasks.pop(file_path, None)
+        # done callback はイベントループ上で同期的に実行され、この辞書を更新する他のクリティカルセクションも await を含まない。
+        ## そのため完了タスクの同一性を確認して直接削除しても、別タスクの登録と途中で競合することはない。
+        if self._metadata_refresh_tasks.get(file_path) is completed_task:
+            self._metadata_refresh_tasks.pop(file_path, None)
 
 
     async def __refreshRecordedFileMetadata(self, file_path: anyio.Path) -> None:
