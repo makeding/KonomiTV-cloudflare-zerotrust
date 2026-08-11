@@ -1324,7 +1324,10 @@ async def VideoAPI(
             headers = {'Retry-After': str(RecordedScanTask.RECORDING_COMPLETE_SECONDS)},
         ) from ex
     except RecordedFileMetadataRefreshError as ex:
-        logging.error(f'[VideosRouter][VideoAPI] Failed to refresh recorded file metadata. [video_id: {recorded_program.id}]')
+        logging.error(
+            f'[VideosRouter][VideoAPI] Failed to refresh recorded file metadata. [video_id: {recorded_program.id}]',
+            exc_info = ex,
+        )
         raise HTTPException(
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
             detail = 'Failed to refresh recorded video metadata. Please retry shortly.',

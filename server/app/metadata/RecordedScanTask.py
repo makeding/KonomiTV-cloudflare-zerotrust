@@ -778,9 +778,12 @@ class RecordedScanTask:
         # シンボリックリンクを解決せず、スキャン時に検出したパスをそのまま使用
         file_path_str = str(file_path)
         async with self._file_locks_dict_lock:
-            if file_path not in self._file_locks:
-                self._file_locks[file_path] = asyncio.Lock()
-            file_lock = self._file_locks[file_path]
+            file_lock = self._file_locks.get(file_path)
+            if file_lock is None:
+                # WeakValueDictionary へ一時オブジェクトを直接代入すると、次の参照取得前に回収される可能性がある。
+                ## 局所変数で強参照を保持した状態で登録し、async with へ入るまでロックの生存を保証する。
+                file_lock = asyncio.Lock()
+                self._file_locks[file_path] = file_lock
 
         # 同一ファイルパスへの DB レコード操作を排他制御する
         async with file_lock:
@@ -1864,9 +1867,11 @@ class RecordedScanTask:
 
         # ファイルパスに対応するロックを取得または作成
         async with self._file_locks_dict_lock:
-            if file_path not in self._file_locks:
-                self._file_locks[file_path] = asyncio.Lock()
-            file_lock = self._file_locks[file_path]
+            file_lock = self._file_locks.get(file_path)
+            if file_lock is None:
+                # processRecordedFile() と同じ方法で強参照を先に確保し、削除処理も必ず同一ロックへ合流させる。
+                file_lock = asyncio.Lock()
+                self._file_locks[file_path] = file_lock
 
         # 同一ファイルパスへの DB レコード操作を排他制御する
         async with file_lock:

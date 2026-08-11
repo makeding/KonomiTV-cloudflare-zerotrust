@@ -58,7 +58,8 @@ async def ValidateVideoID(video_id: Annotated[int, Path(description='録画番�
         ) from ex
     except RecordedFileMetadataRefreshError as ex:
         logging.error(
-            f'[VideoStreamsRouter][ValidateVideoID] Failed to refresh recorded file metadata. [video_id: {video_id}]'
+            f'[VideoStreamsRouter][ValidateVideoID] Failed to refresh recorded file metadata. [video_id: {video_id}]',
+            exc_info = ex,
         )
         raise HTTPException(
             status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
