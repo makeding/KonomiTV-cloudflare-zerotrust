@@ -1,6 +1,8 @@
 
 import asyncio
+import hashlib
 import pathlib
+import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Annotated, BinaryIO
@@ -33,6 +35,7 @@ from app.constants import (
 )
 from app.models.AccountLink import AccountLink
 from app.models.BlueskyAccount import BlueskyAccount
+from app.models.DeviceAuth import DeviceAuth
 from app.models.TwitterAccount import TwitterAccount
 from app.models.User import User
 
@@ -77,6 +80,10 @@ def GenerateAccessToken(user_id: int) -> str:
         key = JWT_SECRET_KEY,
         algorithm = 'HS256',
     )
+
+
+def HashDeviceCode(device_code: str) -> str:
+    return hashlib.sha256(device_code.encode()).hexdigest()
 
 
 async def GetCurrentUser(token: Annotated[str, Depends(OAuth2PasswordBearer(tokenUrl='users/token'))]) -> User:
@@ -308,6 +315,59 @@ async def UserAccessTokenAPI(
         access_token = GenerateAccessToken(current_user.id),
         token_type = 'bearer',
     )
+
+
+@router.post('/device-auth', response_model=schemas.DeviceAuthRequest, status_code=status.HTTP_201_CREATED)
+async def DeviceAuthCreateAPI(request: schemas.DeviceAuthCreateRequest):
+    now = datetime.now(JST)
+    await DeviceAuth.filter(expires_at__lte=now).delete()
+    device_code = secrets.token_urlsafe(32)
+    while True:
+        user_code = ''.join(secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(8))
+        if await DeviceAuth.filter(user_code=user_code).exists() is False:
+            break
+    await DeviceAuth.create(
+        device_code_hash=HashDeviceCode(device_code),
+        user_code=user_code,
+        device_name=request.device_name,
+        expires_at=now + timedelta(minutes=10),
+    )
+    return schemas.DeviceAuthRequest(
+        device_code=device_code,
+        user_code=user_code,
+        verification_url=f'/pair/?code={user_code}',
+        expires_in=600,
+        interval=3,
+    )
+
+
+@router.post('/device-auth/approve', status_code=status.HTTP_204_NO_CONTENT)
+async def DeviceAuthApproveAPI(
+    request: schemas.DeviceAuthApprovalRequest,
+    current_user: Annotated[User, Depends(GetCurrentUser)],
+):
+    pairing = await DeviceAuth.filter(user_code=request.user_code.upper(), expires_at__gt=datetime.now(JST)).get_or_none()
+    if pairing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Device authorization request was not found')
+    if pairing.user_id is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Device authorization request was already approved')
+    pairing.user = current_user
+    await pairing.save(update_fields=['user_id'])
+
+
+@router.post('/device-auth/token', response_model=schemas.UserAccessToken)
+async def DeviceAuthTokenAPI(request: schemas.DeviceAuthTokenRequest):
+    pairing = await DeviceAuth.filter(
+        device_code_hash=HashDeviceCode(request.device_code),
+        expires_at__gt=datetime.now(JST),
+    ).get_or_none()
+    if pairing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Device authorization request was not found')
+    if pairing.user_id is None:
+        return Response(status_code=status.HTTP_202_ACCEPTED)
+    token = GenerateAccessToken(pairing.user_id)
+    await pairing.delete()
+    return schemas.UserAccessToken(access_token=token, token_type='bearer')
 
 
 @router.get(

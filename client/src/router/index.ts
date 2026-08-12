@@ -183,6 +183,11 @@ const router = createRouter({
             component: () => import('@/views/Login.vue'),
         },
         {
+            path: '/pair/',
+            name: 'Device Pairing',
+            component: () => import('@/views/Pair.vue'),
+        },
+        {
             path: '/register/',
             name: 'Register',
             component: () => import('@/views/Register.vue'),

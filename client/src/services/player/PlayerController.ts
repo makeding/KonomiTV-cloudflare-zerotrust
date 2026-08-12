@@ -7,6 +7,7 @@ import mpegts from 'mpegts.js';
 import { watch } from 'vue';
 
 import APIClient from '@/services/APIClient';
+import Bangumi from '@/services/Bangumi';
 import OfflineVideos from '@/services/OfflineVideos';
 import CustomBufferController from '@/services/player/CustomBufferController';
 import CaptureManager from '@/services/player/managers/CaptureManager';
@@ -22,6 +23,7 @@ import Videos, { type IJikkyoComments } from '@/services/Videos';
 import useChannelsStore from '@/stores/ChannelsStore';
 import usePlayerStore from '@/stores/PlayerStore';
 import useSettingsStore, { LiveStreamingQuality, LIVE_STREAMING_QUALITIES, VideoStreamingQuality, VIDEO_STREAMING_QUALITIES } from '@/stores/SettingsStore';
+import useUserStore from '@/stores/UserStore';
 import Utils, { dayjs, PlayerUtils } from '@/utils';
 
 
@@ -109,6 +111,9 @@ class PlayerController {
 
     // 視聴履歴に追加すべきかを判断するためのタイムアウトの ID
     private watched_history_threshold_timer_id: number = 0;
+
+    // ビデオ視聴: 同じプレイヤーで Bangumi 視聴完了 API を重複送信しないためのフラグ
+    private is_bangumi_episode_completion_requested = false;
 
     // Screen Wake Lock API の WakeLockSentinel のインスタンス
     // 確保した起動ロックを解放するために保持しておく必要がある
@@ -1650,6 +1655,7 @@ class PlayerController {
         const channels_store = useChannelsStore();
         const player_store = usePlayerStore();
         const settings_store = useSettingsStore();
+        const user_store = useUserStore();
 
         // ライブ視聴: 再生停止状態かつ現在の再生位置からバッファが 30 秒以上離れていないかを 60 秒おきに監視し、そうなっていたら強制的にシークする
         // mpegts.js の仕様上、MSE 側に未再生のバッファが貯まり過ぎると新規に SourceBuffer が追加できなくなるため、強制的に接続が切断されてしまう
@@ -2167,6 +2173,31 @@ class PlayerController {
                     settings_store.settings.watched_history[history_index].updated_at = Utils.time();
                     console.log(`\u001b[31m[PlayerController] Last playback position updated. (Video ID: ${video_id}, last_playback_position: ${current_time})`);
                 }
+            });
+
+            // Bangumi 連携済みのログインユーザーが録画の 90% まで再生したら、対応話を「看過」にする
+            // プレイヤーが解決した duration を使うことで、MMTS でも DB 上の録画時間に依存しない
+            this.player.on('timeupdate', () => {
+                if (!this.player || !this.player.video || this.is_bangumi_episode_completion_requested) {
+                    return;
+                }
+                if (user_store.is_logged_in === false || user_store.user?.bangumi_user_id == null) {
+                    return;
+                }
+                if (player_store.is_offline_playback) {
+                    return;
+                }
+                const duration = this.player.video.duration;
+                if (Number.isFinite(duration) === false || duration <= 0) {
+                    return;
+                }
+                if (this.player.video.currentTime / duration < 0.9) {
+                    return;
+                }
+
+                // timeupdate は短時間に複数回発火するため、await より前にフラグを立てて重複送信を防ぐ
+                this.is_bangumi_episode_completion_requested = true;
+                void Bangumi.completeEpisode(player_store.recorded_program.id);
             });
 
             // 視聴開始から WATCHED_HISTORY_THRESHOLD_SECONDS 秒間このページが開かれ続けていたら、視聴履歴に追加する

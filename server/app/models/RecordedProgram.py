@@ -47,6 +47,10 @@ class RecordedProgram(TortoiseModel):
     series_title = cast(TortoiseField[str | None], fields.TextField(null=True))
     episode_number = cast(TortoiseField[str | None], fields.CharField(255, null=True))
     subtitle = cast(TortoiseField[str | None], fields.TextField(null=True))
+    # Bangumi との照合に成功した録画だけ、対象条目とエピソードの永続 ID を保持する
+    # 同じローカル Series が分割クールをまたぐ場合があるため、Series ではなく録画番組単位で保存する
+    bangumi_subject_id = cast(TortoiseField[int | None], fields.IntField(null=True))
+    bangumi_episode_id = cast(TortoiseField[int | None], fields.IntField(null=True))
     description = fields.TextField()
     detail = cast(TortoiseField[dict[str, str]], fields.JSONField(default={}, encoder=lambda x: json.dumps(x, ensure_ascii=False)))  # type: ignore
     start_time = fields.DatetimeField()

@@ -59,7 +59,7 @@ QUOTED_WORK_TITLE_PATTERN = re.compile(
 
 # 作品名の前後に付く既知の放送枠名。作品名の装飾は汎用的に削除せず、実データで確認できた枠だけを列挙する。
 PROGRAM_SLOT_MARK_PATTERN = re.compile(
-    r'(?:【(?:ANiMAZiNG[!！]*|スーパーアニメイズムTURBO|イマニメーションW?)】|<\+Ultra>|\s+(?:AnichU|FRIDAY ANIME NIGHT)\s*$)',
+    r'(?:【(?:ANiMAZiNG(?:2|²)?[!！]*|スーパーアニメイズムTURBO|イマニメーションW?)】|<\+Ultra>|\s+(?:AnichU|FRIDAY ANIME NIGHT)\s*$)',
     flags=re.IGNORECASE,
 )
 

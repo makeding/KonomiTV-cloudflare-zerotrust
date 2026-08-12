@@ -153,6 +153,7 @@ class SeriesIndexerTest(unittest.TestCase):
             ('アニメA・ポンコツ風紀委員とスカート丈が不適切なJKの話 #2', 'ポンコツ風紀委員とスカート丈が不適切なJKの話', '2'),
             ('火アニバル マリッジトキシン 第3話', 'マリッジトキシン', '3'),
             ('アポカリプスホテル AnichU', 'アポカリプスホテル', '3'),
+            ('落第賢者の学院無双【ANiMAZiNG²！！！】#3', '落第賢者の学院無双', '3'),
         ]
         for title, expected_title, expected_episode in cases:
             with self.subTest(title=title):

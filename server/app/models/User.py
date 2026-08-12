@@ -7,10 +7,13 @@ import json
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
+from cryptography.fernet import InvalidToken
+from fastapi import HTTPException, status
 from tortoise import fields
 from tortoise.fields import Field as TortoiseField
 from tortoise.models import Model as TortoiseModel
 
+from app import logging
 from app.constants import (
     API_REQUEST_HEADERS,
     BANGUMI_ACCESS_TOKEN_ENCRYPTION_PREFIX,
@@ -72,6 +75,37 @@ class User(TortoiseModel):
         # Fernet で暗号化し、接頭辞を付けて暗号化済みであることを明示する
         encrypted_text = BANGUMI_ACCESS_TOKEN_FERNET.encrypt(plain_text.encode('utf-8')).decode('utf-8')
         return f'{BANGUMI_ACCESS_TOKEN_ENCRYPTION_PREFIX}{encrypted_text}'
+
+
+    def decryptBangumiAccessToken(self) -> str:
+        """
+        データベースに保存されている Bangumi 個人アクセストークンを復号する。
+
+        Returns:
+            str: 復号済みの Bangumi 個人アクセストークン。
+
+        Raises:
+            HTTPException: トークンが未保存、平文、または復号不能な場合。
+        """
+
+        # Bangumi 連携は常に暗号化後のトークンを保存するため、平文は受け入れない
+        encrypted_text = self.bangumi_access_token or ''
+        if encrypted_text.startswith(BANGUMI_ACCESS_TOKEN_ENCRYPTION_PREFIX) is False:
+            raise HTTPException(
+                status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail = 'Bangumi access token is unavailable. Please re-link your Bangumi account.',
+            )
+
+        # 接頭辞を除いた Fernet トークンだけを復号する
+        token = encrypted_text[len(BANGUMI_ACCESS_TOKEN_ENCRYPTION_PREFIX):].encode('utf-8')
+        try:
+            return BANGUMI_ACCESS_TOKEN_FERNET.decrypt(token).decode('utf-8')
+        except InvalidToken as ex:
+            logging.error('[User][decryptBangumiAccessToken] Failed to decrypt access token:', exc_info=ex)
+            raise HTTPException(
+                status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail = 'Failed to decrypt Bangumi access token. Please re-link your Bangumi account.',
+            ) from ex
 
 
     async def refreshNiconicoAccessToken(self) -> None:

@@ -231,6 +231,8 @@ class RecordedProgram(PydanticModel):
     series_title: str | None = None  # 番組タイトル解析に成功した場合のみセット
     episode_number: str | None = None  # 番組タイトル解析に成功した場合のみセット
     subtitle: str | None = None  # 番組タイトル解析に成功した場合のみセット
+    bangumi_subject_id: int | None = None  # Bangumi 条目との照合に成功した場合のみセット
+    bangumi_episode_id: int | None = None  # Bangumi エピソードとの照合に成功した場合のみセット
     description: str = '番組概要を取得できませんでした。'
     detail: dict[str, str] = {}
     start_time: datetime
@@ -332,6 +334,26 @@ class WatchedHistoryItem(BaseModel):
 
 class WatchedHistory(BaseModel):
     items: list[WatchedHistoryItem]
+
+
+class DeviceAuthCreateRequest(BaseModel):
+    device_name: Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class DeviceAuthRequest(BaseModel):
+    device_code: str
+    user_code: str
+    verification_url: str
+    expires_in: int
+    interval: int
+
+
+class DeviceAuthApprovalRequest(BaseModel):
+    user_code: Annotated[str, Field(min_length=8, max_length=8)]
+
+
+class DeviceAuthTokenRequest(BaseModel):
+    device_code: Annotated[str, Field(min_length=32, max_length=100)]
 
 # ***** Twitter / Bluesky 連携 *****
 

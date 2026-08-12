@@ -1,12 +1,15 @@
 from typing import Annotated, Any, cast
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, status
 
 from app import logging, schemas
 from app.constants import API_REQUEST_HEADERS, HTTPX_CLIENT
+from app.models.BangumiEpisodeCompletion import BangumiEpisodeCompletion
+from app.models.RecordedProgram import RecordedProgram
 from app.models.User import User
 from app.routers.UsersRouter import GetCurrentUser
+from app.utils.BangumiClient import BangumiClient
 
 
 # ルーター
@@ -14,6 +17,76 @@ router = APIRouter(
     tags = ['Bangumi'],
     prefix = '/api/bangumi',
 )
+
+
+async def UpdateBangumiEpisodeCollection(access_token: str, subject_id: int, episode_id: int) -> None:
+    """
+    Bangumi の対象エピソードを「看過」に更新する。
+
+    Args:
+        access_token (str): Bangumi 個人アクセストークン。
+        subject_id (int): Bangumi 条目 ID。
+        episode_id (int): Bangumi エピソード ID。
+
+    Returns:
+        None: Bangumi 上でエピソードの更新が完了した場合。
+
+    Raises:
+        HTTPException: Bangumi API への接続、認証、または更新に失敗した場合。
+    """
+
+    headers = {**API_REQUEST_HEADERS, 'Authorization': f'Bearer {access_token}'}
+    try:
+        async with HTTPX_CLIENT() as httpx_client:
+            # エピソードを「看過」にする。同じ値への PUT なのでリトライしても結果は変わらない
+            episode_response = await httpx_client.put(
+                url = f'{BangumiClient.API_BASE_URL}/users/-/collections/-/episodes/{episode_id}',
+                headers = headers,
+                json = {'type': 2},
+            )
+
+            # Bangumi は未収藏条目のエピソードを更新できないため、初回だけ「在看」を作成して再送する
+            if episode_response.status_code == status.HTTP_400_BAD_REQUEST:
+                collection_status_response = await httpx_client.get(
+                    url = f'{BangumiClient.API_BASE_URL}/users/-/collections/{subject_id}/episodes',
+                    headers = headers,
+                )
+                # 未収藏の場合だけ「在看」を作成し、既存の想看・看過・擱置・拋棄は上書きしない
+                if collection_status_response.status_code == status.HTTP_404_NOT_FOUND:
+                    collection_response = await httpx_client.post(
+                        url = f'{BangumiClient.API_BASE_URL}/users/-/collections/{subject_id}',
+                        headers = headers,
+                        json = {'type': 3},
+                    )
+                    collection_response.raise_for_status()
+                else:
+                    collection_status_response.raise_for_status()
+                episode_response = await httpx_client.put(
+                    url = f'{BangumiClient.API_BASE_URL}/users/-/collections/-/episodes/{episode_id}',
+                    headers = headers,
+                    json = {'type': 2},
+                )
+            episode_response.raise_for_status()
+    except (httpx.NetworkError, httpx.TimeoutException) as ex:
+        logging.error('[BangumiRouter][UpdateBangumiEpisodeCollection] Failed to connect to Bangumi API.')
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = 'Failed to connect to Bangumi API',
+        ) from ex
+    except httpx.HTTPStatusError as ex:
+        if ex.response.status_code in [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]:
+            logging.warning('[BangumiRouter][UpdateBangumiEpisodeCollection] Bangumi access token is invalid or forbidden.')
+            raise HTTPException(
+                status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail = 'Bangumi access token is invalid or does not have write:collection permission',
+            ) from ex
+        logging.error(
+            f'[BangumiRouter][UpdateBangumiEpisodeCollection] Bangumi API returned HTTP {ex.response.status_code}.',
+        )
+        raise HTTPException(
+            status_code = status.HTTP_502_BAD_GATEWAY,
+            detail = f'Failed to update Bangumi episode collection (HTTP Error {ex.response.status_code})',
+        ) from ex
 
 
 @router.post(
@@ -105,6 +178,96 @@ async def BangumiAuthAPI(
     logging.info(
         f'[BangumiRouter][BangumiAuthAPI] Linked Bangumi account. '
         f'[konomitv_user_id: {current_user.id}, bangumi_user_id: {bangumi_user_id}]',
+    )
+
+
+@router.post(
+    '/videos/{video_id}/complete',
+    summary = 'Bangumi エピソード視聴完了 API',
+    status_code = status.HTTP_204_NO_CONTENT,
+)
+async def BangumiEpisodeCompleteAPI(
+    video_id: Annotated[int, Path(description='視聴完了とする録画番組の ID。')],
+    current_user: Annotated[User, Depends(GetCurrentUser)],
+):
+    """
+    指定した録画番組を Bangumi の通常エピソードへ照合し、「看過」に更新する。<br>
+    JWT エンコードされたアクセストークンが Authorization: Bearer に設定されていないとアクセスできない。
+
+    Args:
+        video_id (int): 視聴完了とする録画番組 ID。
+        current_user (User): ログイン中の KonomiTV ユーザー。
+
+    Returns:
+        None: 同期完了済み、または照合対象外の場合。
+
+    Raises:
+        HTTPException: 録画番組が存在しない、連携がない、または Bangumi API 更新に失敗した場合。
+    """
+
+    if current_user.bangumi_user_id is None or current_user.bangumi_access_token is None:
+        raise HTTPException(
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail = 'Bangumi account is not linked',
+        )
+
+    recorded_program = await RecordedProgram.get_or_none(id=video_id).prefetch_related('recorded_video')
+    if recorded_program is None:
+        raise HTTPException(
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail = 'Specified video_id was not found',
+        )
+
+    # 録画中や、ローカル Series / 単一の正整数話数を抽出できない番組は誤同期を避けるため対象外とする
+    if recorded_program.recorded_video.status != 'Recorded':
+        return
+    if BangumiClient.parseEpisodeNumber(recorded_program.episode_number) is None:
+        return
+
+    # 過去の同期済み記録があれば、重播や複数タブからの重複更新を避ける
+    if recorded_program.bangumi_episode_id is not None:
+        is_completed = await BangumiEpisodeCompletion.filter(
+            user_id = current_user.id,
+            bangumi_episode_id = recorded_program.bangumi_episode_id,
+        ).exists()
+        if is_completed:
+            return
+
+    # 未照合の録画だけ、同じ Series の話数列と放送日から Bangumi の対象話を確定する
+    if recorded_program.bangumi_subject_id is None or recorded_program.bangumi_episode_id is None:
+        try:
+            match = await BangumiClient.matchRecordedProgram(recorded_program)
+        except (httpx.NetworkError, httpx.TimeoutException, httpx.HTTPStatusError) as ex:
+            logging.error('[BangumiRouter][BangumiEpisodeCompleteAPI] Failed to match Bangumi episode.', exc_info=ex)
+            raise HTTPException(
+                status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail = 'Failed to match Bangumi episode',
+            ) from ex
+        if match is None:
+            logging.info(
+                f'[BangumiRouter][BangumiEpisodeCompleteAPI] No unique Bangumi episode match. [video_id: {video_id}]',
+            )
+            return
+        recorded_program.bangumi_subject_id = match.subject_id
+        recorded_program.bangumi_episode_id = match.episode_id
+        await recorded_program.save(update_fields=['bangumi_subject_id', 'bangumi_episode_id'])
+
+    # 外部更新に成功した後で完了記録を作り、失敗を成功として扱わない
+    access_token = current_user.decryptBangumiAccessToken()
+    await UpdateBangumiEpisodeCollection(
+        access_token,
+        recorded_program.bangumi_subject_id,
+        recorded_program.bangumi_episode_id,
+    )
+    await BangumiEpisodeCompletion.get_or_create(
+        user_id = current_user.id,
+        bangumi_episode_id = recorded_program.bangumi_episode_id,
+        defaults = {'source_recorded_program_id': recorded_program.id},
+    )
+    logging.info(
+        f'[BangumiRouter][BangumiEpisodeCompleteAPI] Completed Bangumi episode. '
+        f'[konomitv_user_id: {current_user.id}, video_id: {video_id}, '
+        f'bangumi_episode_id: {recorded_program.bangumi_episode_id}]',
     )
 
 

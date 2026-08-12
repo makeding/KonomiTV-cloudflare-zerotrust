@@ -1,5 +1,5 @@
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
@@ -17,10 +17,10 @@ router = APIRouter(
 
 
 def MergeWatchedHistory(
-    current_history: list[dict],
-    incoming_history: list[dict],
+    current_history: list[dict[str, Any]],
+    incoming_history: list[dict[str, Any]],
     max_count: int,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Merge playback positions per video without overwriting newer device updates."""
     merged = {int(item['video_id']): item for item in current_history}
     for item in incoming_history:

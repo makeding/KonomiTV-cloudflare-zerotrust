@@ -78,7 +78,9 @@ export default defineComponent({
 
         // 現在ログイン中の場合はアカウントページに遷移
         if (this.userStore.is_logged_in) {
-            await this.$router.replace({path: '/settings/account'});
+            const return_path = typeof this.$route.query.return === 'string' && this.$route.query.return.startsWith('/') && !this.$route.query.return.startsWith('//') ?
+                this.$route.query.return : '/settings/account';
+            await this.$router.replace({path: return_path});
         }
     },
     methods: {
@@ -98,7 +100,9 @@ export default defineComponent({
 
             // アカウントページに遷移
             // ブラウザバックでログインページに戻れないようにする
-            await this.$router.replace({path: '/settings/account'});
+            const return_path = typeof this.$route.query.return === 'string' && this.$route.query.return.startsWith('/') && !this.$route.query.return.startsWith('//') ?
+                this.$route.query.return : '/settings/account';
+            await this.$router.replace({path: return_path});
         }
     }
 });

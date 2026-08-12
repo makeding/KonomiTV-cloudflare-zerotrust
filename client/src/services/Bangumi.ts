@@ -51,6 +51,22 @@ class Bangumi {
 
         return true;
     }
+
+
+    /**
+     * 視聴完了した録画番組のエピソードを Bangumi で「看過」にする
+     * @param video_id 録画番組 ID
+     * @returns 同期 API が成功した場合は true、失敗した場合は false
+     */
+    static async completeEpisode(video_id: number): Promise<boolean> {
+
+        const response = await APIClient.post(`/bangumi/videos/${video_id}/complete`);
+        if (response.type === 'error') {
+            APIClient.showGenericError(response, 'Bangumi の視聴状態を更新できませんでした。');
+            return false;
+        }
+        return true;
+    }
 }
 
 export default Bangumi;
