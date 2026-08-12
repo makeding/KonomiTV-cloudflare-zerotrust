@@ -113,7 +113,7 @@
                                     :style="{left: `${hoveredPointerPositionRatio * 100}%`}">
                                     <span>{{formatTileTime(program, hoveredTileIndex)}}</span>
                                 </div>
-                                <div v-if="program.is_partially_recorded"
+                                <div v-if="shouldShowPartialRecordingWarning(program)"
                                     class="series-episode-list__episode-partial-warning">
                                     ⚠ 一部のみ録画
                                 </div>
@@ -463,6 +463,39 @@ const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
     }];
 };
 
+// 同じチャンネル・同じ自然話数に複数の録画がある場合、実際に視聴できる品質が最も高い録画を代表にする。
+// 完全録画を最優先し、すべて部分録画なら実ファイルの録画時間が最も長いものを選ぶ。
+const shouldReplaceEpisodeProgram = (
+    currentProgram: IRecordedProgram,
+    candidateProgram: IRecordedProgram,
+): boolean => {
+    if (currentProgram.is_partially_recorded !== candidateProgram.is_partially_recorded) {
+        return candidateProgram.is_partially_recorded === false;
+    }
+    if (currentProgram.recorded_video.duration !== candidateProgram.recorded_video.duration) {
+        return candidateProgram.recorded_video.duration > currentProgram.recorded_video.duration;
+    }
+    const startTimeComparison = dayjs(candidateProgram.start_time).valueOf() - dayjs(currentProgram.start_time).valueOf();
+    if (startTimeComparison !== 0) return startTimeComparison > 0;
+    return candidateProgram.id > currentProgram.id;
+};
+
+// 放送局が異なっていても同じ自然話数の完全録画が一つあれば、作品として視聴可能なので部分録画警告は抑止する。
+const completeEpisodeSlotKeys = computed(() => new Set(
+    programs.value
+        .filter(program => program.is_partially_recorded === false)
+        .flatMap(program => getEpisodeSlots(program)
+            .filter(slot => slot.key.startsWith('episode:'))
+            .map(slot => slot.key)),
+));
+
+const shouldShowPartialRecordingWarning = (program: IRecordedProgram): boolean => {
+    if (program.is_partially_recorded === false) return false;
+    const episodeSlots = getEpisodeSlots(program).filter(slot => slot.key.startsWith('episode:'));
+    if (episodeSlots.length === 0) return true;
+    return episodeSlots.some(slot => completeEpisodeSlotKeys.value.has(slot.key) === false);
+};
+
 const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(() => {
     const observedSlots = [...new Map(programs.value.flatMap(program =>
         getEpisodeSlots(program).map(slot => [slot.key, slot] as const),
@@ -499,7 +532,10 @@ const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(
             programs: new Map<string, IRecordedProgram>(),
         };
         for (const slot of getEpisodeSlots(program)) {
-            if (!group.programs.has(slot.key)) group.programs.set(slot.key, program);
+            const currentProgram = group.programs.get(slot.key);
+            if (currentProgram === undefined || shouldReplaceEpisodeProgram(currentProgram, program)) {
+                group.programs.set(slot.key, program);
+            }
         }
         groups.set(id, group);
     }

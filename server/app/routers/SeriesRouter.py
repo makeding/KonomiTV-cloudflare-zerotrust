@@ -153,9 +153,6 @@ async def OnAirSeriesListAPI():
         FROM recorded_programs rp
         INNER JOIN series s ON s.id = rp.series_id
         WHERE rp.series_id IS NOT NULL
-          AND rp.title NOT LIKE '%[再]%'
-          AND rp.title NOT LIKE '%【再】%'
-          AND rp.title NOT LIKE '%再放送%'
         ORDER BY rp.series_id, rp.start_time DESC, rp.id DESC
         """,
     )
@@ -166,8 +163,6 @@ async def OnAirSeriesListAPI():
     partially_recorded_episode_numbers_by_series: dict[int, set[int]] = {}
     for row in rows:
         series_id = int(row['series_id'])
-        samples = samples_by_series.setdefault(series_id, [])
-        sample_keys = sample_keys_by_series.setdefault(series_id, set())
         episode_number = str(row['episode_number']).strip() if row['episode_number'] is not None else ''
         if episode_number:
             integer_episode_numbers = ExtractIntegerEpisodeNumbers(episode_number)
@@ -181,6 +176,14 @@ async def OnAirSeriesListAPI():
                 )
             else:
                 complete_episode_numbers_by_series.setdefault(series_id, set()).update(integer_episode_numbers)
+
+        # 再放送も同じ自然話数の録画候補なので、完全・部分録画の集計には含める。
+        ## 一方、通常の放送曜日・時刻の推定には混ぜず、再放送枠を通常枠と誤認しないようにする。
+        if REPEAT_BROADCAST_TITLE_PATTERN.search(str(row['program_title'])) is not None:
+            continue
+
+        samples = samples_by_series.setdefault(series_id, [])
+        sample_keys = sample_keys_by_series.setdefault(series_id, set())
         start_time = ParseDatetimeStringToJST(str(row['start_time']))
         sample_key = f'episode:{episode_number}' if episode_number else f'date:{start_time.date().isoformat()}'
 
@@ -189,7 +192,6 @@ async def OnAirSeriesListAPI():
         if (
             len(samples) < 12
             and sample_key not in sample_keys
-            and REPEAT_BROADCAST_TITLE_PATTERN.search(str(row['program_title'])) is None
         ):
             samples.append(row)
             sample_keys.add(sample_key)
