@@ -1,7 +1,7 @@
-from app.routers.SettingsRouter import MergeWatchedHistory
+from app.WatchedHistory import MergeWatchedHistory
 
 
-def history(video_id: int, position: float, created_at: float, updated_at: float) -> dict:
+def history(video_id: int, position: float, created_at: float, updated_at: float) -> dict[str, int | float]:
     return {
         'video_id': video_id,
         'last_playback_position': position,

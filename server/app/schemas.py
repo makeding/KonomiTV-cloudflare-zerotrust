@@ -268,6 +268,9 @@ class SeriesSummary(PydanticModel):
     title: str
     description: str
     genres: list[Genre]
+    thumbnail_recorded_program_ids: list[int]
+    official_website_url: str | None
+    bangumi_subject_id: int | None
     recorded_programs_count: int
     created_at: datetime
     updated_at: datetime

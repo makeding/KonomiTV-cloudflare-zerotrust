@@ -21,7 +21,24 @@
                         :showBackButton="true"
                         :showEmptyMessage="!is_loading"
                         @update:page="updatePage"
-                        @update:sortOrder="updateSortOrder($event as SortOrder)" />
+                        @update:sortOrder="updateSortOrder($event as SortOrder)">
+                        <template #after-header>
+                            <div v-if="official_website_url || bangumi_subject_id" class="series-external-links">
+                                <a v-if="official_website_url" :href="official_website_url"
+                                    class="series-external-links__link" target="_blank" rel="noopener noreferrer">
+                                    <Icon icon="fluent:globe-20-regular" width="18px" />
+                                    アニメ公式サイト
+                                    <Icon icon="fluent:open-16-regular" width="14px" />
+                                </a>
+                                <a v-if="bangumi_subject_id" :href="`https://bgm.tv/subject/${bangumi_subject_id}`"
+                                    class="series-external-links__link" target="_blank" rel="noopener noreferrer">
+                                    <Icon icon="fluent:book-open-20-regular" width="18px" />
+                                    Bangumi
+                                    <Icon icon="fluent:open-16-regular" width="14px" />
+                                </a>
+                            </div>
+                        </template>
+                    </RecordedProgramList>
                 </div>
             </div>
         </main>
@@ -51,6 +68,8 @@ const series_id = computed(() => parseInt(route.params.series_id as string, 10))
 
 // シリーズ名
 const series_title = ref('シリーズ番組');
+const official_website_url = ref<string | null>(null);
+const bangumi_subject_id = ref<number | null>(null);
 
 // 録画番組のリスト
 const programs = ref<IRecordedProgram[]>([]);
@@ -68,6 +87,8 @@ const fetchSeries = async () => {
     const result = await Series.fetchSeriesSummary(series_id.value);
     if (result) {
         series_title.value = result.title;
+        official_website_url.value = result.official_website_url;
+        bangumi_subject_id.value = result.bangumi_subject_id;
     }
 };
 
@@ -174,6 +195,34 @@ onMounted(async () => {
         padding-top: 8px !important;
         padding-left: 8px !important;
         padding-right: 8px !important;
+    }
+}
+
+.series-external-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: -4px 0 18px 47px;
+    @include smartphone-vertical {
+        margin-right: 8px;
+        margin-left: 8px;
+    }
+
+    &__link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 11px;
+        color: rgb(var(--v-theme-text));
+        font-size: 13px;
+        text-decoration: none;
+        background: rgb(var(--v-theme-background-lighten-1));
+        border-radius: 7px;
+        transition: background-color 0.15s ease;
+        &:hover {
+            color: rgb(var(--v-theme-primary));
+            background: rgb(var(--v-theme-background-lighten-2));
+        }
     }
 }
 

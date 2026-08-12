@@ -1,5 +1,6 @@
 
 import json
+import re
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query, status
@@ -17,6 +18,38 @@ router = APIRouter(
 
 # ページングで一度に取得するシリーズ番組の数
 PAGE_SIZE = 30
+
+# EPG の公式情報欄から番組公式サイトだけを選び、SNS や配信サービスへのリンクは除外する。
+OFFICIAL_WEBSITE_URL_PATTERN = re.compile(r'https?://[^\s<>"\'）)】]+')
+NON_OFFICIAL_WEBSITE_HOSTS = {
+    'instagram.com',
+    'tiktok.com',
+    'tver.jp',
+    'video.tv-tokyo.co.jp',
+    'x.com',
+    'youtube.com',
+}
+
+
+def ExtractOfficialWebsiteURL(sources: list[str]) -> str | None:
+    """
+    EPG の公式情報欄から作品または番組の公式 Web サイトを抽出する。
+
+    Args:
+        sources (list[str]): 公式ページ系の detail フィールド値。優先度が高い順に並ぶ。
+
+    Returns:
+        str | None: SNS・動画配信サイト以外で最初に見つかった HTTP(S) URL。
+    """
+
+    for source in sources:
+        for match in OFFICIAL_WEBSITE_URL_PATTERN.finditer(source):
+            url = match.group(0).rstrip('。、,;')
+            host = url.split('/', maxsplit=3)[2].lower().removeprefix('www.')
+            if any(host == excluded_host or host.endswith(f'.{excluded_host}') for excluded_host in NON_OFFICIAL_WEBSITE_HOSTS):
+                continue
+            return url
+    return None
 
 
 @router.get(
@@ -83,6 +116,46 @@ async def GetSeriesSummaries(
             s.title,
             s.description,
             s.genres,
+            COALESCE((
+                SELECT JSON_GROUP_ARRAY(recent_recorded_programs.id)
+                FROM (
+                    SELECT rp_thumbnail.id
+                    FROM recorded_programs rp_thumbnail
+                    WHERE rp_thumbnail.series_id = s.id
+                    ORDER BY rp_thumbnail.start_time DESC, rp_thumbnail.id DESC
+                    LIMIT 3
+                ) AS recent_recorded_programs
+            ), '[]') AS thumbnail_recorded_program_ids,
+            COALESCE((
+                SELECT JSON_GROUP_ARRAY(official_details.value)
+                FROM (
+                    SELECT DISTINCT detail_entry.value AS value,
+                        CASE detail_entry.key
+                            WHEN 'ホームページ' THEN 1
+                            WHEN '公式サイト' THEN 2
+                            WHEN '公式HP' THEN 3
+                            WHEN '公式ページ' THEN 4
+                            WHEN '番組HP' THEN 5
+                            WHEN '番組ホームページ' THEN 6
+                            ELSE 7
+                        END AS priority
+                    FROM recorded_programs rp_website, JSON_EACH(rp_website.detail) AS detail_entry
+                    WHERE rp_website.series_id = s.id
+                      AND detail_entry.key IN (
+                          'ホームページ', '公式サイト', '公式HP', '公式ページ', '番組HP',
+                          '番組ホームページ'
+                      )
+                      AND detail_entry.value LIKE '%http%'
+                    ORDER BY priority, rp_website.start_time DESC
+                ) AS official_details
+            ), '[]') AS official_website_sources,
+            (
+                SELECT MIN(rp_bangumi.bangumi_subject_id)
+                FROM recorded_programs rp_bangumi
+                WHERE rp_bangumi.series_id = s.id
+                  AND rp_bangumi.bangumi_subject_id IS NOT NULL
+                HAVING COUNT(DISTINCT rp_bangumi.bangumi_subject_id) = 1
+            ) AS bangumi_subject_id,
             COUNT(rp.id) AS recorded_programs_count,
             s.created_at,
             s.updated_at
@@ -105,9 +178,15 @@ async def GetSeriesSummaries(
 
         series_list: list[schemas.SeriesSummary] = []
         for row in rows[1]:
+            genres = json.loads(row['genres'])
             series_list.append(schemas.SeriesSummary.model_validate({
                 **row,
-                'genres': json.loads(row['genres']),
+                'genres': genres,
+                'thumbnail_recorded_program_ids': json.loads(row['thumbnail_recorded_program_ids']),
+                'official_website_url': ExtractOfficialWebsiteURL(json.loads(row['official_website_sources'])),
+                'bangumi_subject_id': row['bangumi_subject_id'] if any(
+                    genre['major'] == 'アニメ・特撮' for genre in genres
+                ) else None,
             }))
 
         return schemas.SeriesSummaryList(

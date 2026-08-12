@@ -27,6 +27,9 @@ export interface ISeriesSummary {
     title: string;
     description: string;
     genres: { major: string; middle: string; }[];
+    thumbnail_recorded_program_ids: number[];
+    official_website_url: string | null;
+    bangumi_subject_id: number | null;
     recorded_programs_count: number;
     created_at: string;
     updated_at: string;
