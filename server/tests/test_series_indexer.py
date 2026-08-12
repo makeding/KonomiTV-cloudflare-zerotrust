@@ -228,6 +228,15 @@ class SeriesIndexerTest(unittest.TestCase):
         )
         self.assertIsNone(parsed)
 
+    def test_empty_description_does_not_interrupt_series_rebuild(self) -> None:
+        """空文字の description は先頭行を持たなくても通常のタイトル解析を続行する。"""
+
+        parsed = ParseSeriesTitle('空説明のアニメ #2', ANIME_GENRES, '')
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.display_title, '空説明のアニメ')
+        self.assertEqual(parsed.episode_number, '2')
+
     def test_short_real_work_title_is_not_rejected_by_length(self) -> None:
         """短い実在作品名でも明示的な話数があれば Series 化する。"""
 

@@ -316,7 +316,7 @@ def ParseSeriesTitle(
     ## 先頭行が解析済みの作品名から始まり、かつ実際に長い場合だけ正式名として採用することで、
     ## テレビ東京の「■各話サブタイトル」のような同じ記号を使う本文は作品名へ混入させない。
     if description is not None:
-        description_first_line = unicodedata.normalize('NFKC', description.splitlines()[0]).strip()
+        description_first_line = unicodedata.normalize('NFKC', next(iter(description.splitlines()), '')).strip()
         if description_first_line.startswith('■'):
             description_series_title = description_first_line.removeprefix('■').strip()
             normalized_display_title = NormalizeSeriesTitle(display_title)
