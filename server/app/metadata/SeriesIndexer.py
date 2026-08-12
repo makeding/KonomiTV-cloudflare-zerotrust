@@ -53,7 +53,7 @@ QUOTED_PROGRAM_SLOT_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 QUOTED_WORK_TITLE_PATTERN = re.compile(
-    r'^(?:TVアニメ|時代劇)[「『](?P<title>[^」』]+)[」』](?P<rest>.*)$',
+    r'^(?:(?:TVアニメ|時代劇)\s*)?[「『](?P<title>[^」』]+)[」』](?P<rest>.*)$',
     flags=re.IGNORECASE,
 )
 
@@ -74,7 +74,7 @@ EPISODE_PATTERN = re.compile(
     r'(?:'
     r'\(\s*第?\s*(?P<parenthesized>[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+(?:\.[0-9]+)?)\s*(?:話|回|講|輪)?\s*\)?|'
     r'#\s*(?P<hash>[0-9]+(?:\.[0-9]+)?(?:\s*[・&／/\-～~]\s*#?\s*[0-9]+(?:\.[0-9]+)?)*)|'
-    r'第\s*(?P<japanese>[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+)\s*(?:話|回|講|輪)|'
+    r'第\s*(?P<japanese>[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+(?:\s*[・&／/\-～~]\s*#?\s*[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+)*)\s*(?:話|回|講|輪)|'
     r'\b(?:Chapter|CH)\s*(?P<chapter>[0-9]+(?:\.[0-9]+)?)'
     r')',
     flags=re.IGNORECASE,

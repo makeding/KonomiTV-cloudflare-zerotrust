@@ -248,6 +248,24 @@ class SeriesIndexerTest(unittest.TestCase):
                 self.assertEqual(parsed.display_title, expected_title)
                 self.assertEqual(parsed.subtitle, expected_subtitle)
 
+    def test_bare_quoted_work_title_and_multiple_episodes_are_indexed(self) -> None:
+        """先頭の引用作品名と複数話表記を、特別連続放送でも正しく抽出する。"""
+
+        parsed = ParseSeriesTitle(
+            '[新]『無職転生Ⅲ～異世界行ったら本気だす～』第1・2話【エリス修行編】特別連続放送',
+            ANIME_GENRES,
+        )
+        ordinary = ParseSeriesTitle(
+            '無職転生Ⅲ ～異世界行ったら本気だす～ #03「帰ってきた日常」',
+            ANIME_GENRES,
+        )
+        self.assertIsNotNone(parsed)
+        self.assertIsNotNone(ordinary)
+        assert parsed is not None and ordinary is not None
+        self.assertEqual(parsed.normalized_title, ordinary.normalized_title)
+        self.assertEqual(parsed.episode_number, '1・2')
+        self.assertEqual(parsed.subtitle, '【エリス修行編】特別連続放送')
+
     def test_generic_short_program_is_still_rejected(self) -> None:
         """短い作品名を許可しても、既知の汎用番組は Series 化しない。"""
 

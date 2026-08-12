@@ -81,30 +81,37 @@ const total_programs = ref(0);
 const is_loading = ref(true);
 const episode_number_collator = new Intl.Collator('ja', { numeric: true });
 
-const getEpisodeSlot = (program: IRecordedProgram): IEpisodeSlot => {
+const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
     if (program.episode_number) {
-        return {
-            key: `episode:${program.episode_number}`,
-            label: `第${program.episode_number}話`,
-        };
+        const range_match = program.episode_number.match(/^(\d+)-(\d+)$/);
+        const episode_numbers = range_match
+            ? Array.from(
+                { length: Number(range_match[2]) - Number(range_match[1]) + 1 },
+                (_, index) => String(Number(range_match[1]) + index),
+            )
+            : program.episode_number.split('・');
+        return episode_numbers.map(episode_number => ({
+            key: `episode:${episode_number}`,
+            label: `第${episode_number}話`,
+        }));
     }
     const date = dayjs(program.start_time).format('YYYY-MM-DD');
-    return {
+    return [{
         key: `date:${date}`,
         label: dayjs(program.start_time).format('M/D'),
-    };
+    }];
 };
 
 const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(() => {
-    const slots = [...new Map(programs.value.map(program => {
-        const slot = getEpisodeSlot(program);
-        return [slot.key, slot];
-    })).values()].sort((left, right) => episode_number_collator.compare(left.key, right.key));
+    const slots = [...new Map(programs.value.flatMap(program =>
+        getEpisodeSlots(program).map(slot => [slot.key, slot] as const),
+    )).values()].sort((left, right) => episode_number_collator.compare(left.key, right.key));
 
     const groups = new Map<string, {
         id: string;
         channel_id: string | null;
         name: string;
+        program_count: number;
         programs: Map<string, IRecordedProgram>;
     }>();
     for (const program of programs.value) {
@@ -113,10 +120,13 @@ const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(
             id,
             channel_id: program.channel?.id ?? null,
             name: program.channel?.name ?? 'チャンネル情報なし',
+            program_count: 0,
             programs: new Map<string, IRecordedProgram>(),
         };
-        const slot = getEpisodeSlot(program);
-        if (!group.programs.has(slot.key)) group.programs.set(slot.key, program);
+        group.program_count++;
+        for (const slot of getEpisodeSlots(program)) {
+            if (!group.programs.has(slot.key)) group.programs.set(slot.key, program);
+        }
         groups.set(id, group);
     }
 
@@ -124,7 +134,7 @@ const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(
         id: group.id,
         channel_id: group.channel_id,
         name: group.name,
-        program_count: group.programs.size,
+        program_count: group.program_count,
         programs: slots.map(slot => group.programs.get(slot.key) ?? null),
     }));
     return { slots, rows };
