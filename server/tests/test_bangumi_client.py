@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.utils.BangumiClient import BangumiClient
 
@@ -102,7 +102,7 @@ class BangumiClientAsyncTest(unittest.IsolatedAsyncioTestCase):
     async def test_deleted_collection_subject_does_not_abort_episode_sync(self) -> None:
         """收藏一覧に残る削除済み条目は空の episode 一覧として扱う。"""
 
-        response = AsyncMock()
+        response = MagicMock()
         response.status_code = 404
         httpx_client = AsyncMock()
         httpx_client.get.return_value = response

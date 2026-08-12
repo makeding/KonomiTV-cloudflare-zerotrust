@@ -175,14 +175,6 @@ class BangumiClient:
                         'offset': offset,
                     },
                 )
-                # 收藏一覧には削除済み条目が残ることがある。該当条目の profile は一覧値から表示できるため、
-                ## episode だけを未照合のままにして他の Series の同期を継続する。
-                if response.status_code == 404:
-                    logging.warning(
-                        f'[BangumiClient][_getEpisodes] Bangumi subject was not found. '
-                        f'[subject_id: {subject_id}]',
-                    )
-                    return []
                 response.raise_for_status()
                 payload = cast(dict[str, Any], response.json())
                 collections = cast(list[dict[str, Any]], payload.get('data', []))
@@ -229,6 +221,14 @@ class BangumiClient:
                         'offset': offset,
                     },
                 )
+                # 收藏一覧には、Bangumi 側ですでに削除された条目が残る場合がある。
+                ## その条目だけ episode 未照合として扱い、残りの Series の同期は継続する。
+                if response.status_code == 404:
+                    logging.warning(
+                        f'[BangumiClient][_getEpisodes] Bangumi subject was not found. '
+                        f'[subject_id: {subject_id}]',
+                    )
+                    return []
                 response.raise_for_status()
                 payload = cast(dict[str, Any], response.json())
                 page_episodes = cast(list[dict[str, Any]], payload.get('data', []))
