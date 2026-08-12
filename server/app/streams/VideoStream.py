@@ -28,6 +28,7 @@ from app.streams.RecordingPlaybackTracker import RecordingPlaybackTracker
 from app.streams.StreamEncodingOptions import StreamEncodingOptions
 from app.streams.VideoEncodingTask import VideoEncodingTask
 from app.streams.VideoSegmentPlanner import VideoSegmentPlanner
+from app.streams.VideoSourceTimeline import VideoSourceTimeline
 from app.utils import SetTimeout
 from app.utils.MP4KeyFrameParser import MP4KeyFrameParser
 from app.utils.TSKeyFrameSeeker import (
@@ -49,6 +50,16 @@ class VideoStreamSegment:
     # HLS プレイリスト上の開始時刻 (秒)
     ## 入力ソース側の DTS とは別物で、仮想プレイリストを等間隔で作るための再生時刻
     playlist_start_seconds: float
+    # このセグメントを供給する録画番組 ID
+    ## 仮想時間軸を使わない通常再生では None とし、セッションの基準録画を使う
+    source_recorded_program_id: int | None
+    # 入力ファイル内の開始時刻 (秒)
+    ## 複数ファイルを跨ぐ HLS では playlist_start_seconds と異なるため、別フィールドで保持する
+    source_start_seconds: float
+    # どの録画ファイルにも実データが存在しない欠落区間かどうか
+    is_gap: bool
+    # 直前の実セグメントとは別入力になるため、HLS の discontinuity が必要かどうか
+    is_discontinuity: bool
     # エンコードを開始する入力ファイルの位置 (バイト)
     ## TS コンテナはオンデマンド探索または segment_map で解決し、MP4 は psisimux に時刻を渡すため None のまま扱う
     source_file_position: int | None
@@ -173,6 +184,11 @@ class VideoStream:
 
             # HLS セグメントを格納するリスト
             instance._segments = []
+
+            # HLS（オリジナル）で複数の中断録画を繋ぐ場合にだけ使う仮想入力時間軸
+            ## 原始 TLV の直通経路は単一ファイルのまま維持し、ここには登録しない
+            instance._source_timeline = None
+            instance._source_recorded_programs = {recorded_program.id: recorded_program}
 
             # segment_map はシーケンス番号で参照するため、視聴セッション内では辞書として保持する
             ## DB には JSON 配列のまま保存し、検索時だけ辞書化することで保存形式を増やさずに参照コストを下げる
@@ -313,6 +329,49 @@ class VideoStream:
         基本一度 VideoStream 内部でセットされたら外部から変更されるべきではないので、読み取り専用にしている
         """
         return tuple(self._segments)
+
+
+    def configureSourceTimeline(
+        self,
+        source_timeline: VideoSourceTimeline,
+        source_recorded_programs: list[RecordedProgram],
+    ) -> None:
+        """
+        HLS（オリジナル）用の複数録画ファイル時間軸をセッションへ設定する。
+
+        Args:
+            source_timeline (VideoSourceTimeline): 番組時刻を維持したソース区間と欠落区間。
+            source_recorded_programs (list[RecordedProgram]): 時間軸内の ID から参照する録画番組。
+
+        Returns:
+            None
+        """
+
+        # プレイリスト作成後に時間軸を差し替えると sequence の意味が変わるため、初回作成時だけ設定する。
+        if len(self._segments) > 0:
+            return
+        self._source_timeline = source_timeline
+        self._source_recorded_programs = {
+            source_recorded_program.id: source_recorded_program
+            for source_recorded_program in source_recorded_programs
+        }
+
+
+    def getSourceRecordedProgram(self, segment_sequence: int) -> RecordedProgram:
+        """
+        指定セグメントを供給する録画番組を取得する。
+
+        Args:
+            segment_sequence (int): HLS セグメントのシーケンス番号。
+
+        Returns:
+            RecordedProgram: 入力ファイルとメタデータを提供する録画番組。
+        """
+
+        segment = self._segments[segment_sequence]
+        if segment.source_recorded_program_id is None:
+            return self.recorded_program
+        return self._source_recorded_programs[segment.source_recorded_program_id]
 
 
     @property
@@ -484,6 +543,10 @@ class VideoStream:
             self._segments.append(VideoStreamSegment(
                 sequence_index = segment_sequence,
                 playlist_start_seconds = playlist_start_seconds,
+                source_recorded_program_id = None,
+                source_start_seconds = playlist_start_seconds,
+                is_gap = False,
+                is_discontinuity = False,
                 source_file_position = None,
                 source_start_dts = None,
                 duration_seconds = min(self._segment_duration_seconds, max(remaining_duration, 0.001)),
@@ -496,6 +559,86 @@ class VideoStream:
                 f'{self.log_prefix} Total {len(self._segments)} virtual segments '
                 f'(segment_duration: {self._segment_duration_seconds:.6f}s).'
             )
+
+
+    def __ensureSourceTimelineSegments(self, source_timeline: VideoSourceTimeline) -> None:
+        """
+        複数録画ファイルの仮想時間軸から、入力境界を跨がない HLS セグメントを作成する。
+
+        Args:
+            source_timeline (VideoSourceTimeline): 番組時刻上のソース区間と欠落区間。
+
+        Returns:
+            None
+        """
+
+        if len(self._segments) > 0:
+            return
+
+        timeline_regions = sorted(
+            [
+                (
+                    span.timeline_start_seconds,
+                    span.timeline_end_seconds,
+                    span.recorded_program_id,
+                    span.source_start_seconds,
+                    False,
+                )
+                for span in source_timeline.spans
+            ] + [
+                (
+                    gap.timeline_start_seconds,
+                    gap.timeline_end_seconds,
+                    None,
+                    0.0,
+                    True,
+                )
+                for gap in source_timeline.gaps
+            ],
+            key = lambda region: region[0],
+        )
+        previous_source_recorded_program_id: int | None = None
+        was_gap = False
+
+        # 入力ファイルの切り替え位置と欠落区間を跨がないよう、各領域を基準長以下へ分割する。
+        for region_start, region_end, source_recorded_program_id, source_region_start, is_gap in timeline_regions:
+            cursor_seconds = region_start
+            while cursor_seconds < region_end:
+                segment_end_seconds = min(cursor_seconds + self._segment_duration_seconds, region_end)
+                is_discontinuity = (
+                    is_gap is False and
+                    previous_source_recorded_program_id is not None and
+                    (
+                        was_gap is True or
+                        previous_source_recorded_program_id != source_recorded_program_id
+                    )
+                )
+                self._segments.append(VideoStreamSegment(
+                    sequence_index = len(self._segments),
+                    playlist_start_seconds = cursor_seconds,
+                    source_recorded_program_id = source_recorded_program_id,
+                    source_start_seconds = (
+                        source_region_start + (cursor_seconds - region_start)
+                        if is_gap is False
+                        else 0.0
+                    ),
+                    is_gap = is_gap,
+                    is_discontinuity = is_discontinuity,
+                    source_file_position = None,
+                    source_start_dts = None,
+                    duration_seconds = max(segment_end_seconds - cursor_seconds, 0.001),
+                    encode_status = 'Pending',
+                    encoded_segment_ts_future = asyncio.get_running_loop().create_future(),
+                ))
+                cursor_seconds = segment_end_seconds
+                if is_gap is False:
+                    previous_source_recorded_program_id = source_recorded_program_id
+                was_gap = is_gap
+
+        logging.info(
+            f'{self.log_prefix} Total {len(self._segments)} virtual source timeline segments '
+            f'(sources: {len(source_timeline.spans)}, gaps: {len(source_timeline.gaps)}).'
+        )
 
 
     async def __getPlaylistDuration(self) -> float:
@@ -556,10 +699,13 @@ class VideoStream:
 
         # 録画済みは DB の duration から固定長プレイリストを作り、録画中は tracker が推定した可読範囲まで随時伸ばす。
         playlist_duration_seconds = await self.__getPlaylistDuration()
-        self.__ensureVirtualSegments(
-            playlist_duration_seconds,
-            is_recording = self.recorded_program.recorded_video.status == 'Recording',
-        )
+        if self._source_timeline is not None:
+            self.__ensureSourceTimelineSegments(self._source_timeline)
+        else:
+            self.__ensureVirtualSegments(
+                playlist_duration_seconds,
+                is_recording = self.recorded_program.recorded_video.status == 'Recording',
+            )
 
         # キャッシュキーが指定されていない場合は UUID の - で区切って一番左側のみを使う
         if cache_key is None:
@@ -582,6 +728,10 @@ class VideoStream:
 
         # 事前に算出したセグメントをすべて記述する
         for segment in self._segments:
+            if segment.is_discontinuity is True:
+                virtual_playlist += '#EXT-X-DISCONTINUITY\n'
+            if segment.is_gap is True:
+                virtual_playlist += '#EXT-X-GAP\n'
             # セグメントの長さ (秒, 小数点以下6桁まで)
             virtual_playlist += f'#EXTINF:{segment.duration_seconds:.6f},\n'
             # キャッシュ避けのためにキャッシュキーを付与する
@@ -623,7 +773,7 @@ class VideoStream:
                 )
                 return
 
-            recorded_video = self.recorded_program.recorded_video
+            recorded_video = self.getSourceRecordedProgram(segment_sequence).recorded_video
             file_path = Path(recorded_video.file_path)
 
             if recorded_video.container_format == 'MPEG-TS':
@@ -709,7 +859,7 @@ class VideoStream:
             ## HLS 分割側の論理タイムラインは要求されたプレイリスト時刻をそのまま起点にできる
             if recorded_video.container_format == 'MMT/TLV':
                 segment.source_file_position = None
-                segment.source_start_dts = round(segment.playlist_start_seconds * ts.HZ)
+                segment.source_start_dts = round(segment.source_start_seconds * ts.HZ)
                 logging.info(
                     f'{self.log_prefix}[Segment {segment_sequence}] '
                     f'Segment source position delegated to FFmpeg MMT/TLV seek. '
@@ -936,6 +1086,12 @@ class VideoStream:
                     )
             else:
                 return None
+
+        # EXT-X-GAP のセグメントはクライアントが通常取得しないが、実装差で要求されてもエンコーダーは起動しない。
+        ## 空データを返すことで、存在しない録画範囲を誤って前後のファイルから補完することを防ぐ。
+        if self._segments[segment_sequence].is_gap is True:
+            logging.info(f'{self.log_prefix}[Segment {segment_sequence}] Skipped an unrecorded timeline gap.')
+            return b''
 
         # 同時リクエスト数をチェック
         if self._active_segment_requests >= self.MAX_ACTIVE_SEGMENT_REQUESTS:

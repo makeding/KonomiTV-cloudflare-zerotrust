@@ -214,6 +214,7 @@ class VideoEncodingTask:
         self,
         output_ts_offset: float,
         mmt_seek_seconds: float | None = None,
+        mmt_input_file_path: str | None = None,
     ) -> list[str]:
         """
         再エンコードせず MPEG-TS を再多重化する FFmpeg オプションを組み立てる
@@ -221,6 +222,7 @@ class VideoEncodingTask:
         Args:
             output_ts_offset (float): 出力 TS のタイムスタンプオフセット (秒)
             mmt_seek_seconds (float | None): MMT/TLV 入力のシーク位置 (秒)。MPEG-TS 入力では None
+            mmt_input_file_path (str | None): MMT/TLV 入力ファイル。MPEG-TS 入力では None
 
         Returns:
             list[str]: FFmpeg に渡すオプションが連なる配列
@@ -228,9 +230,11 @@ class VideoEncodingTask:
 
         # MMT/TLV は元ファイルを libaribtlv で直接開き、映像・音声を再エンコードせず MPEG-TS へ再多重化する
         if mmt_seek_seconds is not None:
+            if mmt_input_file_path is None:
+                raise ValueError('MMT/TLV input file path is required for stream copy.')
             options = [
                 '-f', 'libaribtlv',
-                '-i', self.video_stream.recorded_program.recorded_video.file_path,
+                '-i', mmt_input_file_path,
                 # stream copy では input seek 後の RAP から要求時刻までをデコードして破棄できないため、output seek で時刻以前のパケットを除外する
                 '-ss', str(mmt_seek_seconds),
                 '-map', '0:v:0',
@@ -474,11 +478,19 @@ class VideoEncodingTask:
         if self.video_stream.quality == 'copy':
             ENCODER_TYPE = 'FFmpeg'
 
+        # 処理対象の VideoStreamSegment と、その区間を供給する録画ファイルを取得する。
+        ## 仮想時間軸ではセッションの基準録画と実際の入力ファイルが異なるため、以降は必ずこの値を参照する。
+        current_sequence = start_sequence
+        current_segment: VideoStreamSegment = self.video_stream.segments[current_sequence]
+        if current_segment.is_gap is True:
+            raise RuntimeError(f'Cannot encode an unrecorded timeline gap. [sequence: {current_sequence}]')
+        source_recorded_program = self.video_stream.getSourceRecordedProgram(current_sequence)
+        recorded_video = source_recorded_program.recorded_video
+
         # 映像 PID や映像ストリーム構成が途中で変わる録画（マルチ編成開始/終了での解像度変更時など）に関して、HWEncC 系エンコーダーは
         # --avhw だと録画マージン区間 -> 本編での解像度切り替えに対応できずクラッシュし、--avsw の場合はエラーこそ出ないがデコードがめちゃくちゃになる問題がある
         # このため苦肉の策として、メタデータ解析時に映像構成がイレギュラーな TS だと事前に検出した上で、それらの録画ファイルの再生時エンコーダーを FFmpeg に固定する
         ## FFmpeg (ソフトウェアデコード/エンコード) + tsreadex (映像 PID 固定化) の構成であれば、解像度変化のある TS も問題なくエンコードできるっぽい
-        recorded_video = self.video_stream.recorded_program.recorded_video
         # MMT/TLV は libaribtlv 対応 FFmpeg だけが直接入力とランダムシークに対応するため、設定に関わらず FFmpeg を使う
         if recorded_video.container_format == 'MMT/TLV':
             ENCODER_TYPE = 'FFmpeg'
@@ -499,8 +511,6 @@ class VideoEncodingTask:
                 await segment.resetState()
 
         # 処理対象の VideoStreamSegment を取得し、エンコード中状態に設定
-        current_sequence = start_sequence
-        current_segment: VideoStreamSegment = self.video_stream.segments[current_sequence]
         current_segment.encode_status = 'Encoding'
         logging.info(f'{self.video_stream.log_prefix}[Segment {current_sequence}] Starting the Encoder...')
 
@@ -513,14 +523,14 @@ class VideoEncodingTask:
         # MPEG-TS 形式の場合のみ、録画ファイルを開く
         # それ以外の場合は一旦 None とする
         file = None
-        if self.video_stream.recorded_program.recorded_video.container_format == 'MPEG-TS':
+        if recorded_video.container_format == 'MPEG-TS':
             # 再生しながらのキーフレーム収集は補助的な高速化なので、初期化に失敗しても再生本体は続ける
             ## 既存の segment_map から開始位置を解決済みの録画では、PAT/PMT や先頭 DTS の再探索が失敗してもエンコード自体は可能
             try:
                 await self.video_stream.ensureTSKeyFrameContext()
             except Exception as ex:
                 logging.warning(f'{self.video_stream.log_prefix} Failed to initialize input keyframe collector context:', exc_info=ex)
-            file = open(self.video_stream.recorded_program.recorded_video.file_path, 'rb')
+            file = open(recorded_video.file_path, 'rb')
 
         # 入力 TS を tsreadex に渡すついでに見つけたキーフレームを保持する
         ## ワーカースレッドでは DB を触らず、イベントループ側が節目ごとに segment_map へ変換して保存する
@@ -1088,7 +1098,12 @@ class VideoEncodingTask:
                         encoder_options = self.buildFFmpegCopyOptions(
                             output_ts_offset,
                             mmt_seek_seconds = (
-                                current_segment.playlist_start_seconds
+                                current_segment.source_start_seconds
+                                if recorded_video.container_format == 'MMT/TLV'
+                                else None
+                            ),
+                            mmt_input_file_path = (
+                                recorded_video.file_path
                                 if recorded_video.container_format == 'MMT/TLV'
                                 else None
                             ),
@@ -1371,6 +1386,20 @@ class VideoEncodingTask:
                                         # 最終セグメント完了時は残りのキーフレーム情報をまとめて保存する
                                         await FlushCollectedSegmentMap()
                                         logging.info(f'{self.video_stream.log_prefix} Reached the final segment.')
+                                        break
+
+                                    # MMT/TLV の別ファイルや欠落区間へ到達したら、現在の FFmpeg はここで終了する。
+                                    ## 次のセグメント要求が新しい libaribtlv demux コンテキストを開始し、HLS の discontinuity と対応する。
+                                    next_segment = self.video_stream.segments[current_sequence]
+                                    if (
+                                        next_segment.is_gap is True or
+                                        next_segment.source_recorded_program_id != current_segment.source_recorded_program_id
+                                    ):
+                                        await FlushCollectedSegmentMap()
+                                        logging.info(
+                                            f'{self.video_stream.log_prefix} Reached a virtual source boundary. '
+                                            f'[next_sequence: {current_sequence}]'
+                                        )
                                         break
 
                                     # 新しいセグメント用のデータと状態を初期化

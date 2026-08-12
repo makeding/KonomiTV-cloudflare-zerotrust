@@ -23,6 +23,7 @@ from app.streams.StreamEncodingOptions import (
     SplitQualityAndEncodingOptions,
     StreamQualityWithOptions,
 )
+from app.streams.VideoSourceTimeline import VideoSourceTimelineResolver
 from app.streams.VideoStream import VideoStream
 
 
@@ -232,6 +233,25 @@ async def VideoHLSPlaylistAPI(
         stream_quality.encoding_options,
         is_new_session_allowed = True,
     )
+
+    # 中断した MMT/TLV 録画をそのまま連結すると libaribtlv の demux 状態が壊れるため、
+    ## HLS（オリジナル）の各入力区間を別々に再多重化する仮想時間軸を構成する。
+    ## 原始 TLV のダウンロード API はこの経路を通らず、従来どおり単一ファイルだけを返す。
+    if (
+        stream_quality.quality == 'copy' and
+        recorded_program.recorded_video.container_format == 'MMT/TLV'
+    ):
+        source_recorded_programs = [
+            source_recorded_program
+            for source_recorded_program in await VideoSourceTimelineResolver.findCandidates(recorded_program)
+            if source_recorded_program.recorded_video.container_format == 'MMT/TLV'
+        ]
+        if recorded_program.is_partially_recorded is True or len(source_recorded_programs) > 1:
+            source_timeline = VideoSourceTimelineResolver.buildFromRecordedPrograms(
+                recorded_program,
+                source_recorded_programs,
+            )
+            video_stream.configureSourceTimeline(source_timeline, source_recorded_programs)
 
     # 仮想 HLS M3U8 プレイリストを取得
     virtual_playlist = await video_stream.getVirtualPlaylist(cache_key)
