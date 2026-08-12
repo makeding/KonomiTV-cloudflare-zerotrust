@@ -80,6 +80,9 @@ EPISODE_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 TRAILING_EPISODE_PATTERN = re.compile(r'\s+(?P<episode>[0-9]+(?:\.[0-9]+)?)\s*$')
+# 一部放送局が装飾用の閉じ波線の直後へ付けるクール番号。
+## 「作品名～2 17」の最初の 2 だけを作品名から外し、末尾の 17 は通常どおり話数として扱う。
+BROADCASTER_COUR_SUFFIX_PATTERN = re.compile(r'^(?P<title>.+[～~])(?P<cour>[2-9])$')
 QUOTED_SUBTITLE_PATTERN = re.compile(r'[「『](?P<subtitle>.*?)[」』]')
 QUOTED_LEVEL_EPISODE_PATTERN = re.compile(
     r'^Lv\s*(?P<episode>[0-9]+(?:\.[0-9]+)?)\s+(?P<subtitle>.+)$',
@@ -230,6 +233,7 @@ def ParseSeriesTitle(
     episode_source = title_without_quoted_subtitle
     episode_match = EPISODE_PATTERN.search(episode_source)
     is_episode_from_description = False
+    is_episode_from_trailing_title = False
     quoted_level_match = QUOTED_LEVEL_EPISODE_PATTERN.fullmatch(subtitle) if subtitle is not None else None
     if episode_match is None:
         # 一部アニメ局は「Lv2 副題」のように話数を引用符内へ入れるため、引用符の先頭だけを追加で認識する。
@@ -251,6 +255,7 @@ def ParseSeriesTitle(
         # アニメ EPG では末尾の単独数字が話数として使われるため、このジャンルに限り追加で認識する。
         is_anime = any(genre['major'] == 'アニメ・特撮' for genre in genres)
         episode_match = TRAILING_EPISODE_PATTERN.search(title_without_quoted_subtitle) if is_anime else None
+        is_episode_from_trailing_title = episode_match is not None
         if episode_match is None and is_anime and description is not None:
             # 放送局によっては title を毎回同じ作品名にし、description の独立行先頭へ話数を入れる。
             ## あらすじ本文に現れる数字を話数と誤認しないよう、各行の先頭一致だけを採用する。
@@ -276,6 +281,13 @@ def ParseSeriesTitle(
         if is_episode_from_description
         else title_without_quoted_subtitle[:episode_match.start()]
     ).strip(' 　・:-(（')
+
+    # BS 日テレ 4K の「ヘルモード ...～2 17」のように、閉じ波線と末尾話数の間へ
+    ## クール番号を挿入する表記だけを補正する。通常の「作品2 17」は作品名の数字を保持する。
+    if is_episode_from_trailing_title:
+        broadcaster_cour_suffix_match = BROADCASTER_COUR_SUFFIX_PATTERN.fullmatch(display_title)
+        if broadcaster_cour_suffix_match is not None:
+            display_title = broadcaster_cour_suffix_match.group('title')
 
     # 話数の後ろに残る語句は放送枠名を除き、副題が別途なければ副題として保存する。
     trailing_text = episode_source[episode_match.end():].strip()

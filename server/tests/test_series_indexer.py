@@ -266,6 +266,27 @@ class SeriesIndexerTest(unittest.TestCase):
         self.assertEqual(parsed.episode_number, '1・2')
         self.assertEqual(parsed.subtitle, '【エリス修行編】特別連続放送')
 
+    def test_broadcaster_cour_suffix_before_trailing_episode_is_removed(self) -> None:
+        """閉じ波線の後ろへ放送局が付けたクール番号だけを作品名から除外する。"""
+
+        bs_4k = ParseSeriesTitle(
+            'アニメ ヘルモード ～やり込み好きのゲーマーは廃設定の異世界で無双する～2 17',
+            ANIME_GENRES,
+        )
+        tokyo_mx = ParseSeriesTitle(
+            'ヘルモード ～やり込み好きのゲーマーは廃設定の異世界で無双する～ #17',
+            ANIME_GENRES,
+        )
+        numbered_work = ParseSeriesTitle('作品2 17', ANIME_GENRES)
+        self.assertIsNotNone(bs_4k)
+        self.assertIsNotNone(tokyo_mx)
+        self.assertIsNotNone(numbered_work)
+        assert bs_4k is not None and tokyo_mx is not None and numbered_work is not None
+        self.assertEqual(bs_4k.normalized_title, tokyo_mx.normalized_title)
+        self.assertEqual(bs_4k.display_title, 'ヘルモード ~やり込み好きのゲーマーは廃設定の異世界で無双する~')
+        self.assertEqual(bs_4k.episode_number, '17')
+        self.assertEqual(numbered_work.display_title, '作品2')
+
     def test_generic_short_program_is_still_rejected(self) -> None:
         """短い作品名を許可しても、既知の汎用番組は Series 化しない。"""
 
