@@ -430,6 +430,9 @@ async def VideoOfflineStreamAPI(
             detail = 'Recording video cannot be saved for offline playback',
         )
 
+    # copy 品質はコンテナを HLS 向け MPEG-TS へ詰め替えるだけなので、対応する録画形式かを通常再生と同じ条件で検証する
+    ValidateVideoCopyQuality(recorded_program, stream_quality)
+
     # 待機中のリクエストは HTTP 応答を開始せず、クライアント側で Waiting と表示できる状態を維持する
     await OFFLINE_VIDEO_STREAM_SEMAPHORE.acquire()
     video_stream: VideoStream | None = None

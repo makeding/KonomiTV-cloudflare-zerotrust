@@ -525,6 +525,7 @@ const offlineSizeLabel = computed(() => {
             OfflineVideos.estimateDisplaySizeBytes(
                 props.program.recorded_video.duration,
                 props.offlineDownloadJob.quality,
+                props.program.recorded_video.file_size,
             ),
             true,
         );
@@ -541,6 +542,7 @@ const offlineSizeLabel = computed(() => {
             OfflineVideos.estimateDisplaySizeBytes(
                 props.program.recorded_video.duration,
                 props.offlineDownloadJob.quality,
+                props.program.recorded_video.file_size,
             ),
             true,
         );
@@ -564,6 +566,7 @@ const offlineDownloadProgress = computed(() => {
     const estimatedSizeBytes = OfflineVideos.estimateJobSizeBytes(
         props.program.recorded_video.duration,
         props.offlineDownloadJob.quality,
+        props.program.recorded_video.file_size,
     );
     if (estimatedSizeBytes === null || estimatedSizeBytes <= 0) return 0;
     return Math.min(99, (props.offlineDownloadJob.downloaded_bytes / estimatedSizeBytes) * 100);

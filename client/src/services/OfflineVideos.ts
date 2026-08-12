@@ -49,6 +49,7 @@ export default class OfflineVideos {
 
     /** 保存画質セレクタと同じ利用者向けラベル */
     private static readonly QUALITY_LABELS: Record<string, string> = {
+        'copy': 'HLS (オリジナル)',
         '1080p-60fps': '1080p (60fps)',
         '1080p': '1080p',
         '810p': '810p',
@@ -231,11 +232,19 @@ export default class OfflineVideos {
             }
 
             // 進捗バーは目標ビットレート基準、空き容量判定は上限ビットレート基準で見積もる
-            const estimatedSizeBytes = OfflineVideos.estimateJobSizeBytes(programSnapshot.recorded_video.duration, quality);
+            const estimatedSizeBytes = OfflineVideos.estimateJobSizeBytes(
+                programSnapshot.recorded_video.duration,
+                quality,
+                programSnapshot.recorded_video.file_size,
+            );
             if (estimatedSizeBytes === null) {
                 throw new Error(`オフライン保存に対応していない画質です。(${quality})`);
             }
-            const requiredStorageBytes = OfflineVideos.estimateRequiredStorageBytes(programSnapshot.recorded_video.duration, quality);
+            const requiredStorageBytes = OfflineVideos.estimateRequiredStorageBytes(
+                programSnapshot.recorded_video.duration,
+                quality,
+                programSnapshot.recorded_video.file_size,
+            );
             if (requiredStorageBytes === null) {
                 throw new Error(`オフライン保存に対応していない画質です。(${quality})`);
             }
@@ -669,6 +678,9 @@ export default class OfflineVideos {
         is24fpsMode: boolean;
     }): string {
 
+        // copy は映像・音声を再エンコードせず HLS 用 MPEG-TS へ詰め替えるだけなので、エンコード系オプションを付与しない
+        if (baseQuality === 'copy') return 'copy';
+
         let apiQuality = baseQuality;
         if (options.isDataSaverMode === true && options.isHEVCSupported === true) {
             apiQuality += '-hevc';
@@ -686,9 +698,17 @@ export default class OfflineVideos {
      * 保存ジョブの進捗計算向けに、VBR の実効平均ビットレートから保存容量を見積もる。
      * @param durationSeconds 番組尺 (秒)
      * @param apiQuality API 画質
+     * @param originalFileSizeBytes copy 品質で使う元録画ファイルのバイト数
      * @returns 見積もりバイト数。未対応画質なら null
      */
-    static estimateJobSizeBytes(durationSeconds: number, apiQuality: string): number | null {
+    static estimateJobSizeBytes(durationSeconds: number, apiQuality: string, originalFileSizeBytes?: number): number | null {
+
+        // 再多重化では映像・音声の容量がほぼ変わらないため、元ファイルサイズを進捗の基準にする
+        if (apiQuality === 'copy') {
+            return originalFileSizeBytes === undefined
+                ? null
+                : Math.ceil(originalFileSizeBytes * OfflineVideos.JOB_PROGRESS_SIZE_MARGIN);
+        }
 
         const effectiveBitrates = OfflineVideos.getEffectiveStreamBitrates(apiQuality);
         if (effectiveBitrates.total_bitrate_kbps === 0) return null;
@@ -701,9 +721,17 @@ export default class OfflineVideos {
      * 空き容量判定向けに、server/app/constants.py の video_bitrate_max + audio_bitrate から保存容量を見積もる。
      * @param durationSeconds 番組尺 (秒)
      * @param apiQuality API 画質
+     * @param originalFileSizeBytes copy 品質で使う元録画ファイルのバイト数
      * @returns 見積もりバイト数。未対応画質なら null
      */
-    static estimateRequiredStorageBytes(durationSeconds: number, apiQuality: string): number | null {
+    static estimateRequiredStorageBytes(durationSeconds: number, apiQuality: string, originalFileSizeBytes?: number): number | null {
+
+        // HLS セグメント化後のコンテナオーバーヘッドも既存の空き容量マージンへ含める
+        if (apiQuality === 'copy') {
+            return originalFileSizeBytes === undefined
+                ? null
+                : Math.ceil(originalFileSizeBytes * OfflineVideos.REQUIRED_STORAGE_SIZE_MARGIN);
+        }
 
         const bitrates = OfflineVideos.getStreamQualityBitrates(apiQuality);
         if (bitrates.video_bitrate_max_kbps === 0) return null;
@@ -716,9 +744,13 @@ export default class OfflineVideos {
      * 表示向けに、VBR の実効平均ビットレートから保存容量を見積もる。
      * @param durationSeconds 番組尺 (秒)
      * @param apiQuality API 画質
+     * @param originalFileSizeBytes copy 品質で使う元録画ファイルのバイト数
      * @returns 見積もりバイト数
      */
-    static estimateDisplaySizeBytes(durationSeconds: number, apiQuality: string): number {
+    static estimateDisplaySizeBytes(durationSeconds: number, apiQuality: string, originalFileSizeBytes?: number): number {
+
+        // 再多重化時は元ファイルサイズが最も実態に近い見積もりになる
+        if (apiQuality === 'copy') return originalFileSizeBytes ?? 0;
 
         const effectiveBitrates = OfflineVideos.getEffectiveStreamBitrates(apiQuality);
         return Math.ceil(effectiveBitrates.total_bitrate_kbps * 1000 * durationSeconds / 8);
