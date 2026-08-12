@@ -59,15 +59,23 @@
                             <div class="series-card__body">
                                 <h3 class="series-card__title">{{series.title}}</h3>
                                 <div class="series-card__meta">
-                                    <span>{{series.recorded_programs_count}}件の録画</span>
-                                    <span v-for="genre in getMajorGenres(series)" :key="genre" class="series-card__genre">{{genre}}</span>
-                                    <img v-for="channel_id in series.channel_ids"
-                                        :key="channel_id"
-                                        class="series-card__channel-logo"
-                                        loading="lazy"
-                                        decoding="async"
-                                        :src="`${Utils.api_base_url}/channels/${channel_id}/logo`"
-                                        alt="">
+                                    <div class="series-card__meta-info">
+                                        <span>{{series.recorded_programs_count}}件の録画</span>
+                                        <span v-for="genre in getMajorGenres(series)" :key="genre"
+                                            class="series-card__genre">{{genre}}</span>
+                                    </div>
+                                    <div class="series-card__channels">
+                                        <div v-for="channel_id in series.channel_ids"
+                                            :key="channel_id"
+                                            class="series-card__channel-logo">
+                                            <div class="ch-sprite" :chid="channel_id">
+                                                <img loading="lazy"
+                                                    decoding="async"
+                                                    :src="`${Utils.api_base_url}/channels/${channel_id}/logo`"
+                                                    alt="">
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                                     <Icon class="series-card__chevron"
@@ -202,7 +210,9 @@ const updatePage = async (page: number) => {
 };
 
 const getMajorGenres = (series: ISeriesSummary): string[] => {
-    return [...new Set(series.genres.map(genre => genre.major))].slice(0, 2);
+    return [...new Set(series.genres.map(genre => genre.major))]
+        .filter(genre => genre !== '福祉')
+        .slice(0, 2);
 };
 
 watch(() => route.query, async () => {
@@ -437,18 +447,37 @@ onBeforeUnmount(() => {
     &__meta {
         display: flex;
         align-items: center;
-        gap: 6px;
         margin-top: 6px;
-        overflow: hidden;
         color: rgb(255 255 255 / 82%);
         font-size: 12px;
         text-shadow: 0 1px 3px rgb(0 0 0 / 80%);
-        white-space: nowrap;
         @include smartphone-vertical {
-            gap: 4px;
             margin-top: 4px;
             font-size: 11px;
         }
+    }
+
+    &__meta-info,
+    &__channels {
+        display: flex;
+        align-items: center;
+        width: 50%;
+        min-width: 0;
+    }
+
+    &__meta-info {
+        gap: 6px;
+        overflow: hidden;
+        white-space: nowrap;
+        @include smartphone-vertical {
+            gap: 4px;
+        }
+    }
+
+    &__channels {
+        justify-content: flex-end;
+        gap: 5px;
+        overflow: hidden;
     }
 
     &__genre {
@@ -459,16 +488,19 @@ onBeforeUnmount(() => {
 
     &__channel-logo {
         flex: 0 0 auto;
-        width: 26px;
-        height: 16px;
-        object-fit: contain;
+        --ch-sprite-width: 44;
+        --ch-sprite-height: 25;
+        --ch-sprite-border-radius: 4;
+        width: calc(var(--ch-sprite-width) * 1px);
+        height: calc(var(--ch-sprite-height) * 1px);
+        overflow: hidden;
+        background: linear-gradient(150deg, rgb(var(--v-theme-gray)), rgb(var(--v-theme-background-lighten-2)));
+        border-radius: calc(var(--ch-sprite-border-radius) * 1px);
         filter: drop-shadow(0 1px 2px rgb(0 0 0 / 80%));
-        &:first-of-type {
-            margin-left: auto;
-        }
         @include smartphone-vertical {
-            width: 22px;
-            height: 14px;
+            --ch-sprite-width: 36;
+            --ch-sprite-height: 21;
+            --ch-sprite-border-radius: 3;
         }
     }
 
