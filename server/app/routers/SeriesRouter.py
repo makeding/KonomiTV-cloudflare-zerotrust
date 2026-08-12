@@ -10,6 +10,7 @@ from tortoise import connections
 
 from app import logging, schemas
 from app.constants import JST
+from app.metadata.SeriesIndexer import NormalizeSeriesTitle, ParseSeriesTitle
 from app.models.Series import Series
 from app.utils import ParseDatetimeStringToJST
 
@@ -35,6 +36,7 @@ NON_OFFICIAL_WEBSITE_HOSTS = {
     'youtube.com',
 }
 REPEAT_BROADCAST_TITLE_PATTERN = re.compile(r'(?:\[再\]|【再】|再放送)')
+ON_AIR_SERIES_GENRES = {'アニメ・特撮', 'ドラマ', 'バラエティ'}
 
 
 def ExtractOfficialWebsiteURL(sources: list[str]) -> str | None:
@@ -112,12 +114,14 @@ async def OnAirSeriesListAPI():
         schemas.OnAirSeriesList: 直近 21 日以内に通常放送がある Series の一覧。
     """
 
+    now = datetime.now(JST)
+
     # 各 Series の直近 12 件を Python 側で集計できる最小限の列だけ取得する。
     ## 一時的な時刻変更や特番 1 件より、繰り返し現れる通常枠を優先する。
     connection = connections.get('default')
     _, rows = await connection.execute_query(
         """
-        SELECT rp.series_id, s.title AS series_title, rp.title AS program_title,
+        SELECT rp.series_id, s.title AS series_title, s.genres, rp.title AS program_title,
                rp.id, rp.channel_id, rp.start_time
         FROM recorded_programs rp
         INNER JOIN series s ON s.id = rp.series_id
@@ -135,10 +139,40 @@ async def OnAirSeriesListAPI():
         if len(samples) < 12 and REPEAT_BROADCAST_TITLE_PATTERN.search(str(row['program_title'])) is None:
             samples.append(row)
 
-    cutoff = datetime.now(JST) - timedelta(days=21)
+    # 初回放送直後のアニメ・ドラマ・バラエティも掲載するため、未来 EPG の明示的な話数を
+    # SeriesIndexer と同じ規則で解析し、次回放送が確認できる Series を控える。
+    _, future_program_rows = await connection.execute_query(
+        """
+        SELECT title, description, genres, start_time
+        FROM programs
+        WHERE start_time > ? AND start_time <= ?
+        ORDER BY start_time ASC
+        """,
+        [now.isoformat(), (now + timedelta(days=8)).isoformat()],
+    )
+    future_schedule_by_series_title: dict[str, datetime] = {}
+    for future_program_row in future_program_rows:
+        genres = json.loads(str(future_program_row['genres']))
+        if {str(genre['major']) for genre in genres}.isdisjoint(ON_AIR_SERIES_GENRES):
+            continue
+        parsed_title = ParseSeriesTitle(
+            str(future_program_row['title']),
+            genres,
+            str(future_program_row['description']),
+        )
+        if parsed_title is not None and parsed_title.normalized_title not in future_schedule_by_series_title:
+            future_schedule_by_series_title[parsed_title.normalized_title] = ParseDatetimeStringToJST(
+                str(future_program_row['start_time']),
+            )
+
+    cutoff = now - timedelta(days=21)
     on_air_series: list[schemas.OnAirSeries] = []
     for series_id, samples in samples_by_series.items():
-        if len(samples) == 0:
+        # 1 件だけでは周期放送か判断できない。また On Air は作品を追うための一覧なので、
+        # 単発の映画・紀行・ドキュメンタリーなどは Series に登録されていても対象外にする。
+        genres = json.loads(str(samples[0]['genres']))
+        major_genres = {str(genre['major']) for genre in genres}
+        if major_genres.isdisjoint(ON_AIR_SERIES_GENRES):
             continue
         parsed_samples = [(sample, ParseDatetimeStringToJST(str(sample['start_time']))) for sample in samples]
         latest_broadcast_at = parsed_samples[0][1]
@@ -150,15 +184,24 @@ async def OnAirSeriesListAPI():
             (start_time.weekday(), start_time.hour, (start_time.minute // 5) * 5)
             for _, start_time in parsed_samples
         )
-        weekday, hour, minute = max(
-            schedule_counts,
-            key = lambda schedule: (
-                schedule_counts[schedule],
-                max(start_time for _, start_time in parsed_samples if (
-                    start_time.weekday(), start_time.hour, (start_time.minute // 5) * 5
-                ) == schedule),
-            ),
-        )
+        if max(schedule_counts.values()) >= 2:
+            weekday, hour, minute = max(
+                schedule_counts,
+                key = lambda schedule: (
+                    schedule_counts[schedule],
+                    max(start_time for _, start_time in parsed_samples if (
+                        start_time.weekday(), start_time.hour, (start_time.minute // 5) * 5
+                    ) == schedule),
+                ),
+            )
+        else:
+            # 録画がまだ 1 件しかない新番組は、未来 EPG に同じ作品の次回話数がある場合だけ掲載する。
+            next_broadcast_at = future_schedule_by_series_title.get(NormalizeSeriesTitle(str(samples[0]['series_title'])))
+            if next_broadcast_at is None:
+                continue
+            weekday = next_broadcast_at.weekday()
+            hour = next_broadcast_at.hour
+            minute = (next_broadcast_at.minute // 5) * 5
         on_air_series.append(schemas.OnAirSeries(
             id = series_id,
             title = str(samples[0]['series_title']),

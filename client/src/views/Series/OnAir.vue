@@ -56,6 +56,11 @@
                                             </div>
                                         </div>
                                     </div>
+                                    <Icon class="on-air-card__chevron"
+                                        :icon="expandedSeriesID === series.id
+                                            ? 'fluent:chevron-up-12-regular'
+                                            : 'fluent:chevron-down-12-regular'"
+                                        width="20px" />
                                 </button>
                                 <p v-if="seriesByWeekday[day.index].length === 0" class="on-air-day__empty">録画なし</p>
                             </div>
@@ -174,6 +179,7 @@ watch(() => route.params.series_id, async () => {
     &__thumbnails--1 img { width: 100%; height: 100%; border-radius: 0; }
     &__shade { z-index: 4; background: linear-gradient(180deg, rgb(0 0 0 / 8%), rgb(0 0 0 / 88%)); }
     &__body { position: absolute; right: 9px; bottom: 8px; left: 9px; z-index: 5; }
+    &__chevron { position: absolute; top: 7px; right: 7px; z-index: 5; filter: drop-shadow(0 1px 3px black); }
     time { font-size: 16px; font-weight: 700; }
     strong { display: -webkit-box; margin-top: 2px; overflow: hidden; font-size: 12px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     &__meta { display: flex; align-items: center; justify-content: space-between; margin-top: 5px; font-size: 10px; }

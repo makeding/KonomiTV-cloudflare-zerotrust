@@ -1,6 +1,15 @@
 import unittest
+import json
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
-from app.routers.SeriesRouter import ExtractOfficialWebsiteURL
+from app.constants import JST
+from app.routers.SeriesRouter import (
+    ON_AIR_SERIES_GENRES,
+    ExtractOfficialWebsiteURL,
+    OnAirSeriesListAPI,
+    SeriesListPositionAPI,
+)
 
 
 class SeriesRouterTest(unittest.TestCase):
@@ -29,6 +38,86 @@ class SeriesRouterTest(unittest.TestCase):
         self.assertIsNone(ExtractOfficialWebsiteURL([
             '番組ホームページ https://www.bs4.jp/magilumiere2/',
         ]))
+
+    def test_on_air_genres_are_limited_to_episode_based_programs(self) -> None:
+        """On Air には作品単位で追うアニメ・ドラマ・バラエティだけを掲載する。"""
+
+        self.assertEqual(ON_AIR_SERIES_GENRES, {'アニメ・特撮', 'ドラマ', 'バラエティ'})
+        self.assertNotIn('ドキュメンタリー・教養', ON_AIR_SERIES_GENRES)
+
+
+class SeriesRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
+    """Series の深いリンクを現在の一覧位置へ解決する処理を検証する。"""
+
+    async def test_series_list_position_uses_current_search_and_descending_order(self) -> None:
+        """検索中の 51 件目は、同じ降順条件の 2 ページ目として返す。"""
+
+        connection = AsyncMock()
+        connection.execute_query.return_value = (1, [{'row_number': 51}])
+        with patch('app.routers.SeriesRouter.connections.get', return_value=connection):
+            result = await SeriesListPositionAPI(123, query='作品', order='desc')
+
+        self.assertEqual(result.page, 2)
+        sql = connection.execute_query.await_args.args[0]
+        self.assertIn('ORDER BY MAX(rv.file_created_at) DESC, s.id DESC', sql)
+        self.assertIn('LOWER(s.title) LIKE LOWER(?)', sql)
+        self.assertEqual(connection.execute_query.await_args.args[1], ['%作品%', '%作品%', 123])
+
+    async def test_series_list_position_uses_ascending_order(self) -> None:
+        """古い順の深いリンクでも一覧と同じ昇順を用いる。"""
+
+        connection = AsyncMock()
+        connection.execute_query.return_value = (1, [{'row_number': 1}])
+        with patch('app.routers.SeriesRouter.connections.get', return_value=connection):
+            result = await SeriesListPositionAPI(456, order='asc')
+
+        self.assertEqual(result.page, 1)
+        sql = connection.execute_query.await_args.args[0]
+        self.assertIn('ORDER BY MAX(rv.file_created_at) ASC, s.id ASC', sql)
+
+    async def test_on_air_accepts_first_episode_with_next_epg_and_weekly_variety(self) -> None:
+        """初回だけ録画済みのアニメと、履歴で週次と分かるバラエティを掲載する。"""
+
+        now = datetime.now(JST)
+        anime_genres = json.dumps([{'major': 'アニメ・特撮', 'middle': '国内アニメ'}], ensure_ascii=False)
+        variety_genres = json.dumps([{'major': 'バラエティ', 'middle': 'その他'}], ensure_ascii=False)
+        documentary_genres = json.dumps([{'major': 'ドキュメンタリー・教養', 'middle': '歴史・紀行'}], ensure_ascii=False)
+        recorded_rows = [
+            {
+                'series_id': 1, 'series_title': '新番組', 'genres': anime_genres,
+                'program_title': '新番組 #1', 'id': 101, 'channel_id': 'gr011',
+                'start_time': (now - timedelta(days=1)).isoformat(),
+            },
+            {
+                'series_id': 2, 'series_title': '8K紀行', 'genres': documentary_genres,
+                'program_title': '8K紀行 第1回', 'id': 201, 'channel_id': 'bs811',
+                'start_time': (now - timedelta(days=1)).isoformat(),
+            },
+            {
+                'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
+                'program_title': '週刊バラエティ #2', 'id': 302, 'channel_id': 'gr041',
+                'start_time': (now - timedelta(days=1)).isoformat(),
+            },
+            {
+                'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
+                'program_title': '週刊バラエティ #1', 'id': 301, 'channel_id': 'gr041',
+                'start_time': (now - timedelta(days=8)).isoformat(),
+            },
+        ]
+        future_rows = [{
+            'title': '新番組 #2', 'description': '', 'genres': anime_genres,
+            'start_time': (now + timedelta(days=6)).isoformat(),
+        }]
+        connection = AsyncMock()
+        connection.execute_query.side_effect = [(len(recorded_rows), recorded_rows), (1, future_rows)]
+        with patch('app.routers.SeriesRouter.connections.get', return_value=connection):
+            result = await OnAirSeriesListAPI()
+
+        self.assertEqual({series.id for series in result.series_list}, {1, 3})
+        anime = next(series for series in result.series_list if series.id == 1)
+        next_broadcast = now + timedelta(days=6)
+        self.assertEqual(anime.weekday, next_broadcast.weekday())
+        self.assertEqual(anime.broadcast_time, f'{next_broadcast.hour:02d}:{(next_broadcast.minute // 5) * 5:02d}')
 
 
 if __name__ == '__main__':
