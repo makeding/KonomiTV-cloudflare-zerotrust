@@ -172,7 +172,8 @@ const hoveredPointerPositionRatio = ref(0);
 let profileThumbnailTimerID: number | null = null;
 let episodeThumbnailPreviewResetTimerID: number | null = null;
 let episodeThumbnailPreviewAnimationFrameID: number | null = null;
-let episodeThumbnailPreviewActivationTimerID: number | null = null;
+let episodeThumbnailPreviewHoverIntentTimerID: number | null = null;
+let episodeThumbnailPreviewSwitchSuppressionUntil = 0;
 const profileRandomProgramIDs = new Set<number>();
 let pendingEpisodeThumbnailPreview: {
     programID: number;
@@ -297,6 +298,10 @@ const onEpisodeThumbnailMouseMove = (event: MouseEvent, program: IRecordedProgra
         positionRatio,
     };
     if (hoveredProgramID.value === program.id) {
+        // 上側の Finder 舞台へ向かう動きが始まったら、途中で横切る別の話へ切り替わらないよう短時間固定する。
+        if (event.movementY < -1) {
+            episodeThumbnailPreviewSwitchSuppressionUntil = window.performance.now() + 500;
+        }
         scheduleEpisodeThumbnailPreviewUpdate(
             program.id,
             pendingEpisodeThumbnailPreview.tileIndex,
@@ -304,10 +309,14 @@ const onEpisodeThumbnailMouseMove = (event: MouseEvent, program: IRecordedProgra
         );
         return;
     }
+    if (hoveredProgramID.value !== null && event.movementY < -1) {
+        episodeThumbnailPreviewSwitchSuppressionUntil = window.performance.now() + 500;
+    }
+    if (window.performance.now() < episodeThumbnailPreviewSwitchSuppressionUntil) return;
     // 一覧を横切っただけでは Finder 表示へ切り替えず、同じカード上に短時間留まった時だけ有効化する。
-    if (episodeThumbnailPreviewActivationTimerID !== null) return;
-    episodeThumbnailPreviewActivationTimerID = window.setTimeout(() => {
-        episodeThumbnailPreviewActivationTimerID = null;
+    if (episodeThumbnailPreviewHoverIntentTimerID !== null) return;
+    episodeThumbnailPreviewHoverIntentTimerID = window.setTimeout(() => {
+        episodeThumbnailPreviewHoverIntentTimerID = null;
         const preview = pendingEpisodeThumbnailPreview;
         if (preview === null || preview.programID !== program.id) return;
         scheduleEpisodeThumbnailPreviewUpdate(
@@ -336,9 +345,9 @@ const scheduleEpisodeThumbnailPreviewReset = () => {
 
 const onEpisodeThumbnailMouseLeave = (programID: number) => {
     pendingEpisodeThumbnailPreview = null;
-    if (episodeThumbnailPreviewActivationTimerID !== null) {
-        window.clearTimeout(episodeThumbnailPreviewActivationTimerID);
-        episodeThumbnailPreviewActivationTimerID = null;
+    if (episodeThumbnailPreviewHoverIntentTimerID !== null) {
+        window.clearTimeout(episodeThumbnailPreviewHoverIntentTimerID);
+        episodeThumbnailPreviewHoverIntentTimerID = null;
     }
     if (episodeThumbnailPreviewAnimationFrameID !== null) {
         window.cancelAnimationFrame(episodeThumbnailPreviewAnimationFrameID);
@@ -596,8 +605,8 @@ onBeforeUnmount(() => {
     if (episodeThumbnailPreviewAnimationFrameID !== null) {
         window.cancelAnimationFrame(episodeThumbnailPreviewAnimationFrameID);
     }
-    if (episodeThumbnailPreviewActivationTimerID !== null) {
-        window.clearTimeout(episodeThumbnailPreviewActivationTimerID);
+    if (episodeThumbnailPreviewHoverIntentTimerID !== null) {
+        window.clearTimeout(episodeThumbnailPreviewHoverIntentTimerID);
     }
 });
 
