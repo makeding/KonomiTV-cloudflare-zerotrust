@@ -10,7 +10,6 @@ on:
     paths:
       - '.github/workflows/build_thirdparty.yaml'
       - '.github/workflows/scripts/build_intel_media_stack_standalone.sh'
-      - '.github/workflows/patches/**'
   workflow_call:
   workflow_dispatch:
 
@@ -31,6 +30,7 @@ env:
   ## ref: https://github.com/BtbN/FFmpeg-Builds
   FFMPEG_SOURCE_TAG: 'n8.1.2'
   FFMPEG_BUILDS_COMMIT_HASH: '8c736b2d6fe5da2a10a8896d01e53bfb0ca4f665'
+  FFMPEG_LIBARIBTLV_COMMIT_HASH: '29cc14822fae9cb8cd06bbfdd584d06aa7a6a1fa'
   LIBARIBTLV_COMMIT_HASH: '91bafe32479141c660a334cc03aed1f9869a18a5'
   # QSVEncC・NVEncC・VCEEncC・rkmppenc のバージョン
   ## ref: https://github.com/rigaya/QSVEnc/releases
@@ -81,9 +81,16 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
 
-      # MMT/TLV パッチを参照するため、リポジトリをチェックアウト
+      # ワークフロー本体を参照するため、HonomiTV リポジトリをチェックアウト
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      # FFmpeg 向け MMT/TLV パッチを固定コミットから取得
+      - name: Checkout ffmpeg-libaribtlv
+        run: |
+          git clone --filter=blob:none https://github.com/makeding/ffmpeg-libaribtlv.git
+          cd ffmpeg-libaribtlv/
+          git checkout ${{ env.FFMPEG_LIBARIBTLV_COMMIT_HASH }}
 
       # BtbN/FFmpeg-Builds のビルドスクリプトは固定コミットを使い、仕様変更で CI が突然変化しないようにする
       - name: Checkout FFmpeg-Builds
@@ -98,12 +105,12 @@ jobs:
       - name: Build Patched FFmpeg
         working-directory: FFmpeg-Builds/
         env:
-          FFMPEG_PATCH_DIR: ${{ github.workspace }}/.github/workflows/patches/ffmpeg
+          FFMPEG_PATCH_DIR: ${{ github.workspace }}/ffmpeg-libaribtlv/patches/ffmpeg-8.1.2
           FFMPEG_REPO_OVERRIDE: https://github.com/FFmpeg/FFmpeg.git
           GIT_BRANCH_OVERRIDE: ${{ env.FFMPEG_SOURCE_TAG }}
         run: |
           sed -i '/^    rm -rf ffmpeg prefix$/c\    rm -rf ffmpeg prefix libaribtlv\n\n    git clone --filter=blob:none https://github.com/makeding/libaribtlv.git libaribtlv\n    cd libaribtlv\n    git checkout ${{ env.LIBARIBTLV_COMMIT_HASH }}\n    cmake -GNinja -S . -B build -DCMAKE_TOOLCHAIN_FILE="\\$FFBUILD_CMAKE_TOOLCHAIN" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/ffbuild/prefix -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF\n    cmake --build build -j"\\$(nproc)"\n    cmake --install build\n    sed -i "s/^Cflags:/Cflags: -DARIBTLV_STATIC/" /ffbuild/prefix/lib/pkgconfig/libaribtlv.pc\n    export PKG_CONFIG_PATH="/ffbuild/prefix/lib/pkgconfig:\\$PKG_CONFIG_PATH"\n    export FF_CONFIGURE="\\$FF_CONFIGURE --enable-libaribtlv"\n    cd /ffbuild' build.sh
-          sed -i '/^    cd ffmpeg$/a\    git apply /ffmpeg-patches/*.patch' build.sh
+          sed -i '/^    cd ffmpeg$/a\    for patch in /ffmpeg-patches/*.patch; do git apply "\$patch"; done' build.sh
           sed -i '/^    make install install-doc$/a\    cp /ffbuild/libaribtlv/LICENSE /ffbuild/prefix/share/doc/ffmpeg/LICENSE-libaribtlv.txt' build.sh
           sed -i 's|-v "$BUILD_SCRIPT":/build.sh|-v "$BUILD_SCRIPT":/build.sh -v "$FFMPEG_PATCH_DIR":/ffmpeg-patches:ro|' build.sh
 
