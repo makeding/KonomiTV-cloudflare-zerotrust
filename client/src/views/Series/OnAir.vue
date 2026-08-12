@@ -14,7 +14,6 @@
                     <div class="on-air-header">
                         <div>
                             <h2>放送中</h2>
-                            <p>直近 3 週間の録画から通常の放送曜日・時刻を推定しています。</p>
                         </div>
                         <v-btn to="/series/" variant="tonal" prepend-icon="mdi-view-grid-outline">すべてのシリーズ</v-btn>
                     </div>
@@ -23,7 +22,8 @@
                         <v-skeleton-loader v-for="index in 14" :key="index" type="image" />
                     </div>
                     <div v-else class="on-air-week">
-                        <section v-for="day in weekdays" :key="day.index" class="on-air-day">
+                        <section v-for="day in weekdays" :key="day.index"
+                            class="on-air-day" :class="`on-air-day--${day.index}`">
                             <header>
                                 <h3>{{day.label}}</h3>
                                 <span>{{seriesByWeekday[day.index].length}}件</span>
@@ -207,7 +207,6 @@ watch(() => route.params.series_id, async () => {
 .on-air-header {
     display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px;
     h2 { font-size: 24px; }
-    p { margin-top: 4px; color: rgb(var(--v-theme-text-darken-1)); font-size: 12px; }
 }
 .on-air-week, .on-air-loading {
     display: grid; grid-template-columns: repeat(7, minmax(180px, 1fr)); gap: 10px;
@@ -215,10 +214,22 @@ watch(() => route.params.series_id, async () => {
 }
 .on-air-loading :deep(.v-skeleton-loader) { aspect-ratio: 16 / 10; min-width: 180px; }
 .on-air-day {
+    --on-air-day-color: #64748b;
     min-width: 180px;
-    > header { display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px 8px; }
-    > header h3 { font-size: 18px; }
-    > header span { color: rgb(var(--v-theme-text-darken-1)); font-size: 11px; }
+    > header {
+        display: flex; align-items: baseline; justify-content: space-between;
+        padding: 6px 9px; margin-bottom: 8px;
+        color: white; background: var(--on-air-day-color); border-radius: 6px;
+    }
+    > header h3 { font-size: 18px; text-shadow: 0 1px 2px rgb(0 0 0 / 28%); }
+    > header span { color: rgb(255 255 255 / 88%); font-size: 11px; }
+    &--0 { --on-air-day-color: #e76f51; }
+    &--1 { --on-air-day-color: #e9a23b; }
+    &--2 { --on-air-day-color: #84a83f; }
+    &--3 { --on-air-day-color: #3aa889; }
+    &--4 { --on-air-day-color: #438ac7; }
+    &--5 { --on-air-day-color: #646fc1; }
+    &--6 { --on-air-day-color: #ff69b4; }
     &__cards { display: flex; flex-direction: column; gap: 8px; }
     &__empty { padding: 24px 8px; color: rgb(var(--v-theme-text-darken-1)); text-align: center; }
 }
@@ -251,9 +262,25 @@ watch(() => route.params.series_id, async () => {
 @include smartphone-vertical {
     .on-air-container { padding: 8px; }
     .on-air-header { align-items: flex-start; padding: 0 8px; }
-    .on-air-header p { max-width: 230px; }
-    .on-air-week, .on-air-loading { grid-template-columns: repeat(7, 74vw); scroll-snap-type: x proximity; }
-    .on-air-day { min-width: 74vw; scroll-snap-align: start; }
+    .on-air-week, .on-air-loading {
+        grid-template-columns: repeat(7, min(36vw, 180px));
+        gap: 8px;
+        scroll-snap-type: x proximity;
+    }
+    .on-air-day {
+        min-width: min(36vw, 180px);
+        scroll-snap-align: start;
+        > header { padding: 5px 7px; margin-bottom: 6px; }
+        > header h3 { font-size: 16px; }
+    }
+    .on-air-card {
+        &__body { right: 7px; bottom: 6px; left: 7px; }
+        &__chevron { top: 5px; right: 5px; }
+        time { font-size: 14px; }
+        strong { font-size: 11px; line-height: 1.35; }
+        &__meta { margin-top: 3px; font-size: 9px; }
+        &__logo { --ch-sprite-width: 30; --ch-sprite-height: 18; --ch-sprite-border-radius: 3; }
+    }
     .on-air-dialog {
         :deep(.v-overlay__content) {
             position: absolute;
