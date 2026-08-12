@@ -1,5 +1,7 @@
+import asyncio
 import unittest
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 from app.utils.BangumiClient import BangumiClient
 
@@ -76,6 +78,25 @@ class BangumiClientTest(unittest.TestCase):
 
         self.assertFalse(BangumiClient.isPlaybackCompleted(1619.9, 1800.0))
         self.assertTrue(BangumiClient.isPlaybackCompleted(1620.0, 1800.0))
+
+
+class BangumiClientAsyncTest(unittest.IsolatedAsyncioTestCase):
+    """Bangumi API を呼び出す前のローカル対象判定を検証する。"""
+
+    async def test_collection_api_is_not_called_without_anime_series(self) -> None:
+        """アニメ・特撮の Series がない環境では收藏一覧を取得しない。"""
+
+        series_query: asyncio.Future[list[Any]] = asyncio.Future()
+        series_query.set_result([])
+        get_collection_subjects = AsyncMock()
+        with (
+            patch('app.utils.BangumiClient.Series.all', return_value=series_query),
+            patch.object(BangumiClient, '_getCollectionSubjects', get_collection_subjects),
+        ):
+            matched_count = await BangumiClient.syncUserCollections(AsyncMock())
+
+        self.assertEqual(matched_count, 0)
+        get_collection_subjects.assert_not_awaited()
 
 
 if __name__ == '__main__':

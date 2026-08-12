@@ -246,11 +246,15 @@ class BangumiClient:
             httpx.HTTPError: Bangumi API への接続または HTTP エラーが発生した場合。
         """
 
-        subjects = await cls._getCollectionSubjects(user)
         anime_series = [
             series for series in await Series.all()
             if any(genre['major'] == 'アニメ・特撮' for genre in series.genres)
         ]
+        # ローカルにアニメ・特撮の Series が一件もなければ、Bangumi API 自体へアクセスしない。
+        if len(anime_series) == 0:
+            return 0
+
+        subjects = await cls._getCollectionSubjects(user)
         episodes_by_subject_id: dict[int, list[dict[str, Any]]] = {}
         matched_series_count = 0
 
