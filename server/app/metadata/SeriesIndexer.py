@@ -23,8 +23,8 @@ class ParsedSeriesTitle:
     display_title: str
     # 表記揺れだけを吸収した完全一致用キー。異なる作品を fuzzy に統合する用途には使わない。
     normalized_title: str
-    # 番組タイトルから明示的に抽出できた話数。整数に限らない特別編へ備えて文字列で保持する。
-    episode_number: str
+    # 番組タイトルから明示的に抽出できた話数。無話数の定期番組では None。
+    episode_number: str | None
     # 話数表記の後ろにある副題。取得できない場合は None。
     subtitle: str | None
 
@@ -39,6 +39,10 @@ GENERIC_SERIES_TITLES = {
     '放送休止',
     '天気予報',
 }
+
+# バラエティ・音楽番組は話数を付けず、固定の番組名と毎回の企画名で EPG を構成することがある。
+## ジャンルだけで単発番組を統合しないよう、実際に類似する別の録画がある場合に限り Series にする。
+EPISODELESS_SERIES_GENRES = {'バラエティ', '音楽'}
 
 # EPG タイトルの先頭に付与される放送枠名。作品名そのものではないため除外する。
 PROGRAM_SLOT_PREFIX_PATTERN = re.compile(
@@ -188,6 +192,69 @@ def NormalizeSeriesTitle(title: str) -> str:
 
     # NFKC で全角英数字や互換文字を揃え、空白差を作品同一性へ影響させない。
     return re.sub(r'\s+', '', unicodedata.normalize('NFKC', title)).casefold()
+
+
+def ParseEpisodeLessSeriesTitle(
+    title: str,
+    genres: list[Genre],
+    similar_titles: list[str],
+) -> ParsedSeriesTitle | None:
+    """
+    類似する過去タイトルから無話数の定期番組名を抽出する。
+
+    Args:
+        title (str): EPG 由来の番組タイトル。
+        genres (list[Genre]): EPG 由来の番組ジャンル。
+        similar_titles (list[str]): 同じ番組名候補で始まる別の録画タイトル。
+
+    Returns:
+        ParsedSeriesTitle | None: 別の録画で定期番組と確認できた場合の解析結果。
+    """
+
+    # 話数を付けず毎回の企画名を入れる運用が確認できたジャンルだけを対象にする。
+    if {genre['major'] for genre in genres}.isdisjoint(EPISODELESS_SERIES_GENRES):
+        return None
+
+    normalized_source = unicodedata.normalize('NFKC', title).strip()
+    quote_index_candidates = [
+        normalized_source.find(quote)
+        for quote in ('「', '『')
+        if normalized_source.find(quote) >= 0
+    ]
+    if len(quote_index_candidates) == 0:
+        return None
+    quote_index = min(quote_index_candidates)
+    display_title = normalized_source[:quote_index].strip()
+    trailing_subtitle = normalized_source[quote_index:].strip()
+    normalized_title = NormalizeSeriesTitle(display_title)
+    if len(normalized_title) < 2 or normalized_title in GENERIC_SERIES_TITLES:
+        return None
+
+    # 同じ固定名で始まり、かつ全体は異なる過去録画を定期番組の根拠にする。
+    ## 引用符の境界まで一致させ、似た文字列を持つ別番組の誤統合を防ぐ。
+    has_similar_title = any(
+        NormalizeSeriesTitle(similar_title) != NormalizeSeriesTitle(normalized_source) and
+        any(
+            unicodedata.normalize('NFKC', similar_title).startswith(f'{display_title}{quote}')
+            for quote in ('「', '『')
+        )
+        for similar_title in similar_titles
+    )
+    if has_similar_title is False:
+        return None
+
+    quoted_subtitle_match = re.fullmatch(r'[「『](?P<subtitle>.*)[」』]', trailing_subtitle)
+    subtitle = (
+        quoted_subtitle_match.group('subtitle').strip()
+        if quoted_subtitle_match is not None
+        else trailing_subtitle
+    )
+    return ParsedSeriesTitle(
+        display_title = display_title,
+        normalized_title = normalized_title,
+        episode_number = None,
+        subtitle = subtitle,
+    )
 
 
 def IsStrictSeriesTitlePrefix(short_title: str, long_title: str) -> bool:
@@ -383,6 +450,26 @@ class SeriesIndexer:
             recorded_program.genres,
             recorded_program.description,
         )
+        episode_less_similar_programs: list[RecordedProgram] = []
+        if parsed_title is None:
+            # 無話数のバラエティ・音楽番組は、同じ固定タイトルで始まる別の録画を根拠にする。
+            ## 引用符より前の候補で DB 検索を限定し、全録画のタイトルをロードしない。
+            quote_indexes = [
+                recorded_program.title.find(quote)
+                for quote in ('「', '『')
+                if recorded_program.title.find(quote) >= 0
+            ]
+            if quote_indexes:
+                # DB の全角記号と一致させるため、検索には NFKC 前の EPG 原文を使う。
+                episode_less_title_prefix = recorded_program.title[:min(quote_indexes)].strip()
+                episode_less_similar_programs = await RecordedProgram.filter(
+                    title__startswith = episode_less_title_prefix,
+                ).exclude(id=recorded_program.id).all()
+                parsed_title = ParseEpisodeLessSeriesTitle(
+                    recorded_program.title,
+                    recorded_program.genres,
+                    [similar_program.title for similar_program in episode_less_similar_programs],
+                )
         if parsed_title is None:
             # 現在の確定的な規則で Series にできない録画は、過去の解析結果を残さない。
             ## これにより、汎用番組を除外した後も Series 一覧に古いカードが残ることを防ぐ。
@@ -407,7 +494,7 @@ class SeriesIndexer:
 
         # 一部放送局は副題を丸ごと省略するため、同じ話数が別局の正式作品名へ既に存在する場合に限り、
         ## 「短縮名 + 明示的な副題境界」の前方一致を作品名 alias として扱う。
-        if recorded_program.channel_id is not None:
+        if recorded_program.channel_id is not None and parsed_title.episode_number is not None:
             longer_series_candidates = await Series.filter(
                 normalized_title__startswith = parsed_title.normalized_title,
             ).all()
@@ -484,6 +571,13 @@ class SeriesIndexer:
                 'episode_number',
                 'subtitle',
             ])
+
+        # 2 件目の録画で無話数の定期番組と確定した場合は、根拠になった過去録画もすぐに同じ Series へ関連付ける。
+        ## 未関連付けの録画だけを再評価するため、再帰先では現在の録画が根拠となり 1 回で収束する。
+        if parsed_title.episode_number is None:
+            for episode_less_program in episode_less_similar_programs:
+                if episode_less_program.series_id is None:
+                    await cls.linkRecordedProgram(episode_less_program)
 
         # 新しい録画や放送期間が加わったときだけ更新日時を進め、一覧の「更新が新しい順」へ反映する。
         if is_series_created or is_period_changed or is_recorded_program_changed:

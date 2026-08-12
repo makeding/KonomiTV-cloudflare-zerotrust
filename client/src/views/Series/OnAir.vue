@@ -51,12 +51,14 @@
                                             loading="lazy" decoding="async">
                                     </div>
                                     <div class="on-air-card__shade"></div>
+                                    <time class="on-air-card__time">{{getDisplayBroadcastTime(series)}}</time>
                                     <div class="on-air-card__body">
-                                        <time>{{getDisplayBroadcastTime(series)}}</time>
                                         <strong>{{series.title}}</strong>
                                         <div class="on-air-card__meta">
                                             <span class="on-air-card__episode-status">
-                                                {{series.recorded_episodes_count}}話
+                                                {{series.recorded_episodes_count > 0
+                                                    ? `${series.recorded_episodes_count}話`
+                                                    : '話数情報なし'}}
                                                 <span v-if="series.missing_episodes_count > 0" class="on-air-card__status-warning">
                                                     ・{{series.missing_episodes_count}}話未録画
                                                 </span>
@@ -324,9 +326,14 @@ watch(() => route.params.series_id, async () => {
     &__thumbnail--3 { top: 0; left: -3%; z-index: 1; }
     &__thumbnails--1 img { width: 100%; height: 100%; border-radius: 0; }
     &__shade { z-index: 4; background: linear-gradient(180deg, rgb(0 0 0 / 8%), rgb(0 0 0 / 88%)); }
+    &__time {
+        position: absolute; top: 8px; right: 9px; z-index: 5;
+        padding: 3px 6px; font-size: 16px; font-weight: 700; line-height: 1;
+        background: rgb(0 0 0 / 58%); border-radius: 4px;
+        text-shadow: 0 1px 2px rgb(0 0 0 / 55%);
+    }
     &__body { position: absolute; right: 9px; bottom: 8px; left: 9px; z-index: 5; }
-    time { font-size: 16px; font-weight: 700; }
-    strong { display: -webkit-box; margin-top: 2px; overflow: hidden; font-size: 12px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    strong { display: -webkit-box; overflow: hidden; font-size: 12px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     &__meta { display: flex; align-items: center; justify-content: space-between; margin-top: 5px; font-size: 10px; }
     &__episode-status { min-width: 0; }
     &__status-warning { color: rgb(var(--v-theme-warning-lighten-1)); font-weight: 700; }
@@ -334,15 +341,17 @@ watch(() => route.params.series_id, async () => {
     &__logo { --ch-sprite-width: 34; --ch-sprite-height: 20; --ch-sprite-border-radius: 3; overflow: hidden; border-radius: 3px; }
     &--attention {
         outline: 2px solid rgb(var(--v-theme-primary) / 78%);
-        box-shadow: 0 0 0 4px rgb(var(--v-theme-primary) / 12%);
+        box-shadow: 0 0 0 4px rgb(var(--v-theme-primary) / 18%), 0 0 16px rgb(var(--v-theme-primary) / 34%);
     }
-    &--attention &__shade {
-        background: linear-gradient(
-            180deg,
-            rgb(var(--v-theme-primary) / 18%),
-            rgb(var(--v-theme-primary) / 26%) 52%,
-            rgb(0 0 0 / 88%)
-        );
+    &--attention::after {
+        position: absolute; top: 0; right: 0; left: 0; z-index: 6;
+        height: 4px; content: ''; pointer-events: none;
+        background: rgb(var(--v-theme-primary));
+        box-shadow: 0 2px 8px rgb(var(--v-theme-primary) / 72%);
+    }
+    &--attention &__time {
+        background: rgb(var(--v-theme-primary) / 92%);
+        box-shadow: 0 0 0 2px rgb(255 255 255 / 20%), 0 0 12px rgb(var(--v-theme-primary) / 58%);
     }
 }
 @include smartphone-vertical {
@@ -362,7 +371,7 @@ watch(() => route.params.series_id, async () => {
     }
     .on-air-card {
         &__body { right: 7px; bottom: 6px; left: 7px; }
-        time { font-size: 14px; }
+        &__time { top: 6px; right: 7px; padding: 2px 4px; font-size: 14px; }
         strong { font-size: 11px; line-height: 1.35; }
         &__meta { margin-top: 3px; font-size: 9px; }
         &__logo { --ch-sprite-width: 30; --ch-sprite-height: 18; --ch-sprite-border-radius: 3; }

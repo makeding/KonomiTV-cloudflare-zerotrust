@@ -1186,8 +1186,9 @@ onBeforeUnmount(() => {
         font-weight: 700;
         line-height: 1.35;
         text-shadow: 0 1px 2px rgb(0 0 0 / 85%);
-        background: rgb(var(--v-theme-warning-darken-1) / 90%);
+        background: rgb(0 0 0 / 68%);
         border-radius: 3px;
+        box-shadow: 0 1px 4px rgb(0 0 0 / 28%);
     }
 }
 

@@ -3,6 +3,7 @@ import unittest
 from app.metadata.SeriesIndexer import (
     IsStrictSeriesTitlePrefix,
     NormalizeSeriesTitle,
+    ParseEpisodeLessSeriesTitle,
     ParseSeriesTitle,
 )
 from app.routers.VideosRouter import CalculateStringSimilarity
@@ -10,6 +11,8 @@ from app.schemas import Genre
 
 
 ANIME_GENRES: list[Genre] = [Genre(major='アニメ・特撮', middle='国内アニメ')]
+VARIETY_GENRES: list[Genre] = [Genre(major='バラエティ', middle='トークバラエティ')]
+MUSIC_GENRES: list[Genre] = [Genre(major='音楽', middle='国内ロック・ポップス')]
 
 
 class SeriesIndexerTest(unittest.TestCase):
@@ -93,11 +96,49 @@ class SeriesIndexerTest(unittest.TestCase):
         self.assertEqual(parsed.display_title, '16bitセンセーション ANOTHER LAYER')
         self.assertEqual(parsed.episode_number, '3')
 
-    def test_program_without_explicit_episode_is_not_persisted(self) -> None:
+    def test_similar_episode_less_programs_are_persisted(self) -> None:
+        """類似する録画がある無話数番組は、毎回の企画名を副題として分離する。"""
+
+        cases = [
+            (
+                'Anison Days「番組初登場！大西亜玖璃 アーティスト像を深掘り！」',
+                MUSIC_GENRES,
+                ['Anison Days「MYTH & ROIDが話題の最新曲を披露！」'],
+                'Anison Days',
+                '番組初登場!大西亜玖璃 アーティスト像を深掘り!',
+            ),
+            (
+                'アニゲー☆イレブン！「ソードアート・オンライン」家庭用ゲーム最新作先行プレイ',
+                VARIETY_GENRES,
+                ['アニゲー☆イレブン！「大空直美登場！個性あふれるウォーキングを披露！」'],
+                'アニゲー☆イレブン!',
+                '「ソードアート・オンライン」家庭用ゲーム最新作先行プレイ',
+            ),
+        ]
+        for title, genres, similar_titles, expected_series_title, expected_subtitle in cases:
+            with self.subTest(title=title):
+                parsed = ParseEpisodeLessSeriesTitle(title, genres, similar_titles)
+                self.assertIsNotNone(parsed)
+                assert parsed is not None
+                self.assertEqual(parsed.display_title, expected_series_title)
+                self.assertIsNone(parsed.episode_number)
+                self.assertEqual(parsed.subtitle, expected_subtitle)
+
+    def test_unknown_program_without_explicit_episode_is_not_persisted(self) -> None:
         """同名の情報番組や映画を、放送時刻だけで長期 Series にしない。"""
 
         self.assertIsNone(ParseSeriesTitle('アニナビ☆イレブン！ 前編', ANIME_GENRES))
         self.assertIsNone(ParseSeriesTitle('劇場版 とても長い作品名', ANIME_GENRES))
+        self.assertIsNone(ParseEpisodeLessSeriesTitle(
+            '今夜のスペシャル「有名ゲスト登場」',
+            VARIETY_GENRES,
+            [],
+        ))
+        self.assertIsNone(ParseEpisodeLessSeriesTitle(
+            '今夜のスペシャル「有名ゲスト登場」',
+            ANIME_GENRES,
+            ['今夜のスペシャル「別の企画」'],
+        ))
 
     def test_old_character_set_false_positive_is_reduced(self) -> None:
         """同じ文字を多く含むだけで順序の異なるタイトルへ高得点を与えない。"""

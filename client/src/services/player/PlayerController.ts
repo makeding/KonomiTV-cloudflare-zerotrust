@@ -873,12 +873,18 @@ class PlayerController {
                     // デフォルトの画質
                     // ビデオ視聴時はラジオは考慮しない
                     let default_quality: string;
-                    if (options.default_quality !== null) {
+                    if (
+                        is_mmts_recorded_video === true &&
+                        player_store.recorded_program.is_partially_recorded === true
+                    ) {
+                        // 中断した MMT/TLV 録画は、保存済み画質が raw 直通でも仮想時間軸を扱える HLS を優先する。
+                        default_quality = PlayerController.MMT_HLS_QUALITY_NAME;
+                    } else if (options.default_quality !== null) {
                         // PlayerController.init() のオプションでデフォルト画質が指定されている場合は
                         // 画質プロファイルに記載の画質ではなく、指定された（前回再生時の）画質を使ってレジュームする
                         default_quality = options.default_quality;
                     } else if (is_mmts_recorded_video === true) {
-                        // MMT/TLV 録画ファイルは raw 直通再生を既定にする
+                        // 完全な単一ファイルは、従来どおり raw 直通再生を既定にする
                         default_quality = PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME;
                     } else if (is_mpegts_passthrough_available === true) {
                         // 変換済み MPEG-TS 録画は、再エンコードを行わない画質を既定にする
@@ -1993,6 +1999,56 @@ class PlayerController {
                     // こうすることで startPosition を指定しつつ、シーク時は従来通りシーク先のセグメントから先読みが開始されるようになる
                     const hls_plugin = this.player.plugins.hls;
                     if (hls_plugin !== undefined) {
+                        // 部分録画を同一番組の別ファイルから継ぎ合わせた仮想プレイリストでは、
+                        // EXT-X-GAP が付いた未録画区間を hls.js が自動的に飛ばす。
+                        // 前後の実セグメントが切り替わった時点で、その区間を一度だけユーザーへ知らせる。
+                        let virtual_gap_ranges: Array<{ start: number; end: number }> = [];
+                        let previous_fragment_end: number | null = null;
+                        const notified_virtual_gap_ranges = new Set<string>();
+                        hls_plugin.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+                            virtual_gap_ranges = [];
+                            for (const fragment of data.details.fragments) {
+                                if (fragment.gap !== true) continue;
+                                const gap_start = fragment.start;
+                                const gap_end = fragment.start + fragment.duration;
+                                const previous_range = virtual_gap_ranges.at(-1);
+                                if (previous_range !== undefined && gap_start <= previous_range.end + 0.25) {
+                                    previous_range.end = Math.max(previous_range.end, gap_end);
+                                } else {
+                                    virtual_gap_ranges.push({ start: gap_start, end: gap_end });
+                                }
+                            }
+                        });
+                        hls_plugin.on(Hls.Events.FRAG_CHANGED, (_event, data) => {
+                            if (previous_fragment_end !== null) {
+                                const skipped_gap_range = virtual_gap_ranges.find((gap_range) => (
+                                    gap_range.start >= previous_fragment_end! - 0.5 &&
+                                    gap_range.end <= data.frag.start + 0.5
+                                ));
+                                if (skipped_gap_range !== undefined) {
+                                    const range_key = `${skipped_gap_range.start}:${skipped_gap_range.end}`;
+                                    if (notified_virtual_gap_ranges.has(range_key) === false) {
+                                        const formatPosition = (seconds: number): string => {
+                                            const rounded_seconds = Math.max(0, Math.round(seconds));
+                                            const hours = Math.floor(rounded_seconds / 3600);
+                                            const minutes = Math.floor((rounded_seconds % 3600) / 60);
+                                            const remaining_seconds = rounded_seconds % 60;
+                                            const minute_and_second = `${minutes.toString().padStart(2, '0')}:${remaining_seconds.toString().padStart(2, '0')}`;
+                                            return hours > 0 ? `${hours.toString().padStart(2, '0')}:${minute_and_second}` : minute_and_second;
+                                        };
+                                        this.player?.notice(
+                                            `${formatPosition(skipped_gap_range.start)}–${formatPosition(skipped_gap_range.end)} の未録画区間をスキップしました。`,
+                                            undefined,
+                                            undefined,
+                                            '#FFA86A',
+                                        );
+                                        notified_virtual_gap_ranges.add(range_key);
+                                    }
+                                }
+                            }
+                            previous_fragment_end = data.frag.start + data.frag.duration;
+                        });
+
                         const resetStartPosition = () => {
                             hls_plugin.off(Hls.Events.FRAG_BUFFERED, resetStartPosition);
                             hls_plugin.config.startPosition = -1;

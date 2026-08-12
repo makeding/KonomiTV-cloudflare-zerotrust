@@ -42,7 +42,7 @@ class SeriesRouterTest(unittest.TestCase):
     def test_on_air_genres_are_limited_to_episode_based_programs(self) -> None:
         """On Air には作品単位で追うアニメ・ドラマ・バラエティだけを掲載する。"""
 
-        self.assertEqual(ON_AIR_SERIES_GENRES, {'アニメ・特撮', 'ドラマ', 'バラエティ'})
+        self.assertEqual(ON_AIR_SERIES_GENRES, {'アニメ・特撮', 'ドラマ', 'バラエティ', '音楽'})
         self.assertNotIn('ドキュメンタリー・教養', ON_AIR_SERIES_GENRES)
 
 

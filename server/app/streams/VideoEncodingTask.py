@@ -1189,6 +1189,9 @@ class VideoEncodingTask:
                 yield_packet_count = 0
                 # セグメント境界をランダムアクセスフレームに合わせるためのフラグ
                 is_split_pending = False
+                # 仮想時間軸上で入力ファイルが切り替わる地点に到達したことを、
+                # PES パーサーの内側から TS 読み取りループへ伝えるためのフラグ
+                is_reached_virtual_source_boundary = False
 
                 # PTS/DTS の 33bit ラップアラウンドを展開して、DB に保存されている ffprobe の単調増加 DTS に合わせる
                 ## ffmpeg/ffprobe は 2^33 を超えた場合も内部的に単調増加の DTS として扱うため、
@@ -1395,6 +1398,7 @@ class VideoEncodingTask:
                                         next_segment.is_gap is True or
                                         next_segment.source_recorded_program_id != current_segment.source_recorded_program_id
                                     ):
+                                        is_reached_virtual_source_boundary = True
                                         await FlushCollectedSegmentMap()
                                         logging.info(
                                             f'{self.video_stream.log_prefix} Reached a virtual source boundary. '
@@ -1451,7 +1455,10 @@ class VideoEncodingTask:
                         await asyncio.sleep(0)
 
                     # 最終セグメントの場合はループを抜ける
-                    if current_sequence >= len(self.video_stream.segments):
+                    if (
+                        current_sequence >= len(self.video_stream.segments) or
+                        is_reached_virtual_source_boundary is True
+                    ):
                         break
 
                 # エンコーダープロセスを終了

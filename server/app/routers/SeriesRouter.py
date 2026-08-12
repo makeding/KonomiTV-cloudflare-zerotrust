@@ -36,7 +36,7 @@ NON_OFFICIAL_WEBSITE_HOSTS = {
     'youtube.com',
 }
 REPEAT_BROADCAST_TITLE_PATTERN = re.compile(r'(?:\[再\]|【再】|再放送)')
-ON_AIR_SERIES_GENRES = {'アニメ・特撮', 'ドラマ', 'バラエティ'}
+ON_AIR_SERIES_GENRES = {'アニメ・特撮', 'ドラマ', 'バラエティ', '音楽'}
 
 
 def ExtractIntegerEpisodeNumbers(episode_number: str) -> set[int]:
