@@ -103,7 +103,11 @@
                                 :bangumiSubjectName="expandedSeriesInRow(series_row)!.bangumi_subject_name"
                                 :bangumiSubjectNameCn="expandedSeriesInRow(series_row)!.bangumi_subject_name_cn"
                                 :bangumiSubjectSummary="expandedSeriesInRow(series_row)!.bangumi_subject_summary"
-                                :bangumiSubjectImageUrl="expandedSeriesInRow(series_row)!.bangumi_subject_image_url" />
+                                :bangumiSubjectImageUrl="expandedSeriesInRow(series_row)!.bangumi_subject_image_url"
+                                :style="remembered_details_height > 0
+                                    ? {minHeight: `${remembered_details_height}px`}
+                                    : undefined"
+                                @heightChanged="rememberDetailsHeight" />
                         </template>
                     </div>
                     <div v-else class="series-empty">
@@ -123,7 +127,11 @@
 
                     <!-- 分页器はカード直下に保ちつつ、展開前から詳細相当のページ高を確保する。 -->
                     <div v-if="expanded_series_id === null && series_list.length > 0"
-                        class="series-details-reserve" aria-hidden="true"></div>
+                        class="series-details-reserve"
+                        :style="remembered_details_height > 0
+                            ? {height: `${remembered_details_height}px`}
+                            : undefined"
+                        aria-hidden="true"></div>
                 </div>
             </div>
         </main>
@@ -156,6 +164,7 @@ const is_mounted = ref(false);
 const expanded_series_id = ref<number | null>(null);
 const series_grid_element = ref<HTMLElement | null>(null);
 const grid_column_count = ref(1);
+const remembered_details_height = ref(0);
 let grid_resize_observer: ResizeObserver | null = null;
 
 const series_rows = computed(() => {
@@ -168,6 +177,11 @@ const series_rows = computed(() => {
 
 const expandedSeriesInRow = (seriesRow: ISeriesSummary[]): ISeriesSummary | undefined => {
     return seriesRow.find(series => series.id === expanded_series_id.value);
+};
+
+// ページ内で一度表示した最も高い詳細を下限として保持し、次に短い Series を開いてもページ高を縮めない。
+const rememberDetailsHeight = (height: number) => {
+    remembered_details_height.value = Math.max(remembered_details_height.value, height);
 };
 
 const updateGridColumnCount = () => {
@@ -393,7 +407,11 @@ onBeforeUnmount(() => {
 
     &__episodes {
         grid-column: 1 / -1;
+        min-height: clamp(440px, 52vh, 620px);
         margin: 2px 0 8px;
+        @include smartphone-vertical {
+            min-height: 70vh;
+        }
     }
     @include tablet-horizontal {
         grid-template-columns: repeat(2, minmax(0, 1fr));

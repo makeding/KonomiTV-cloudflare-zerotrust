@@ -92,12 +92,20 @@
                                     :bangumiSubjectName="expandedSeriesSummary.bangumi_subject_name"
                                     :bangumiSubjectNameCn="expandedSeriesSummary.bangumi_subject_name_cn"
                                     :bangumiSubjectSummary="expandedSeriesSummary.bangumi_subject_summary"
-                                    :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
+                                    :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url"
+                                    :style="rememberedDetailsHeight > 0
+                                        ? {minHeight: `${rememberedDetailsHeight}px`}
+                                        : undefined"
+                                    @heightChanged="rememberDetailsHeight" />
                             </div>
                         </template>
                         <!-- 展開前から詳細相当の空間を確保し、クリック時にページ全体が急に伸びるのを防ぐ。 -->
                         <div v-if="expandedSeriesID === null && seriesList.length > 0"
-                            class="on-air-week__episodes-reserve" aria-hidden="true"></div>
+                            class="on-air-week__episodes-reserve"
+                            :style="rememberedDetailsHeight > 0
+                                ? {height: `${rememberedDetailsHeight}px`}
+                                : undefined"
+                            aria-hidden="true"></div>
                     </div>
                 </div>
             </div>
@@ -137,6 +145,12 @@ const expandedSeriesID = ref<number | null>(null);
 const expandedSeriesSummary = ref<ISeriesSummary | null>(null);
 const isSummaryLoading = ref(false);
 const onAirGridElement = ref<HTMLElement | null>(null);
+const rememberedDetailsHeight = ref(0);
+
+// 一度開いた最も高い詳細を保持し、別の短い番組へ切り替えた時のページ全体の収縮を防ぐ。
+const rememberDetailsHeight = (height: number) => {
+    rememberedDetailsHeight.value = Math.max(rememberedDetailsHeight.value, height);
+};
 
 // 既存の番組表設定と同じく、28 時間表記では 0:00〜3:59 を前日の 24:00〜27:59 として並べる。
 // API の曜日・時刻は自然時刻のまま保持し、このページの表示順とラベルだけを切り替える。
@@ -272,6 +286,9 @@ watch(() => route.params.series_id, async () => {
 }
 .on-air-day-header {
     --on-air-day-color: #64748b;
+    position: sticky;
+    top: 73px;
+    z-index: 8;
     display: flex; align-items: baseline; justify-content: space-between;
     min-width: 180px; padding: 6px 9px;
     color: white; background: var(--on-air-day-color); border-radius: 6px;
@@ -293,7 +310,12 @@ watch(() => route.params.series_id, async () => {
     &__placeholder { min-width: 0; }
 }
 .on-air-week {
-    &__episodes { grid-column: 1 / -1; min-width: 0; margin: 2px 0 8px; }
+    &__episodes {
+        grid-column: 1 / -1;
+        min-width: 0;
+        min-height: clamp(440px, 52vh, 620px);
+        margin: 2px 0 8px;
+    }
     &__episodes-reserve {
         grid-column: 1 / -1;
         height: clamp(440px, 52vh, 620px);
@@ -364,6 +386,7 @@ watch(() => route.params.series_id, async () => {
         scroll-snap-type: x proximity;
     }
     .on-air-day-header {
+        top: 0;
         min-width: min(36vw, 180px);
         padding: 5px 7px;
         scroll-snap-align: start;
@@ -376,7 +399,10 @@ watch(() => route.params.series_id, async () => {
         &__meta { margin-top: 3px; font-size: 9px; }
         &__logo { --ch-sprite-width: 30; --ch-sprite-height: 18; --ch-sprite-border-radius: 3; }
     }
-    .on-air-week__episodes { min-width: calc(7 * min(36vw, 180px) + 6 * 8px); }
+    .on-air-week__episodes {
+        min-width: calc(7 * min(36vw, 180px) + 6 * 8px);
+        min-height: 70vh;
+    }
     .on-air-week__episodes-reserve {
         min-width: calc(7 * min(36vw, 180px) + 6 * 8px);
         height: 70vh;

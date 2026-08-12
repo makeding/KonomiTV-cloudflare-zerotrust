@@ -1,5 +1,5 @@
 <template>
-    <div class="series-episode-list">
+    <div ref="seriesEpisodeListElement" class="series-episode-list">
         <div class="series-episode-list__header">
             <div class="series-episode-list__titles">
                 <h3>{{title}}</h3>
@@ -70,7 +70,20 @@
             </template>
         </div>
         <div v-else class="series-episode-list__matrix-scroll">
+            <div v-if="isSingleChannelWrapped" class="series-episode-list__wrapped-channel">
+                <div v-if="episode_matrix.rows[0].channel_id" class="series-episode-list__channel-logo">
+                    <div class="ch-sprite" :chid="episode_matrix.rows[0].channel_id">
+                        <img loading="lazy" decoding="async"
+                            :src="`${Utils.api_base_url}/channels/${episode_matrix.rows[0].channel_id}/logo`" alt="">
+                    </div>
+                </div>
+                <div class="series-episode-list__channel-name">
+                    <span>{{episode_matrix.rows[0].name}}</span>
+                    <small>{{episode_matrix.rows[0].episode_label}}</small>
+                </div>
+            </div>
             <div class="series-episode-list__matrix"
+                :class="{'series-episode-list__matrix--single-channel-wrapped': isSingleChannelWrapped}"
                 :style="{'--episode-column-count': episode_matrix.slots.length}">
                 <div class="series-episode-list__corner">放送局</div>
                 <div v-for="slot in episode_matrix.slots" :key="slot.key"
@@ -95,6 +108,9 @@
                     <template v-for="(program, slot_index) in channel_row.programs"
                         :key="episode_matrix.slots[slot_index].key">
                         <div v-if="program" class="series-episode-list__episode">
+                            <span class="series-episode-list__wrapped-slot-label">
+                                {{episode_matrix.slots[slot_index].label}}
+                            </span>
                             <a v-ripple class="series-episode-list__episode-link"
                                 :href="router.resolve(getEpisodeWatchRoute(program)).href"
                                 @click.left.exact.prevent="openEpisodeNormally(program.id)"
@@ -128,6 +144,9 @@
                             :class="{'series-episode-list__episode-placeholder--missing':
                                 row_index === 0 &&
                                 missingEpisodeSlotKeys.has(episode_matrix.slots[slot_index].key)}">
+                            <small class="series-episode-list__wrapped-slot-label">
+                                {{episode_matrix.slots[slot_index].label}}
+                            </small>
                             <span v-if="row_index === 0 &&
                                 missingEpisodeSlotKeys.has(episode_matrix.slots[slot_index].key)">未録画</span>
                         </div>
@@ -157,6 +176,9 @@ const props = defineProps<{
     bangumiSubjectSummary: string | null;
     bangumiSubjectImageUrl: string | null;
 }>();
+const emit = defineEmits<{
+    (e: 'heightChanged', height: number): void;
+}>();
 const router = useRouter();
 
 interface IEpisodeSlot {
@@ -173,6 +195,7 @@ interface IChannelRow {
 }
 
 const programs = ref<IRecordedProgram[]>([]);
+const seriesEpisodeListElement = ref<HTMLElement | null>(null);
 const total_programs = ref(0);
 const is_loading = ref(true);
 const episode_number_collator = new Intl.Collator('ja', { numeric: true });
@@ -184,6 +207,7 @@ const hoveredProgramID = ref<number | null>(null);
 const hoveredTileIndex = ref<number | null>(null);
 const hoveredPointerPositionRatio = ref(0);
 let profileThumbnailTimerID: number | null = null;
+let heightResizeObserver: ResizeObserver | null = null;
 let episodeThumbnailPreviewResetTimerID: number | null = null;
 let episodeThumbnailPreviewAnimationFrameID: number | null = null;
 let episodeThumbnailPreviewHoverIntentTimerID: number | null = null;
@@ -550,6 +574,12 @@ const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(
     return { slots, rows };
 });
 
+// 1 局だけで 20 件を超える長寿番組は、局間の話数比較をする必要がない。
+// 横一列を延々スクロールさせず、利用可能な横幅へ折り返して一覧性を優先する。
+const isSingleChannelWrapped = computed(() => {
+    return episode_matrix.value.rows.length === 1 && episode_matrix.value.slots.length > 20;
+});
+
 // 同じ話数の別局録画は数えず、視聴者が「どこまで録れているか」を一目で把握できる表記にする。
 const formatEpisodeCoverage = (programsBySlot: Map<string, IRecordedProgram>): string => {
     const recordedEpisodeCount = [...programsBySlot.keys()].filter(key => key.startsWith('episode:')).length;
@@ -647,9 +677,19 @@ const advanceProfileSlideshow = () => {
 onMounted(() => {
     fetchPrograms();
     profileThumbnailTimerID = window.setInterval(advanceProfileSlideshow, 4000);
+
+    // 親ページが一度表示した最も高い詳細を記憶できるよう、読み込みや折り返しで変わる実高さを通知する。
+    if (seriesEpisodeListElement.value) {
+        heightResizeObserver = new ResizeObserver((entries) => {
+            const height = entries[0]?.borderBoxSize[0]?.blockSize ?? entries[0]?.contentRect.height;
+            if (height !== undefined) emit('heightChanged', Math.ceil(height));
+        });
+        heightResizeObserver.observe(seriesEpisodeListElement.value);
+    }
 });
 
 onBeforeUnmount(() => {
+    heightResizeObserver?.disconnect();
     if (profileThumbnailTimerID !== null) window.clearInterval(profileThumbnailTimerID);
     if (episodeThumbnailPreviewResetTimerID !== null) window.clearTimeout(episodeThumbnailPreviewResetTimerID);
     if (episodeThumbnailPreviewAnimationFrameID !== null) {
@@ -1005,6 +1045,49 @@ onBeforeUnmount(() => {
         }
     }
 
+    &__wrapped-channel {
+        display: none;
+    }
+
+    &__matrix--single-channel-wrapped {
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        width: 100%;
+
+        .series-episode-list__corner,
+        .series-episode-list__column-header,
+        .series-episode-list__channel-logo-cell,
+        .series-episode-list__channel-name {
+            display: none;
+        }
+    }
+
+    &__matrix-scroll:has(&__matrix--single-channel-wrapped) &__wrapped-channel {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+
+    &__wrapped-slot-label {
+        display: none;
+    }
+
+    &__matrix--single-channel-wrapped &__wrapped-slot-label {
+        position: absolute;
+        top: 6px;
+        left: 7px;
+        z-index: 4;
+        display: block;
+        padding: 1px 5px;
+        color: white;
+        font-size: 10px;
+        line-height: 1.4;
+        pointer-events: none;
+        text-shadow: 0 1px 2px black;
+        background: rgb(0 0 0 / 58%);
+        border-radius: 3px;
+    }
+
     &__corner,
     &__column-header {
         position: sticky;
@@ -1074,12 +1157,12 @@ onBeforeUnmount(() => {
 
     &__episode,
     &__episode-placeholder {
+        position: relative;
         aspect-ratio: 16 / 9;
         border-radius: 6px;
     }
 
     &__episode {
-        position: relative;
         overflow: hidden;
         color: white;
         background: rgb(var(--v-theme-background-lighten-2));
