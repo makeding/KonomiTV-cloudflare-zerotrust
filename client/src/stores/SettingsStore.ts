@@ -62,6 +62,7 @@ export interface ILocalClientSettings extends IClientSettings {
         created_at: number;
         updated_at: number;
     }[];
+    selected_remote_device_id: string | null;
     lshaped_screen_crop_enabled: boolean;
     lshaped_screen_crop_zoom_level: number;
     lshaped_screen_crop_x_position: number;
@@ -167,6 +168,8 @@ export const ILocalClientSettingsDefault: ILocalClientSettings = {
     mylist: [],
     // 「ビデオをみる」の視聴履歴
     watched_history: [],
+    // 最後に選択した Komorebi テレビ。ブラウザ更新後も投げ先を維持する (同期無効)
+    selected_remote_device_id: null,
 
     // ***** L字画面のクロップ設定 *****
 
@@ -374,6 +377,7 @@ export const SYNCABLE_SETTINGS_KEYS: (keyof IClientSettings)[] = [
     // twitter_panel_post_targets: 同期無効
     // twitter_reply_thread_states: 同期無効
     // bluesky_reply_thread_states: 同期無効
+    // selected_remote_device_id: 同期無効
     'saved_twitter_hashtags',
     'mylist',
     'watched_history',
@@ -457,6 +461,7 @@ export const ENVIRONMENT_SPECIFIC_SETTINGS_KEYS: (keyof ILocalClientSettings)[] 
     'mylist',
     'watched_history',
     'selected_twitter_panel_account',
+    'selected_remote_device_id',
 ];
 
 

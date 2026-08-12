@@ -2,6 +2,8 @@
 
 import { createRouter, createWebHistory } from 'vue-router';
 
+import RemoteControl, { type RemoteOpenCommand } from '@/services/RemoteControl';
+import useSettingsStore from '@/stores/SettingsStore';
 import Utils from '@/utils';
 
 
@@ -219,7 +221,24 @@ const router = createRouter({
 
 // ルーティングの変更時に View Transitions API を適用する
 // ref: https://developer.mozilla.org/ja/docs/Web/API/View_Transitions_API
-router.beforeResolve((to, from, next) => {
+router.beforeResolve(async (to, from, next) => {
+    // テレビが選択されている間は視聴ページをローカルで開かず、選択中の Komorebi へ再生対象だけを送る。
+    const selectedDeviceId = useSettingsStore().settings.selected_remote_device_id;
+    let remoteCommand: RemoteOpenCommand | null = null;
+    if (selectedDeviceId !== null && to.name === 'TV Watch' && typeof to.params.display_channel_id === 'string') {
+        remoteCommand = {type: 'OpenLive', display_channel_id: to.params.display_channel_id};
+    } else if (selectedDeviceId !== null && to.name === 'Videos Watch' && typeof to.params.video_id === 'string') {
+        const recordedProgramId = Number(to.params.video_id);
+        if (Number.isInteger(recordedProgramId)) {
+            remoteCommand = {type: 'OpenRecording', recorded_program_id: recordedProgramId, position_seconds: 0};
+        }
+    }
+    if (selectedDeviceId !== null && remoteCommand !== null) {
+        await RemoteControl.sendOpenCommand(selectedDeviceId, remoteCommand);
+        next(false);
+        return;
+    }
+
     // View Transition API を適用しないルートの prefix
     // to と from の両方のパスがこの prefix で始まる場合は View Transition API を適用しない
     const no_transition_routes = [

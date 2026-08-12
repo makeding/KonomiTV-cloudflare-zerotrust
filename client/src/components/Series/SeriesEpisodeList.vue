@@ -69,7 +69,8 @@
                     class="series-episode-list__loading-episode" type="image" />
             </template>
         </div>
-        <div v-else class="series-episode-list__matrix-scroll">
+        <div v-else class="series-episode-list__matrix-scroll"
+            :class="{'series-episode-list__matrix-scroll--single-channel-wrapped': isSingleChannelWrapped}">
             <div v-if="isSingleChannelWrapped" class="series-episode-list__wrapped-channel">
                 <div v-if="episode_matrix.rows[0].channel_id" class="series-episode-list__channel-logo">
                     <div class="ch-sprite" :chid="episode_matrix.rows[0].channel_id">
@@ -1061,7 +1062,7 @@ onBeforeUnmount(() => {
         }
     }
 
-    &__matrix-scroll:has(&__matrix--single-channel-wrapped) &__wrapped-channel {
+    &__matrix-scroll--single-channel-wrapped &__wrapped-channel {
         display: flex;
         align-items: center;
         gap: 10px;

@@ -386,6 +386,34 @@ class DeviceAuthApprovalRequest(BaseModel):
 class DeviceAuthTokenRequest(BaseModel):
     device_code: Annotated[str, Field(min_length=32, max_length=100)]
 
+# ***** Komorebi リモートコントロール *****
+
+class RemoteDevice(BaseModel):
+    device_id: str
+    device_name: str
+    last_seen_at: datetime
+    state: dict[str, object] | None
+
+class RemoteDeviceList(BaseModel):
+    devices: list[RemoteDevice]
+
+class RemoteCommandOpenLive(BaseModel):
+    type: Literal['OpenLive']
+    display_channel_id: Annotated[str, Field(min_length=1)]
+
+class RemoteCommandOpenRecording(BaseModel):
+    type: Literal['OpenRecording']
+    recorded_program_id: int
+    position_seconds: Annotated[float, Field(ge=0)] = 0
+
+RemoteCommand = Annotated[
+    RemoteCommandOpenLive | RemoteCommandOpenRecording,
+    Field(discriminator='type'),
+]
+
+class RemoteCommandAccepted(BaseModel):
+    command_id: str
+
 # ***** Twitter / Bluesky 連携 *****
 
 class TwitterAccount(PydanticModel):
