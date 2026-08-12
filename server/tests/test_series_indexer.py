@@ -127,6 +127,126 @@ class SeriesIndexerTest(unittest.TestCase):
 
         self.assertIsNone(ParseSeriesTitle('LV999の村人 総集編', ANIME_GENRES))
 
+    def test_parenthesized_episode_does_not_split_the_series(self) -> None:
+        """括弧付き話数の開き括弧を作品名に残さない。"""
+
+        parenthesized = ParseSeriesTitle(
+            'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた。(第2話)',
+            ANIME_GENRES,
+        )
+        ordinary = ParseSeriesTitle(
+            'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた。 第6話',
+            ANIME_GENRES,
+        )
+        self.assertIsNotNone(parenthesized)
+        self.assertIsNotNone(ordinary)
+        assert parenthesized is not None and ordinary is not None
+        self.assertEqual(parenthesized.normalized_title, ordinary.normalized_title)
+
+    def test_real_broadcast_slot_variants_match(self) -> None:
+        """引用符式と無括弧式の放送枠名だけを作品名から除外する。"""
+
+        cases = [
+            ('日5「ウィッチウォッチ」 #2[字][デ]', 'ウィッチウォッチ', '2'),
+            ('アニメギルド落第賢者の学院無双#1[新]', '落第賢者の学院無双', '1'),
+            ('アニメA・ポンコツ風紀委員とスカート丈が不適切なJKの話 #2', 'ポンコツ風紀委員とスカート丈が不適切なJKの話', '2'),
+            ('火アニバル マリッジトキシン 第3話', 'マリッジトキシン', '3'),
+        ]
+        for title, expected_title, expected_episode in cases:
+            with self.subTest(title=title):
+                parsed = ParseSeriesTitle(title, ANIME_GENRES)
+                self.assertIsNotNone(parsed)
+                assert parsed is not None
+                self.assertEqual(parsed.display_title, expected_title)
+                self.assertEqual(parsed.episode_number, expected_episode)
+
+    def test_historical_numerals_and_episode_units_are_supported(self) -> None:
+        """EPG に現れる大字の漢数字と「講」「輪」を話数として読む。"""
+
+        cases = [
+            ('春夏秋冬代行者 春の舞 第弐話「名残雪」', '2'),
+            ('春夏秋冬代行者 春の舞 第肆話「朝凪」', '4'),
+            ('春夏秋冬代行者 春の舞 第拾参話「奪還」', '13'),
+            ('3年Z組銀八先生 第10講[字]', '10'),
+            ('アニメ リィンカーネーションの花弁 第十輪 顔の無い男', '10'),
+        ]
+        for title, expected_episode in cases:
+            with self.subTest(title=title):
+                parsed = ParseSeriesTitle(title, ANIME_GENRES)
+                self.assertIsNotNone(parsed)
+                assert parsed is not None
+                self.assertEqual(parsed.episode_number, expected_episode)
+
+    def test_episode_at_description_line_start_is_used_conservatively(self) -> None:
+        """title が固定の放送局では description の独立行先頭から話数を読む。"""
+
+        cases = [
+            (
+                '没落予定の貴族だけど、暇だったから魔法を極めてみた',
+                '#2 リアム、冒険者になってみた\nあらすじ本文',
+                '2',
+                'リアム、冒険者になってみた',
+            ),
+            (
+                '勇者のクズ[字]',
+                'クズの「師匠」と自称「弟子」\n#17勇者の帰還',
+                '17',
+                '勇者の帰還',
+            ),
+            (
+                'Aランクパーティを離脱した俺は、元教え子たちと迷宮深部を目指す。',
+                '第2話 魔獣の棲む森',
+                '2',
+                '魔獣の棲む森',
+            ),
+        ]
+        for title, description, expected_episode, expected_subtitle in cases:
+            with self.subTest(title=title):
+                parsed = ParseSeriesTitle(title, ANIME_GENRES, description)
+                self.assertIsNotNone(parsed)
+                assert parsed is not None
+                self.assertEqual(parsed.episode_number, expected_episode)
+                self.assertEqual(parsed.subtitle, expected_subtitle)
+
+    def test_numbers_inside_description_body_are_not_used_as_episode(self) -> None:
+        """あらすじ本文中の数字は Series 生成の根拠にしない。"""
+
+        parsed = ParseSeriesTitle(
+            '番組タイトル',
+            ANIME_GENRES,
+            '主人公は第2話の事件から10年後を思い出す。',
+        )
+        self.assertIsNone(parsed)
+
+    def test_short_real_work_title_is_not_rejected_by_length(self) -> None:
+        """短い実在作品名でも明示的な話数があれば Series 化する。"""
+
+        parsed = ParseSeriesTitle('キルアオ[字]', ANIME_GENRES, '「ミツオカノレン」\n#12 殺し屋会議')
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.display_title, 'キルアオ')
+        self.assertEqual(parsed.episode_number, '12')
+
+    def test_quoted_work_title_after_program_type_is_preserved(self) -> None:
+        """TVアニメや時代劇の種別後に引用された作品名を副題にしない。"""
+
+        cases = [
+            ('TVアニメ『乙女怪獣キャラメリゼ』第2話「開かない扉」[字]', '乙女怪獣キャラメリゼ', '開かない扉'),
+            ('時代劇「長七郎江戸日記」 第10回「若後家には御用心」', '長七郎江戸日記', '若後家には御用心'),
+        ]
+        for title, expected_title, expected_subtitle in cases:
+            with self.subTest(title=title):
+                parsed = ParseSeriesTitle(title, ANIME_GENRES)
+                self.assertIsNotNone(parsed)
+                assert parsed is not None
+                self.assertEqual(parsed.display_title, expected_title)
+                self.assertEqual(parsed.subtitle, expected_subtitle)
+
+    def test_generic_short_program_is_still_rejected(self) -> None:
+        """短い作品名を許可しても、既知の汎用番組は Series 化しない。"""
+
+        self.assertIsNone(ParseSeriesTitle('紅白なび(10)[字]', ANIME_GENRES))
+
 
 if __name__ == '__main__':
     unittest.main()

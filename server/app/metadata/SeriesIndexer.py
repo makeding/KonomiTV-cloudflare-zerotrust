@@ -33,13 +33,33 @@ GENERIC_SERIES_TITLES = {
     'musicアラカルト',
     'weatherreport',
     'ニュース',
+    '紅白なび',
     '放送休止',
     '天気予報',
 }
 
 # EPG タイトルの先頭に付与される放送枠名。作品名そのものではないため除外する。
-PROGRAM_SLOT_PREFIX_PATTERN = re.compile(r'^(?:<[^<>]+>|＜[^＜＞]+＞)\s*')
+PROGRAM_SLOT_PREFIX_PATTERN = re.compile(
+    r'^(?:(?:<[^<>]+>|＜[^＜＞]+＞)|(?:アニメギルド|アニメA[・･]|火アニバル))\s*',
+    flags=re.IGNORECASE,
+)
 PROGRAM_TYPE_PREFIX_PATTERN = re.compile(r'^(?:(?:TV|テレビ)?アニメ)\s+', flags=re.IGNORECASE)
+
+# 作品名を引用符で囲う放送枠。通常の各話副題と区別するため、副題抽出より先に作品名を外へ出す。
+QUOTED_PROGRAM_SLOT_PATTERN = re.compile(
+    r'^(?:日5)「(?P<title>[^」]+)」(?P<rest>.*)$',
+    flags=re.IGNORECASE,
+)
+QUOTED_WORK_TITLE_PATTERN = re.compile(
+    r'^(?:TVアニメ|時代劇)[「『](?P<title>[^」』]+)[」』](?P<rest>.*)$',
+    flags=re.IGNORECASE,
+)
+
+# 作品名の前後に付く既知の放送枠名。作品名の装飾は汎用的に削除せず、実データで確認できた枠だけを列挙する。
+PROGRAM_SLOT_MARK_PATTERN = re.compile(
+    r'(?:【(?:ANiMAZiNG[!！]*|スーパーアニメイズムTURBO|イマニメーションW?)】|<\+Ultra>)',
+    flags=re.IGNORECASE,
+)
 
 # KonomiTV が既に番組記号として扱っている角括弧表記だけを除去する。
 PROGRAM_MARK_PATTERN = re.compile(
@@ -50,10 +70,10 @@ PROGRAM_MARK_PATTERN = re.compile(
 # 話数を明示する表記だけを Series の自動生成根拠として採用する。
 EPISODE_PATTERN = re.compile(
     r'(?:'
+    r'\(\s*第?\s*(?P<parenthesized>[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+(?:\.[0-9]+)?)\s*(?:話|回|講|輪)?\s*\)?|'
     r'#\s*(?P<hash>[0-9]+(?:\.[0-9]+)?(?:\s*[・&／/]\s*#?\s*[0-9]+(?:\.[0-9]+)?)*)|'
-    r'第\s*(?P<japanese>[0-9一二三四五六七八九十百千〇零壱弐参拾]+)\s*(?:話|回)|'
-    r'\b(?:Chapter|CH)\s*(?P<chapter>[0-9]+(?:\.[0-9]+)?)|'
-    r'\(\s*第?\s*(?P<parenthesized>[0-9]+(?:\.[0-9]+)?)\s*(?:話|回)?\s*\)'
+    r'第\s*(?P<japanese>[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+)\s*(?:話|回|講|輪)|'
+    r'\b(?:Chapter|CH)\s*(?P<chapter>[0-9]+(?:\.[0-9]+)?)'
     r')',
     flags=re.IGNORECASE,
 )
@@ -72,12 +92,18 @@ JAPANESE_DIGITS = {
     '弐': 2,
     '三': 3,
     '参': 3,
+    '貳': 3,
     '四': 4,
+    '肆': 4,
     '五': 5,
+    '伍': 5,
     '六': 6,
+    '陸': 6,
     '七': 7,
+    '漆': 7,
     '八': 8,
     '九': 9,
+    '玖': 9,
 }
 JAPANESE_UNITS = {'十': 10, '拾': 10, '百': 100, '千': 1000}
 
@@ -152,13 +178,18 @@ def NormalizeSeriesTitle(title: str) -> str:
     return re.sub(r'\s+', '', unicodedata.normalize('NFKC', title)).casefold()
 
 
-def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | None:
+def ParseSeriesTitle(
+    title: str,
+    genres: list[Genre],
+    description: str | None = None,
+) -> ParsedSeriesTitle | None:
     """
     EPG タイトルから誤統合しにくい確定的なシリーズ情報を抽出する。
 
     Args:
         title (str): EPG 由来の番組タイトル。
         genres (list[Genre]): 末尾数字を話数として扱える番組ジャンル。
+        description (str | None): 放送局が話数をタイトルでなく先頭行に入れる番組概要。
 
     Returns:
         ParsedSeriesTitle | None: 明示的な話数と十分な作品名を抽出できた場合のみ結果を返す。
@@ -170,7 +201,22 @@ def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | Non
     normalized_source = re.sub(r'\((?:二|字|再)\)', '', normalized_source)
     normalized_source = PROGRAM_SLOT_PREFIX_PATTERN.sub('', normalized_source)
     normalized_source = PROGRAM_TYPE_PREFIX_PATTERN.sub('', normalized_source)
+    normalized_source = PROGRAM_SLOT_MARK_PATTERN.sub('', normalized_source)
     normalized_source = normalized_source.strip()
+
+    # 「日5『作品名』 #2」の引用符は副題ではないため、作品名と話数を通常の配置に戻す。
+    quoted_program_slot_match = QUOTED_PROGRAM_SLOT_PATTERN.fullmatch(normalized_source)
+    if quoted_program_slot_match is not None:
+        normalized_source = (
+            quoted_program_slot_match.group('title') + quoted_program_slot_match.group('rest')
+        ).strip()
+
+    # 「TVアニメ『作品名』第2話」などは引用部分自体が作品名なので、副題抽出の前に外へ出す。
+    quoted_work_title_match = QUOTED_WORK_TITLE_PATTERN.fullmatch(normalized_source)
+    if quoted_work_title_match is not None:
+        normalized_source = (
+            quoted_work_title_match.group('title') + quoted_work_title_match.group('rest')
+        ).strip()
 
     # 「…」内は各話副題として先に保持し、作品名の比較キーからは除外する。
     subtitle_match = QUOTED_SUBTITLE_PATTERN.search(normalized_source)
@@ -178,7 +224,9 @@ def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | Non
     title_without_quoted_subtitle = QUOTED_SUBTITLE_PATTERN.sub('', normalized_source).strip()
 
     # #6 / 第6話 / Chapter 6 など、話数だと断定できる位置より前を作品名として採用する。
-    episode_match = EPISODE_PATTERN.search(title_without_quoted_subtitle)
+    episode_source = title_without_quoted_subtitle
+    episode_match = EPISODE_PATTERN.search(episode_source)
+    is_episode_from_description = False
     quoted_level_match = QUOTED_LEVEL_EPISODE_PATTERN.fullmatch(subtitle) if subtitle is not None else None
     if episode_match is None:
         # 一部アニメ局は「Lv2 副題」のように話数を引用符内へ入れるため、引用符の先頭だけを追加で認識する。
@@ -188,7 +236,7 @@ def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | Non
             display_title = title_without_quoted_subtitle.strip(' 　・:-')
             subtitle = quoted_level_match.group('subtitle').strip()
             normalized_title = NormalizeSeriesTitle(display_title)
-            if len(normalized_title) < 6 or normalized_title in GENERIC_SERIES_TITLES:
+            if len(normalized_title) < 2 or normalized_title in GENERIC_SERIES_TITLES:
                 return None
             return ParsedSeriesTitle(
                 display_title = display_title,
@@ -200,6 +248,17 @@ def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | Non
         # アニメ EPG では末尾の単独数字が話数として使われるため、このジャンルに限り追加で認識する。
         is_anime = any(genre['major'] == 'アニメ・特撮' for genre in genres)
         episode_match = TRAILING_EPISODE_PATTERN.search(title_without_quoted_subtitle) if is_anime else None
+        if episode_match is None and is_anime and description is not None:
+            # 放送局によっては title を毎回同じ作品名にし、description の独立行先頭へ話数を入れる。
+            ## あらすじ本文に現れる数字を話数と誤認しないよう、各行の先頭一致だけを採用する。
+            for description_line in description.splitlines():
+                description_line = description_line.strip()
+                description_episode_match = EPISODE_PATTERN.match(description_line)
+                if description_episode_match is not None:
+                    episode_source = description_line
+                    episode_match = description_episode_match
+                    is_episode_from_description = True
+                    break
     if episode_match is None:
         return None
 
@@ -209,16 +268,20 @@ def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | Non
         for value in episode_match.groupdict().values()
         if value is not None
     ))
-    display_title = title_without_quoted_subtitle[:episode_match.start()].strip(' 　・:-')
+    display_title = (
+        title_without_quoted_subtitle
+        if is_episode_from_description
+        else title_without_quoted_subtitle[:episode_match.start()]
+    ).strip(' 　・:-(（')
 
     # 話数の後ろに残る語句は放送枠名を除き、副題が別途なければ副題として保存する。
-    trailing_text = title_without_quoted_subtitle[episode_match.end():].strip()
+    trailing_text = episode_source[episode_match.end():].strip()
     trailing_text = re.sub(r'^\s*[◆◇].*$', '', trailing_text).strip()
     if subtitle is None and trailing_text:
         subtitle = trailing_text
 
     normalized_title = NormalizeSeriesTitle(display_title)
-    if len(normalized_title) < 6 or normalized_title in GENERIC_SERIES_TITLES:
+    if len(normalized_title) < 2 or normalized_title in GENERIC_SERIES_TITLES:
         return None
 
     return ParsedSeriesTitle(
@@ -244,7 +307,11 @@ class SeriesIndexer:
             bool: Series へ関連付けられた場合は True。
         """
 
-        parsed_title = ParseSeriesTitle(recorded_program.title, recorded_program.genres)
+        parsed_title = ParseSeriesTitle(
+            recorded_program.title,
+            recorded_program.genres,
+            recorded_program.description,
+        )
         if parsed_title is None:
             return False
 
