@@ -3,7 +3,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 
-from app import logging
+from app import logging, schemas
 from app.config import ClientSettings, Config, SaveConfig, ServerSettings
 from app.models.User import User
 from app.routers.UsersRouter import GetCurrentAdminUser, GetCurrentUser
@@ -14,6 +14,24 @@ router = APIRouter(
     tags = ['Settings'],
     prefix = '/api/settings',
 )
+
+
+def MergeWatchedHistory(
+    current_history: list[dict],
+    incoming_history: list[dict],
+    max_count: int,
+) -> list[dict]:
+    """Merge playback positions per video without overwriting newer device updates."""
+    merged = {int(item['video_id']): item for item in current_history}
+    for item in incoming_history:
+        video_id = int(item['video_id'])
+        current = merged.get(video_id)
+        if current is None or float(item['updated_at']) >= float(current['updated_at']):
+            updated = dict(item)
+            if current is not None:
+                updated['created_at'] = min(float(current['created_at']), float(item['created_at']))
+            merged[video_id] = updated
+    return sorted(merged.values(), key=lambda item: float(item['updated_at']), reverse=True)[:max_count]
 
 
 @router.get(
@@ -57,10 +75,50 @@ async def ClientSettingsUpdateAPI(
 
     # dict に変換してから入れる
     ## Pydantic モデルのままだと JSON にシリアライズできないので怒られる
-    current_user.client_settings = dict(client_settings)
+    updated_settings = dict(client_settings)
+    updated_settings['watched_history'] = MergeWatchedHistory(
+        current_client_settings.watched_history,
+        client_settings.watched_history,
+        client_settings.video_watched_history_max_count,
+    )
+    current_user.client_settings = updated_settings
 
     # レコードを保存する
     await current_user.save()
+
+
+@router.get(
+    '/client/watched-history',
+    summary = '視聴履歴取得 API',
+    response_model = schemas.WatchedHistory,
+)
+async def WatchedHistoryAPI(
+    current_user: Annotated[User, Depends(GetCurrentUser)],
+):
+    client_settings = ClientSettings.model_validate(current_user.client_settings)
+    return schemas.WatchedHistory(items=client_settings.watched_history)
+
+
+@router.put(
+    '/client/watched-history',
+    summary = '視聴履歴更新 API',
+    response_model = schemas.WatchedHistory,
+)
+async def WatchedHistoryUpdateAPI(
+    watched_history: Annotated[schemas.WatchedHistory, Body(description='端末上で更新された視聴履歴。')],
+    current_user: Annotated[User, Depends(GetCurrentUser)],
+):
+    client_settings = ClientSettings.model_validate(current_user.client_settings)
+    merged_history = MergeWatchedHistory(
+        client_settings.watched_history,
+        [item.model_dump() for item in watched_history.items],
+        client_settings.video_watched_history_max_count,
+    )
+    updated_settings = dict(client_settings)
+    updated_settings['watched_history'] = merged_history
+    current_user.client_settings = updated_settings
+    await current_user.save()
+    return schemas.WatchedHistory(items=merged_history)
 
 
 @router.get(

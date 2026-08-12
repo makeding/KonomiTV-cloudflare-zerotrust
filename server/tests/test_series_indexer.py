@@ -67,6 +67,7 @@ class SeriesIndexerTest(unittest.TestCase):
             ('奇妙なアニメ (第6話)', '6', None),
             ('奇妙なアニメ CH 07', '7', None),
             ('奇妙なアニメ #01・#02「一挙放送」', '1・2', '一挙放送'),
+            ('奇妙なアニメ #01-#12「一挙放送」', '1-12', '一挙放送'),
         ]
 
         expected_key = NormalizeSeriesTitle('奇妙なアニメ')
@@ -151,14 +152,18 @@ class SeriesIndexerTest(unittest.TestCase):
             ('アニメギルド落第賢者の学院無双#1[新]', '落第賢者の学院無双', '1'),
             ('アニメA・ポンコツ風紀委員とスカート丈が不適切なJKの話 #2', 'ポンコツ風紀委員とスカート丈が不適切なJKの話', '2'),
             ('火アニバル マリッジトキシン 第3話', 'マリッジトキシン', '3'),
+            ('アポカリプスホテル AnichU', 'アポカリプスホテル', '3'),
         ]
         for title, expected_title, expected_episode in cases:
             with self.subTest(title=title):
-                parsed = ParseSeriesTitle(title, ANIME_GENRES)
+                description = '第3話「笑顔は最高のインテリア」' if title.endswith('AnichU') else None
+                parsed = ParseSeriesTitle(title, ANIME_GENRES, description)
                 self.assertIsNotNone(parsed)
                 assert parsed is not None
                 self.assertEqual(parsed.display_title, expected_title)
                 self.assertEqual(parsed.episode_number, expected_episode)
+                if title.endswith('AnichU'):
+                    self.assertEqual(parsed.subtitle, '笑顔は最高のインテリア')
 
     def test_historical_numerals_and_episode_units_are_supported(self) -> None:
         """EPG に現れる大字の漢数字と「講」「輪」を話数として読む。"""

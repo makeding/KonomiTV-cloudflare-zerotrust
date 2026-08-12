@@ -322,6 +322,17 @@ class AccountLink(PydanticModel):
 class Users(RootModel[list[User]]):
     pass
 
+
+class WatchedHistoryItem(BaseModel):
+    video_id: int
+    last_playback_position: Annotated[float, Field(ge=0)]
+    created_at: Annotated[float, Field(gt=0)]
+    updated_at: Annotated[float, Field(gt=0)]
+
+
+class WatchedHistory(BaseModel):
+    items: list[WatchedHistoryItem]
+
 # ***** Twitter / Bluesky 連携 *****
 
 class TwitterAccount(PydanticModel):

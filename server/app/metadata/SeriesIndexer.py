@@ -5,6 +5,8 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 
+from tortoise import connections
+
 from app import logging
 from app.constants import JST
 from app.models.RecordedProgram import RecordedProgram
@@ -57,7 +59,7 @@ QUOTED_WORK_TITLE_PATTERN = re.compile(
 
 # 作品名の前後に付く既知の放送枠名。作品名の装飾は汎用的に削除せず、実データで確認できた枠だけを列挙する。
 PROGRAM_SLOT_MARK_PATTERN = re.compile(
-    r'(?:【(?:ANiMAZiNG[!！]*|スーパーアニメイズムTURBO|イマニメーションW?)】|<\+Ultra>)',
+    r'(?:【(?:ANiMAZiNG[!！]*|スーパーアニメイズムTURBO|イマニメーションW?)】|<\+Ultra>|\s+(?:AnichU|FRIDAY ANIME NIGHT)\s*$)',
     flags=re.IGNORECASE,
 )
 
@@ -71,7 +73,7 @@ PROGRAM_MARK_PATTERN = re.compile(
 EPISODE_PATTERN = re.compile(
     r'(?:'
     r'\(\s*第?\s*(?P<parenthesized>[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+(?:\.[0-9]+)?)\s*(?:話|回|講|輪)?\s*\)?|'
-    r'#\s*(?P<hash>[0-9]+(?:\.[0-9]+)?(?:\s*[・&／/]\s*#?\s*[0-9]+(?:\.[0-9]+)?)*)|'
+    r'#\s*(?P<hash>[0-9]+(?:\.[0-9]+)?(?:\s*[・&／/\-～~]\s*#?\s*[0-9]+(?:\.[0-9]+)?)*)|'
     r'第\s*(?P<japanese>[0-9一二三四五六七八九十百千〇零壱弐参拾貳肆伍陸漆玖]+)\s*(?:話|回|講|輪)|'
     r'\b(?:Chapter|CH)\s*(?P<chapter>[0-9]+(?:\.[0-9]+)?)'
     r')',
@@ -148,7 +150,7 @@ def NormalizeEpisodeNumber(episode_number: str) -> str:
     """
 
     # 漢数字は意味を変えず保持し、ASCII 数字だけ先頭ゼロを取り除く。
-    parts = re.split(r'\s*[・&／/]\s*#?\s*', episode_number)
+    parts = re.split(r'\s*[・&／/\-～~]\s*#?\s*', episode_number)
     normalized_parts: list[str] = []
     for part in parts:
         japanese_number = ParseJapaneseNumber(part)
@@ -160,7 +162,8 @@ def NormalizeEpisodeNumber(episode_number: str) -> str:
             normalized_parts.append(str(japanese_number))
         else:
             normalized_parts.append(part)
-    return '・'.join(normalized_parts)
+    separator = '-' if re.search(r'[\-～~]', episode_number) is not None else '・'
+    return separator.join(normalized_parts)
 
 
 def NormalizeSeriesTitle(title: str) -> str:
@@ -278,7 +281,12 @@ def ParseSeriesTitle(
     trailing_text = episode_source[episode_match.end():].strip()
     trailing_text = re.sub(r'^\s*[◆◇].*$', '', trailing_text).strip()
     if subtitle is None and trailing_text:
-        subtitle = trailing_text
+        trailing_subtitle_match = QUOTED_SUBTITLE_PATTERN.fullmatch(trailing_text)
+        subtitle = (
+            trailing_subtitle_match.group('subtitle').strip()
+            if trailing_subtitle_match is not None
+            else trailing_text
+        )
 
     normalized_title = NormalizeSeriesTitle(display_title)
     if len(normalized_title) < 2 or normalized_title in GENERIC_SERIES_TITLES:
@@ -313,6 +321,21 @@ class SeriesIndexer:
             recorded_program.description,
         )
         if parsed_title is None:
+            # 現在の確定的な規則で Series にできない録画は、過去の解析結果を残さない。
+            ## これにより、汎用番組を除外した後も Series 一覧に古いカードが残ることを防ぐ。
+            if recorded_program.series_id is not None:
+                recorded_program.series_id = None
+                recorded_program.series_broadcast_period_id = None
+                recorded_program.series_title = None
+                recorded_program.episode_number = None
+                recorded_program.subtitle = None
+                await recorded_program.save(update_fields=[
+                    'series_id',
+                    'series_broadcast_period_id',
+                    'series_title',
+                    'episode_number',
+                    'subtitle',
+                ])
             return False
 
         # normalized_title の完全一致だけで Series を再利用し、fuzzy 類似度による誤統合を防ぐ。
@@ -404,5 +427,22 @@ class SeriesIndexer:
                 if await cls.linkRecordedProgram(recorded_program):
                     linked_count += 1
                 last_seen_id = recorded_program.id
+
+        # ルール改善で別 Series へ移った録画の古い放送期間とカードだけを後始末する。
+        ## RecordedProgram がまだ参照する Series は消さないため、CASCADE で録画自体が失われることはない。
+        connection = connections.get('default')
+        await connection.execute_query(
+            'DELETE FROM series_broadcast_periods '
+            'WHERE NOT EXISTS ('
+            'SELECT 1 FROM recorded_programs '
+            'WHERE recorded_programs.series_broadcast_period_id = series_broadcast_periods.id'
+            ')',
+        )
+        await connection.execute_query(
+            'DELETE FROM series '
+            'WHERE NOT EXISTS ('
+            'SELECT 1 FROM recorded_programs WHERE recorded_programs.series_id = series.id'
+            ')',
+        )
 
         logging.info(f'Series index rebuild has completed. linked_recorded_programs: {linked_count}')
