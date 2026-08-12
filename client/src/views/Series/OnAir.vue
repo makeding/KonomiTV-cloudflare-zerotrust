@@ -3,7 +3,7 @@
         <HeaderBar />
         <main>
             <Navigation />
-            <div ref="onAirWrapper" class="on-air-wrapper">
+            <div class="on-air-wrapper">
                 <SPHeaderBar />
                 <div class="on-air-container">
                     <Breadcrumbs :crumbs="[
@@ -21,21 +21,24 @@
                     <div v-if="isLoading" class="on-air-loading">
                         <v-skeleton-loader v-for="index in 14" :key="index" type="image" />
                     </div>
-                    <div v-else class="on-air-week">
-                        <section v-for="day in weekdays" :key="day.index"
-                            class="on-air-day"
+                    <div v-else ref="onAirGridElement" class="on-air-week">
+                        <header v-for="day in weekdays" :key="`header-${day.index}`"
+                            class="on-air-day-header"
                             :class="[
-                                `on-air-day--${day.index}`,
-                                {'on-air-day--attention': hasAttentionSeries(day.index)},
+                                `on-air-day-header--${day.index}`,
+                                {'on-air-day-header--attention': hasAttentionSeries(day.index)},
                             ]">
-                            <header>
                                 <h3>{{day.label}}</h3>
                                 <span>{{seriesByWeekday[day.index].length}}件</span>
-                            </header>
-                            <div class="on-air-day__cards">
-                                <button v-for="series in seriesByWeekday[day.index]" :key="series.id"
-                                    v-ripple class="on-air-card" type="button"
+                        </header>
+                        <template v-for="(seriesRow, rowIndex) in onAirRows" :key="`row-${rowIndex}`">
+                            <div v-for="(series, weekday) in seriesRow" :key="`cell-${rowIndex}-${weekday}`"
+                                class="on-air-cell"
+                                :class="{'on-air-cell--last': series && isLastSeriesForWeekday(series, weekday)}">
+                                <button v-if="series"
+                                    class="on-air-card" type="button"
                                     :class="{'on-air-card--attention': isInAttentionWindow(series)}"
+                                    :data-series-id="series.id"
                                     :aria-expanded="expandedSeriesID === series.id"
                                     @click="toggleSeries(series.id)">
                                     <div class="on-air-card__thumbnails"
@@ -50,7 +53,12 @@
                                         <time>{{series.broadcast_time}}</time>
                                         <strong>{{series.title}}</strong>
                                         <div class="on-air-card__meta">
-                                            <span>{{series.recorded_programs_count}}件</span>
+                                            <span>
+                                                {{series.recorded_episodes_count}}話
+                                                <template v-if="series.missing_episodes_count > 0">
+                                                    ・{{series.missing_episodes_count}}話未録画
+                                                </template>
+                                            </span>
                                             <div class="on-air-card__logos">
                                                 <div v-for="channelId in series.channel_ids.slice(0, 2)" :key="channelId"
                                                     class="on-air-card__logo">
@@ -62,37 +70,31 @@
                                         </div>
                                     </div>
                                 </button>
-                                <p v-if="seriesByWeekday[day.index].length === 0" class="on-air-day__empty">録画なし</p>
                             </div>
-                        </section>
+                            <div v-if="expandedSeriesInRow(seriesRow)" class="on-air-week__episodes">
+                                <div v-if="isSummaryLoading" class="on-air-week__loading">
+                                    <v-skeleton-loader type="heading, image, paragraph, paragraph" />
+                                </div>
+                                <SeriesEpisodeList v-else-if="expandedSeriesSummary"
+                                    :seriesId="expandedSeriesSummary.id"
+                                    :title="expandedSeriesSummary.title"
+                                    :description="expandedSeriesSummary.description"
+                                    :bangumiSubjectId="expandedSeriesSummary.bangumi_subject_id"
+                                    :bangumiSubjectName="expandedSeriesSummary.bangumi_subject_name"
+                                    :bangumiSubjectNameCn="expandedSeriesSummary.bangumi_subject_name_cn"
+                                    :bangumiSubjectSummary="expandedSeriesSummary.bangumi_subject_summary"
+                                    :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
+                            </div>
+                        </template>
                     </div>
                 </div>
-                <v-dialog :model-value="expandedSeriesID !== null" class="on-air-dialog"
-                    :style="dialogOverlayStyle" scroll-strategy="none" @update:model-value="closeSeries">
-                    <v-card class="on-air-dialog__card">
-                        <v-btn class="on-air-dialog__close" icon="mdi-close" variant="text"
-                            aria-label="閉じる" @click="closeSeries()" />
-                        <div v-if="isSummaryLoading" class="on-air-dialog__loading">
-                            <v-skeleton-loader type="heading, image, paragraph, paragraph" />
-                        </div>
-                        <SeriesEpisodeList v-else-if="expandedSeriesSummary"
-                            :seriesId="expandedSeriesSummary.id"
-                            :title="expandedSeriesSummary.title"
-                            :description="expandedSeriesSummary.description"
-                            :bangumiSubjectId="expandedSeriesSummary.bangumi_subject_id"
-                            :bangumiSubjectName="expandedSeriesSummary.bangumi_subject_name"
-                            :bangumiSubjectNameCn="expandedSeriesSummary.bangumi_subject_name_cn"
-                            :bangumiSubjectSummary="expandedSeriesSummary.bangumi_subject_summary"
-                            :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
-                    </v-card>
-                </v-dialog>
             </div>
         </main>
     </div>
 </template>
 <script lang="ts" setup>
 
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
@@ -115,18 +117,16 @@ const router = useRouter();
 const expandedSeriesID = ref<number | null>(null);
 const expandedSeriesSummary = ref<ISeriesSummary | null>(null);
 const isSummaryLoading = ref(false);
-const onAirWrapper = ref<HTMLElement | null>(null);
-const dialogOverlayBounds = ref({top: 0, left: 0, width: 0, height: 0});
-let wrapperResizeObserver: ResizeObserver | null = null;
+const onAirGridElement = ref<HTMLElement | null>(null);
 const seriesByWeekday = computed(() => weekdays.map(day =>
     seriesList.value.filter(series => series.weekday === day.index),
 ));
-const dialogOverlayStyle = computed(() => ({
-    top: `${dialogOverlayBounds.value.top}px`,
-    left: `${dialogOverlayBounds.value.left}px`,
-    width: `${dialogOverlayBounds.value.width}px`,
-    height: `${dialogOverlayBounds.value.height}px`,
-}));
+const onAirRows = computed(() => {
+    const rowCount = Math.max(0, ...seriesByWeekday.value.map(series => series.length));
+    return Array.from({length: rowCount}, (_, rowIndex) =>
+        weekdays.map(day => seriesByWeekday.value[day.index][rowIndex] ?? null),
+    );
+});
 const currentJST = ref(dayjsOriginal().tz('Asia/Tokyo'));
 let currentTimeUpdateTimer: number | null = null;
 
@@ -151,17 +151,12 @@ const hasAttentionSeries = (weekday: number): boolean => {
     return seriesByWeekday.value[weekday].some(isInAttentionWindow);
 };
 
-const updateDialogOverlayBounds = () => {
-    if (!onAirWrapper.value) return;
-    const wrapperBounds = onAirWrapper.value.getBoundingClientRect();
-    const top = Math.max(0, wrapperBounds.top);
-    const left = Math.max(0, wrapperBounds.left);
-    dialogOverlayBounds.value = {
-        top,
-        left,
-        width: window.innerWidth - left,
-        height: window.innerHeight - top,
-    };
+const expandedSeriesInRow = (seriesRow: Array<IOnAirSeries | null>): IOnAirSeries | undefined => {
+    return seriesRow.find(series => series?.id === expandedSeriesID.value) ?? undefined;
+};
+
+const isLastSeriesForWeekday = (series: IOnAirSeries, weekday: number): boolean => {
+    return seriesByWeekday.value[weekday].at(-1)?.id === series.id;
 };
 
 const syncExpandedSeriesFromRoute = async () => {
@@ -187,13 +182,15 @@ const syncExpandedSeriesFromRoute = async () => {
 };
 
 const toggleSeries = async (seriesID: number) => {
+    const targetCard = onAirGridElement.value?.querySelector<HTMLElement>(`[data-series-id="${seriesID}"]`);
+    const targetTopBeforeUpdate = targetCard?.getBoundingClientRect().top;
     const isClosing = expandedSeriesID.value === seriesID;
     await router.push(isClosing ? '/series/on-air' : `/series/on-air/${seriesID}`);
-};
 
-const closeSeries = async (isOpen = false) => {
-    if (isOpen || expandedSeriesID.value === null) return;
-    await router.push('/series/on-air');
+    // 上の行で開いていた詳細が消えても、クリックしたカードの画面内位置を維持する。
+    if (isClosing || targetCard === null || targetCard === undefined || targetTopBeforeUpdate === undefined) return;
+    await nextTick();
+    window.scrollBy(0, targetCard.getBoundingClientRect().top - targetTopBeforeUpdate);
 };
 
 const loadOnAirSeries = async () => {
@@ -205,10 +202,6 @@ const loadOnAirSeries = async () => {
 };
 
 onMounted(async () => {
-    updateDialogOverlayBounds();
-    wrapperResizeObserver = new ResizeObserver(updateDialogOverlayBounds);
-    if (onAirWrapper.value) wrapperResizeObserver.observe(onAirWrapper.value);
-    window.addEventListener('resize', updateDialogOverlayBounds);
     currentTimeUpdateTimer = window.setInterval(() => {
         currentJST.value = dayjsOriginal().tz('Asia/Tokyo');
     }, 60_000);
@@ -216,8 +209,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-    wrapperResizeObserver?.disconnect();
-    window.removeEventListener('resize', updateDialogOverlayBounds);
     if (currentTimeUpdateTimer !== null) window.clearInterval(currentTimeUpdateTimer);
 });
 
@@ -237,19 +228,16 @@ watch(() => route.params.series_id, async () => {
 }
 .on-air-week, .on-air-loading {
     display: grid; grid-template-columns: repeat(7, minmax(180px, 1fr)); gap: 10px;
-    overflow-x: auto; padding-bottom: 8px;
+    padding-bottom: 8px;
 }
 .on-air-loading :deep(.v-skeleton-loader) { aspect-ratio: 16 / 10; min-width: 180px; }
-.on-air-day {
+.on-air-day-header {
     --on-air-day-color: #64748b;
-    min-width: 180px;
-    > header {
-        display: flex; align-items: baseline; justify-content: space-between;
-        padding: 6px 9px; margin-bottom: 8px;
-        color: white; background: var(--on-air-day-color); border-radius: 6px;
-    }
-    > header h3 { font-size: 18px; text-shadow: 0 1px 2px rgb(0 0 0 / 28%); }
-    > header span { color: rgb(255 255 255 / 88%); font-size: 11px; }
+    display: flex; align-items: baseline; justify-content: space-between;
+    min-width: 180px; padding: 6px 9px;
+    color: white; background: var(--on-air-day-color); border-radius: 6px;
+    h3 { font-size: 18px; text-shadow: 0 1px 2px rgb(0 0 0 / 28%); }
+    span { color: rgb(255 255 255 / 88%); font-size: 11px; }
     &--0 { --on-air-day-color: #e76f51; }
     &--1 { --on-air-day-color: #e9a23b; }
     &--2 { --on-air-day-color: #84a83f; }
@@ -257,13 +245,19 @@ watch(() => route.params.series_id, async () => {
     &--4 { --on-air-day-color: #438ac7; }
     &--5 { --on-air-day-color: #646fc1; }
     &--6 { --on-air-day-color: #ff69b4; }
-    &__cards { display: flex; flex-direction: column; gap: 8px; }
-    &__empty { padding: 24px 8px; color: rgb(var(--v-theme-text-darken-1)); text-align: center; }
     &--attention {
-        padding: 5px;
-        margin: -5px;
-        background: rgb(var(--v-theme-primary) / 9%);
-        border-radius: 9px;
+        box-shadow: 0 0 0 3px rgb(var(--v-theme-primary) / 16%);
+    }
+}
+.on-air-cell {
+    min-width: 0;
+    &--last { position: sticky; top: 75px; z-index: 1; align-self: start; }
+}
+.on-air-week {
+    &__episodes { grid-column: 1 / -1; min-width: 0; margin: 2px 0 8px; }
+    &__loading {
+        min-height: 340px; padding: 18px;
+        background: rgb(var(--v-theme-background-lighten-1)); border-radius: 8px;
     }
 }
 .on-air-card {
@@ -299,52 +293,22 @@ watch(() => route.params.series_id, async () => {
         box-shadow: 0 0 0 4px rgb(var(--v-theme-primary) / 12%);
     }
 }
-.on-air-dialog {
-    :deep(.v-overlay__content) {
-        width: min(1480px, calc(100% - 64px));
-        max-width: none;
-        max-height: 84dvh;
-    }
-    &__card {
-        position: relative; overflow-y: auto; padding: 0;
-        background: transparent !important; box-shadow: none !important;
-    }
-    &__close {
-        position: sticky; top: 8px; z-index: 20; align-self: flex-end;
-        margin: 0 8px -48px 0; background: rgb(var(--v-theme-background-lighten-1));
-    }
-    &__loading { min-height: 60vh; padding: 44px 12px 12px; }
-    &__loading :deep(.v-skeleton-loader) { min-height: 52vh; }
-
-    // 通常の Series ページより表示面積が限られるため、外枠だけを広げず内容も一段大きくする。
-    :deep(.series-episode-list) { padding: 22px 26px 24px; }
-    :deep(.series-episode-list__header h3) { font-size: 24px; }
-    :deep(.series-episode-list__bangumi > img) { width: 128px; height: 181px; }
-    :deep(.series-episode-list__bangumi-profile p) { font-size: 13px; }
-    :deep(.series-episode-list__matrix) {
-        grid-template-columns: 64px 94px repeat(var(--episode-column-count), 184px);
-    }
-    :deep(.series-episode-list__channel-logo) {
-        --ch-sprite-width: 56;
-        --ch-sprite-height: 32;
-    }
-    :deep(.series-episode-list__channel-name span) { font-size: 13px; }
-    :deep(.series-episode-list__episode-label span) { font-size: 11px; }
-}
 @include smartphone-vertical {
     .on-air-container { padding: 8px; }
     .on-air-header { align-items: flex-start; padding: 0 8px; }
     .on-air-week, .on-air-loading {
         grid-template-columns: repeat(7, min(36vw, 180px));
         gap: 8px;
+        overflow-x: auto;
         scroll-snap-type: x proximity;
     }
-    .on-air-day {
+    .on-air-day-header {
         min-width: min(36vw, 180px);
+        padding: 5px 7px;
         scroll-snap-align: start;
-        > header { padding: 5px 7px; margin-bottom: 6px; }
-        > header h3 { font-size: 16px; }
+        h3 { font-size: 16px; }
     }
+    .on-air-cell--last { position: static; }
     .on-air-card {
         &__body { right: 7px; bottom: 6px; left: 7px; }
         time { font-size: 14px; }
@@ -352,39 +316,7 @@ watch(() => route.params.series_id, async () => {
         &__meta { margin-top: 3px; font-size: 9px; }
         &__logo { --ch-sprite-width: 30; --ch-sprite-height: 18; --ch-sprite-border-radius: 3; }
     }
-    .on-air-dialog {
-        :deep(.v-overlay__content) {
-            position: absolute;
-            inset: 0;
-            width: 100%;
-            height: 100%;
-            max-height: none;
-            margin: 0;
-        }
-        &__card {
-            width: 100%;
-            min-width: 0;
-            height: 100%;
-            padding: 0;
-            background: rgb(var(--v-theme-background)) !important;
-            border-radius: 0;
-        }
-        &__loading { min-height: 100%; }
-        &__loading :deep(.v-skeleton-loader) { min-height: calc(100dvh - 64px); }
-        :deep(.series-episode-list) { min-height: 100%; padding: 14px 12px 18px; border-radius: 0; }
-        :deep(.series-episode-list__header h3) { font-size: 21px; }
-        :deep(.series-episode-list__bangumi > img) { width: 76px; height: 108px; }
-        :deep(.series-episode-list__bangumi-profile p) { font-size: 12px; }
-        :deep(.series-episode-list__matrix) {
-            grid-template-columns: 52px 56px repeat(var(--episode-column-count), 145px);
-        }
-        :deep(.series-episode-list__channel-logo) {
-            --ch-sprite-width: 44;
-            --ch-sprite-height: 25;
-        }
-        :deep(.series-episode-list__channel-name span) { font-size: 12px; }
-        :deep(.series-episode-list__episode-label span) { font-size: 10px; }
-    }
+    .on-air-week__episodes { min-width: calc(7 * min(36vw, 180px) + 6 * 8px); }
 }
 
 </style>

@@ -39,6 +39,33 @@ REPEAT_BROADCAST_TITLE_PATTERN = re.compile(r'(?:\[再\]|【再】|再放送)')
 ON_AIR_SERIES_GENRES = {'アニメ・特撮', 'ドラマ', 'バラエティ'}
 
 
+def ExtractIntegerEpisodeNumbers(episode_number: str) -> set[int]:
+    """
+    正規化済みの話数表記から、自然話数として欠番判定できる整数を取り出す。
+
+    Args:
+        episode_number (str): RecordedProgram に保存された正規化済み話数。
+
+    Returns:
+        set[int]: 単話・複数話・連続話を展開した整数話数。特別編などは空集合。
+    """
+
+    normalized_episode_number = episode_number.strip()
+    range_match = re.fullmatch(r'(\d+)-(\d+)', normalized_episode_number)
+    if range_match is not None:
+        first_episode = int(range_match.group(1))
+        last_episode = int(range_match.group(2))
+        if first_episode <= last_episode:
+            return set(range(first_episode, last_episode + 1))
+        return set()
+
+    episode_numbers: set[int] = set()
+    for part in re.split(r'[・&／/]', normalized_episode_number):
+        if part.isdigit():
+            episode_numbers.add(int(part))
+    return episode_numbers
+
+
 def ExtractOfficialWebsiteURL(sources: list[str]) -> str | None:
     """
     EPG の公式情報欄から作品または番組の公式 Web サイトを抽出する。
@@ -134,11 +161,16 @@ async def OnAirSeriesListAPI():
     )
     samples_by_series: dict[int, list[dict[str, Any]]] = {}
     sample_keys_by_series: dict[int, set[str]] = {}
+    episode_numbers_by_series: dict[int, set[int]] = {}
     for row in rows:
         series_id = int(row['series_id'])
         samples = samples_by_series.setdefault(series_id, [])
         sample_keys = sample_keys_by_series.setdefault(series_id, set())
         episode_number = str(row['episode_number']).strip() if row['episode_number'] is not None else ''
+        if episode_number:
+            episode_numbers_by_series.setdefault(series_id, set()).update(
+                ExtractIntegerEpisodeNumbers(episode_number),
+            )
         start_time = ParseDatetimeStringToJST(str(row['start_time']))
         sample_key = f'episode:{episode_number}' if episode_number else f'date:{start_time.date().isoformat()}'
 
@@ -222,7 +254,15 @@ async def OnAirSeriesListAPI():
             channel_ids = list(dict.fromkeys(
                 str(sample['channel_id']) for sample in samples if sample['channel_id'] is not None
             )),
-            recorded_programs_count = len(samples),
+            recorded_episodes_count = len(episode_numbers_by_series.get(series_id, set())),
+            missing_episodes_count = (
+                max(episode_numbers_by_series[series_id])
+                - min(episode_numbers_by_series[series_id])
+                + 1
+                - len(episode_numbers_by_series[series_id])
+                if episode_numbers_by_series.get(series_id)
+                else 0
+            ),
             weekday = weekday,
             broadcast_time = f'{hour:02d}:{minute:02d}',
             latest_broadcast_at = latest_broadcast_at,

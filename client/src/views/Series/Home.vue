@@ -191,7 +191,6 @@ const toggleSeries = async (seriesID: number) => {
     const targetCard = series_grid_element.value?.querySelector<HTMLElement>(`[data-series-id="${seriesID}"]`);
     const targetTopBeforeUpdate = targetCard?.getBoundingClientRect().top;
     const isClosingCurrentSeries = expanded_series_id.value === seriesID;
-    expanded_series_id.value = isClosingCurrentSeries ? null : seriesID;
     await router.push({
         path: isClosingCurrentSeries ? '/series/' : `/series/${seriesID}`,
         query: buildSeriesQuery(search_query.value, sort_order.value, current_page.value),

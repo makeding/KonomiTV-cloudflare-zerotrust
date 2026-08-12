@@ -54,23 +54,13 @@ const router = createRouter({
             redirect: to => `/series/${to.params.series_id}`,
         },
         {
-            path: '/series/',
-            name: 'Series Home',
-            component: () => import('@/views/Series/Home.vue'),
-        },
-        {
-            path: '/series/on-air',
+            path: '/series/on-air/:series_id?',
             name: 'On Air Series',
             component: () => import('@/views/Series/OnAir.vue'),
         },
         {
-            path: '/series/on-air/:series_id',
-            name: 'On Air Series Detail',
-            component: () => import('@/views/Series/OnAir.vue'),
-        },
-        {
-            path: '/series/:series_id',
-            name: 'Series Home Detail',
+            path: '/series/:series_id?',
+            name: 'Series Home',
             component: () => import('@/views/Series/Home.vue'),
         },
         {
@@ -214,16 +204,10 @@ const router = createRouter({
         if (savedPosition) {
             // 戻る/進むボタンが押されたときは保存されたスクロール位置を使う
             return savedPosition;
-        } else if (
-            (to.name === 'Series Home' || to.name === 'Series Home Detail') &&
-            (from.name === 'Series Home' || from.name === 'Series Home Detail')
-        ) {
+        } else if (to.name === 'Series Home' && from.name === 'Series Home') {
             // 同じシリーズ一覧上で展開状態だけを切り替える場合は、カードの画面内位置を維持する
             return false;
-        } else if (
-            (to.name === 'On Air Series' || to.name === 'On Air Series Detail') &&
-            (from.name === 'On Air Series' || from.name === 'On Air Series Detail')
-        ) {
+        } else if (to.name === 'On Air Series' && from.name === 'On Air Series') {
             // 放送中一覧でも、展開状態だけの切り替えではスクロール位置を変えない
             return false;
         } else {

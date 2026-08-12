@@ -8,7 +8,10 @@
             <span>{{seriesCountLabel}}</span>
         </div>
         <div v-if="bangumiSubjectId" class="series-episode-list__bangumi">
-            <img v-if="bangumiSubjectImageUrl" :src="bangumiSubjectImageUrl" alt="" loading="lazy" decoding="async">
+            <div class="series-episode-list__bangumi-cover">
+                <img v-if="bangumiSubjectImageUrl" :src="bangumiSubjectImageUrl" alt=""
+                    loading="lazy" decoding="async">
+            </div>
             <div class="series-episode-list__bangumi-profile">
                 <p v-if="japaneseSummary">{{japaneseSummary}}</p>
                 <p v-if="chineseSummary" class="series-episode-list__chinese-summary">{{chineseSummary}}</p>
@@ -17,6 +20,40 @@
                     Bangumi で見る
                     <Icon icon="fluent:open-16-regular" width="13px" />
                 </a>
+            </div>
+            <div v-if="profilePreviewFrames.length > 0" class="series-episode-list__profile-thumbnails"
+                :class="[
+                    `series-episode-list__profile-thumbnails--count-${profilePreviewFrames.length}`,
+                    {'series-episode-list__profile-thumbnails--keyframes': hoveredProgram !== null},
+                ]"
+                @mouseenter="keepEpisodeThumbnailPreview"
+                @mouseleave="scheduleEpisodeThumbnailPreviewReset">
+                <template v-for="(frame, index) in profilePreviewFrames" :key="frame.key">
+                    <a v-if="index === profilePreviewCenterIndex"
+                        class="series-episode-list__profile-thumbnail"
+                        :class="[
+                            `series-episode-list__profile-thumbnail--position-${index}`,
+                            {'series-episode-list__profile-thumbnail--slideshow': hoveredProgram === null},
+                        ]"
+                        :style="getThumbnailStyle(frame.program, frame.tileIndex)"
+                        :href="router.resolve(getEpisodeWatchRoute(frame.program, frame.tileIndex)).href"
+                        @click="openProfileCenterFrame($event, frame.program, frame.tileIndex)">
+                        <span v-if="frame.tileIndex !== null">{{formatTileTime(frame.program, frame.tileIndex)}}</span>
+                    </a>
+                    <button v-else type="button" class="series-episode-list__profile-thumbnail"
+                        :class="`series-episode-list__profile-thumbnail--position-${index}`"
+                        :style="getThumbnailStyle(frame.program, frame.tileIndex)"
+                        @click="selectProfileSideFrame(frame.program, frame.tileIndex)">
+                        <span v-if="frame.tileIndex !== null">{{formatTileTime(frame.program, frame.tileIndex)}}</span>
+                    </button>
+                </template>
+                <div v-if="hoveredProgram && hoveredTileIndex !== null"
+                    class="series-episode-list__profile-seekbar">
+                    <input type="range" min="0" :max="profileSeekbarMaxTileIndex"
+                        :value="hoveredTileIndex" aria-label="キーフレーム位置"
+                        @input="onProfileSeekbarInput">
+                    <span>{{formatTileTime(hoveredProgram, hoveredTileIndex)}}</span>
+                </div>
             </div>
         </div>
         <div v-if="is_loading" class="series-episode-list__loading">
@@ -30,7 +67,7 @@
                     class="series-episode-list__column-header">
                     {{slot.label}}
                 </div>
-                <template v-for="channel_row in episode_matrix.rows" :key="channel_row.id">
+                <template v-for="(channel_row, row_index) in episode_matrix.rows" :key="channel_row.id">
                     <div class="series-episode-list__channel-logo-cell">
                         <div v-if="channel_row.channel_id" class="series-episode-list__channel-logo">
                             <div class="ch-sprite" :chid="channel_row.channel_id">
@@ -48,22 +85,37 @@
                     <template v-for="(program, slot_index) in channel_row.programs"
                         :key="episode_matrix.slots[slot_index].key">
                         <div v-if="program" class="series-episode-list__episode">
-                            <router-link v-ripple class="series-episode-list__episode-link"
-                                :to="`/videos/watch/${program.id}`">
+                            <a v-ripple class="series-episode-list__episode-link"
+                                :href="router.resolve(getEpisodeWatchRoute(program)).href"
+                                @click.left.exact.prevent="openEpisodeNormally(program.id)"
+                                @mousemove="onEpisodeThumbnailMouseMove($event, program)"
+                                @mouseleave="onEpisodeThumbnailMouseLeave(program.id)">
                                 <img loading="lazy" decoding="async"
                                     :src="`${Utils.api_base_url}/videos/${program.id}/thumbnail`"
                                     alt="">
+                                <div v-if="hoveredProgramID === program.id && hoveredTileIndex !== null"
+                                    class="series-episode-list__episode-tile-preview"
+                                    :style="getThumbnailStyle(program, hoveredTileIndex)"></div>
+                                <div v-if="hoveredProgramID === program.id && hoveredTileIndex !== null"
+                                    class="series-episode-list__episode-hover-position"
+                                    :class="{'series-episode-list__episode-hover-position--right-half':
+                                        hoveredPointerPositionRatio > 0.5}"
+                                    :style="{left: `${hoveredPointerPositionRatio * 100}%`}">
+                                    <span>{{formatTileTime(program, hoveredTileIndex)}}</span>
+                                </div>
                                 <div class="series-episode-list__episode-label">
                                     <span>{{getEpisodeCaption(program)}}</span>
                                 </div>
-                            </router-link>
+                            </a>
                             <RecordedProgramMenu :program="program" variant="Thumbnail"
                                 @deleted="onProgramDeleted" />
                         </div>
                         <div v-else class="series-episode-list__episode-placeholder"
                             :class="{'series-episode-list__episode-placeholder--missing':
-                                episode_matrix.slots[slot_index].key.startsWith('episode:')}">
-                            <span v-if="episode_matrix.slots[slot_index].key.startsWith('episode:')">未録画</span>
+                                row_index === 0 &&
+                                missingEpisodeSlotKeys.has(episode_matrix.slots[slot_index].key)}">
+                            <span v-if="row_index === 0 &&
+                                missingEpisodeSlotKeys.has(episode_matrix.slots[slot_index].key)">未録画</span>
                         </div>
                     </template>
                 </template>
@@ -73,7 +125,8 @@
 </template>
 <script lang="ts" setup>
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 import RecordedProgramMenu from '@/components/Videos/RecordedProgramMenu.vue';
 import { IRecordedProgram } from '@/services/Videos';
@@ -90,6 +143,7 @@ const props = defineProps<{
     bangumiSubjectSummary: string | null;
     bangumiSubjectImageUrl: string | null;
 }>();
+const router = useRouter();
 
 interface IEpisodeSlot {
     key: string;
@@ -108,6 +162,23 @@ const programs = ref<IRecordedProgram[]>([]);
 const total_programs = ref(0);
 const is_loading = ref(true);
 const episode_number_collator = new Intl.Collator('ja', { numeric: true });
+const activeProfileThumbnailIndex = ref(0);
+const activeProfileRandomFrame = ref<{programID: number; tileIndex: number} | null>(null);
+const profileRepresentativeRoundCount = ref(0);
+const profileRandomFrameCount = ref(0);
+const hoveredProgramID = ref<number | null>(null);
+const hoveredTileIndex = ref<number | null>(null);
+const hoveredPointerPositionRatio = ref(0);
+let profileThumbnailTimerID: number | null = null;
+let episodeThumbnailPreviewResetTimerID: number | null = null;
+let episodeThumbnailPreviewAnimationFrameID: number | null = null;
+let episodeThumbnailPreviewActivationTimerID: number | null = null;
+const profileRandomProgramIDs = new Set<number>();
+let pendingEpisodeThumbnailPreview: {
+    programID: number;
+    tileIndex: number;
+    positionRatio: number;
+} | null = null;
 
 const programSummary = computed(() => props.description.trim());
 const bangumiSummary = computed(() => props.bangumiSubjectSummary?.trim() ?? '');
@@ -124,6 +195,229 @@ const japaneseSummary = computed(() => {
         : programSummary.value;
 });
 const chineseSummary = computed(() => splitBangumiSummary.value.chinese);
+
+// 右側の余白には、同じ話数の別局版を重ねず最近の異なる話だけを順番に表示する。
+const profileThumbnailPrograms = computed(() => {
+    const uniquePrograms: IRecordedProgram[] = [];
+    const observedSlots = new Set<string>();
+    for (const program of [...programs.value].reverse()) {
+        const slotKey = getEpisodeSlots(program)[0]?.key ?? `program:${program.id}`;
+        if (observedSlots.has(slotKey)) continue;
+        observedSlots.add(slotKey);
+        uniquePrograms.push(program);
+        if (uniquePrograms.length === 5) break;
+    }
+    return uniquePrograms;
+});
+const hoveredProgram = computed(() => {
+    if (hoveredProgramID.value === null) return null;
+    return programs.value.find(program => program.id === hoveredProgramID.value) ?? null;
+});
+
+// 通常時は異なる回の代表画像を、hover 中は同じ回の前後タイルを Cover Flow 風に並べる。
+const profilePreviewFrames = computed(() => {
+    const program = hoveredProgram.value;
+    const centerTileIndex = hoveredTileIndex.value;
+    const tileInfo = program?.recorded_video.thumbnail_info?.tile;
+    if (program && centerTileIndex !== null && tileInfo) {
+        // 左右の補助フレームは隣接タイルでは変化が乏しいため、動画尺の 1/60 を基準に 15～45 秒離す。
+        // 30 分番組なら約 30 秒となり、現在位置を見失わず別シーンを比較できる。
+        const previewIntervalSeconds = Math.min(45, Math.max(15, program.recorded_video.duration / 60));
+        const previewTileOffset = Math.max(1, Math.round(previewIntervalSeconds / tileInfo.interval_sec));
+        const tileIndexes = [
+            Math.max(0, centerTileIndex - previewTileOffset * 2),
+            Math.max(0, centerTileIndex - previewTileOffset),
+            centerTileIndex,
+            Math.min(tileInfo.total_tiles - 1, centerTileIndex + previewTileOffset),
+            Math.min(tileInfo.total_tiles - 1, centerTileIndex + previewTileOffset * 2),
+        ];
+        return tileIndexes.map((tileIndex, position) => ({
+            key: `${program.id}:${tileIndex}:${position}`,
+            program,
+            tileIndex,
+        }));
+    }
+    const previewPrograms = profileThumbnailPrograms.value;
+    if (previewPrograms.length === 0) return [];
+    const randomFrame = activeProfileRandomFrame.value;
+    if (randomFrame !== null) {
+        const randomProgram = previewPrograms.find(program => program.id === randomFrame.programID);
+        if (randomProgram) {
+            return [{
+                key: `${randomProgram.id}:${randomFrame.tileIndex}:random`,
+                program: randomProgram,
+                tileIndex: randomFrame.tileIndex,
+            }];
+        }
+    }
+    const previewProgram = previewPrograms[activeProfileThumbnailIndex.value % previewPrograms.length];
+    return [{
+        key: `${previewProgram.id}:representative`,
+        program: previewProgram,
+        tileIndex: null,
+    }];
+});
+const profilePreviewCenterIndex = computed(() => Math.floor(profilePreviewFrames.value.length / 2));
+const profileSeekbarMaxTileIndex = computed(() => {
+    return Math.max(0, (hoveredProgram.value?.recorded_video.thumbnail_info?.tile.total_tiles ?? 1) - 1);
+});
+
+// mousemove / range input は非常に高頻度で発火するため、表示更新は描画フレームごとに最新の位置だけを反映する。
+const scheduleEpisodeThumbnailPreviewUpdate = (
+    programID: number,
+    tileIndex: number,
+    positionRatio: number,
+) => {
+    pendingEpisodeThumbnailPreview = {programID, tileIndex, positionRatio};
+    if (episodeThumbnailPreviewAnimationFrameID !== null) return;
+    episodeThumbnailPreviewAnimationFrameID = window.requestAnimationFrame(() => {
+        episodeThumbnailPreviewAnimationFrameID = null;
+        const preview = pendingEpisodeThumbnailPreview;
+        pendingEpisodeThumbnailPreview = null;
+        if (preview === null) return;
+        keepEpisodeThumbnailPreview();
+        hoveredProgramID.value = preview.programID;
+        hoveredPointerPositionRatio.value = preview.positionRatio;
+        hoveredTileIndex.value = preview.tileIndex;
+    });
+};
+
+// デスクトップではサムネイル上の横位置をタイル番号へ対応させ、動画を開かず内容を拾い見できるようにする。
+// タッチ端末では横スクロール操作と競合するため、hover と精密ポインターの両方を持つ端末だけで有効にする。
+const onEpisodeThumbnailMouseMove = (event: MouseEvent, program: IRecordedProgram) => {
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    const tileInfo = program.recorded_video.thumbnail_info?.tile;
+    if (!tileInfo || tileInfo.total_tiles <= 0) return;
+    const element = event.currentTarget as HTMLElement;
+    const rect = element.getBoundingClientRect();
+    const positionRatio = Math.min(0.999999, Math.max(0, (event.clientX - rect.left) / rect.width));
+    pendingEpisodeThumbnailPreview = {
+        programID: program.id,
+        tileIndex: Math.floor(positionRatio * tileInfo.total_tiles),
+        positionRatio,
+    };
+    if (hoveredProgramID.value === program.id) {
+        scheduleEpisodeThumbnailPreviewUpdate(
+            program.id,
+            pendingEpisodeThumbnailPreview.tileIndex,
+            positionRatio,
+        );
+        return;
+    }
+    // 一覧を横切っただけでは Finder 表示へ切り替えず、同じカード上に短時間留まった時だけ有効化する。
+    if (episodeThumbnailPreviewActivationTimerID !== null) return;
+    episodeThumbnailPreviewActivationTimerID = window.setTimeout(() => {
+        episodeThumbnailPreviewActivationTimerID = null;
+        const preview = pendingEpisodeThumbnailPreview;
+        if (preview === null || preview.programID !== program.id) return;
+        scheduleEpisodeThumbnailPreviewUpdate(
+            preview.programID,
+            preview.tileIndex,
+            preview.positionRatio,
+        );
+    }, 180);
+};
+
+const keepEpisodeThumbnailPreview = () => {
+    if (episodeThumbnailPreviewResetTimerID === null) return;
+    window.clearTimeout(episodeThumbnailPreviewResetTimerID);
+    episodeThumbnailPreviewResetTimerID = null;
+};
+
+const scheduleEpisodeThumbnailPreviewReset = () => {
+    keepEpisodeThumbnailPreview();
+    episodeThumbnailPreviewResetTimerID = window.setTimeout(() => {
+        hoveredProgramID.value = null;
+        hoveredTileIndex.value = null;
+        hoveredPointerPositionRatio.value = 0;
+        episodeThumbnailPreviewResetTimerID = null;
+    }, 3000);
+};
+
+const onEpisodeThumbnailMouseLeave = (programID: number) => {
+    pendingEpisodeThumbnailPreview = null;
+    if (episodeThumbnailPreviewActivationTimerID !== null) {
+        window.clearTimeout(episodeThumbnailPreviewActivationTimerID);
+        episodeThumbnailPreviewActivationTimerID = null;
+    }
+    if (episodeThumbnailPreviewAnimationFrameID !== null) {
+        window.cancelAnimationFrame(episodeThumbnailPreviewAnimationFrameID);
+        episodeThumbnailPreviewAnimationFrameID = null;
+    }
+    if (hoveredProgramID.value === programID) scheduleEpisodeThumbnailPreviewReset();
+};
+
+const getThumbnailStyle = (program: IRecordedProgram, tileIndex: number | null) => {
+    const tileInfo = program.recorded_video.thumbnail_info?.tile;
+    if (!tileInfo || tileIndex === null) {
+        return {backgroundImage: `url(${Utils.api_base_url}/videos/${program.id}/thumbnail)`};
+    }
+    const column = tileIndex % tileInfo.column_count;
+    const row = Math.floor(tileIndex / tileInfo.column_count);
+    return {
+        backgroundImage: `url(${Utils.api_base_url}/videos/${program.id}/thumbnail/tiled)`,
+        backgroundPosition: `${tileInfo.column_count > 1 ? column / (tileInfo.column_count - 1) * 100 : 0}% ${
+            tileInfo.row_count > 1 ? row / (tileInfo.row_count - 1) * 100 : 0}%`,
+        backgroundSize: `${tileInfo.column_count * 100}% ${tileInfo.row_count * 100}%`,
+    };
+};
+
+const formatTileTime = (program: IRecordedProgram, tileIndex: number): string => {
+    const tileInfo = program.recorded_video.thumbnail_info?.tile;
+    const seconds = Math.min(program.recorded_video.duration, tileIndex * (tileInfo?.interval_sec ?? 0));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor(seconds % 3600 / 60);
+    const remainingSeconds = Math.floor(seconds % 60);
+    return hours > 0
+        ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`
+        : `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+};
+
+// href 自体には hover 中の秒数を含め、ブラウザー標準の右クリック・新規タブでその位置から開けるようにする。
+const getEpisodeWatchRoute = (program: IRecordedProgram, explicitTileIndex: number | null = null) => {
+    const tileInfo = program.recorded_video.thumbnail_info?.tile;
+    const tileIndex = explicitTileIndex ?? (hoveredProgramID.value === program.id ? hoveredTileIndex.value : null);
+    return {
+        path: `/videos/watch/${program.id}`,
+        query: tileInfo && tileIndex !== null ? {t: String(tileIndex * tileInfo.interval_sec)} : {},
+    };
+};
+
+// 通常の左クリックは従来通り視聴履歴を優先し、hover プレビューの位置を再生開始位置へ持ち込まない。
+const openEpisodeNormally = (programID: number) => {
+    router.push(`/videos/watch/${programID}`);
+};
+
+// Cover Flow の中央だけを動画へのリンクとし、左右は現在フレームを送るための操作に限定する。
+const openProfileCenterFrame = (event: MouseEvent, program: IRecordedProgram, tileIndex: number | null) => {
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    router.push(getEpisodeWatchRoute(program, tileIndex));
+};
+
+const selectProfileSideFrame = (program: IRecordedProgram, tileIndex: number | null) => {
+    keepEpisodeThumbnailPreview();
+    if (hoveredProgram.value && tileIndex !== null) {
+        hoveredProgramID.value = program.id;
+        hoveredTileIndex.value = tileIndex;
+        hoveredPointerPositionRatio.value = profileSeekbarMaxTileIndex.value > 0
+            ? tileIndex / profileSeekbarMaxTileIndex.value
+            : 0;
+        return;
+    }
+    const programIndex = profileThumbnailPrograms.value.findIndex(candidate => candidate.id === program.id);
+    if (programIndex >= 0) activeProfileThumbnailIndex.value = programIndex;
+};
+
+const onProfileSeekbarInput = (event: Event) => {
+    const tileIndex = Number((event.currentTarget as HTMLInputElement).value);
+    const programID = hoveredProgramID.value;
+    if (programID === null) return;
+    const positionRatio = profileSeekbarMaxTileIndex.value > 0
+        ? tileIndex / profileSeekbarMaxTileIndex.value
+        : 0;
+    scheduleEpisodeThumbnailPreviewUpdate(programID, tileIndex, positionRatio);
+};
 
 const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
     if (program.episode_number) {
@@ -191,31 +485,36 @@ const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(
         id: group.id,
         channel_id: group.channel_id,
         name: group.name,
-        episode_label: formatEpisodeCoverage(slots, group.programs),
+        episode_label: formatEpisodeCoverage(group.programs),
         programs: slots.map(slot => group.programs.get(slot.key) ?? null),
     }));
     return { slots, rows };
 });
 
 // 同じ話数の別局録画は数えず、視聴者が「どこまで録れているか」を一目で把握できる表記にする。
-const formatEpisodeCoverage = (
-    slots: IEpisodeSlot[],
-    programsBySlot: Map<string, IRecordedProgram>,
-): string => {
-    const episodeSlots = slots.filter(slot => slot.key.startsWith('episode:'));
-    if (episodeSlots.length === 0) return `${programsBySlot.size}件の録画`;
-    const recordedCount = episodeSlots.filter(slot => programsBySlot.has(slot.key)).length;
-    const missingCount = episodeSlots.length - recordedCount;
-    return missingCount > 0
-        ? `${recordedCount}話録画・${missingCount}話未録画`
-        : `${recordedCount}話録画`;
+const formatEpisodeCoverage = (programsBySlot: Map<string, IRecordedProgram>): string => {
+    const recordedEpisodeCount = [...programsBySlot.keys()].filter(key => key.startsWith('episode:')).length;
+    return recordedEpisodeCount > 0 ? `${recordedEpisodeCount}話録画` : `${programsBySlot.size}件の録画`;
 };
+
+// どの放送局にも録画が存在しない自然話数だけを、作品全体の「未録画」として扱う。
+// 別局版を視聴できる話数まで各局行で未録画扱いすると、実際には困っていない欠番が大量に表示される。
+const missingEpisodeSlotKeys = computed(() => {
+    const recordedSlotKeys = new Set(programs.value.flatMap(program => getEpisodeSlots(program).map(slot => slot.key)));
+    return new Set(episode_matrix.value.slots
+        .filter(slot => slot.key.startsWith('episode:') && !recordedSlotKeys.has(slot.key))
+        .map(slot => slot.key));
+});
 
 const seriesCountLabel = computed(() => {
     const episodeSlots = episode_matrix.value.slots.filter(slot => slot.key.startsWith('episode:'));
     if (episodeSlots.length === 0) return `${total_programs.value}件の録画`;
     const latestEpisode = episodeSlots[episodeSlots.length - 1].key.slice('episode:'.length);
-    return `第${latestEpisode}話まで`;
+    const recordedEpisodeCount = episodeSlots.length - missingEpisodeSlotKeys.value.size;
+    const missingLabel = missingEpisodeSlotKeys.value.size > 0
+        ? `・${missingEpisodeSlotKeys.value.size}話未録画`
+        : '';
+    return `第${latestEpisode}話まで・${recordedEpisodeCount}話録画${missingLabel}`;
 });
 
 const getEpisodeCaption = (program: IRecordedProgram): string => {
@@ -248,7 +547,59 @@ const fetchPrograms = async () => {
     is_loading.value = false;
 };
 
-onMounted(fetchPrograms);
+// 各話の代表画像を 3 周してから、3 回だけランダムな話の中盤キーフレームを挟んで変化を付ける。
+// 初期表示直後には tiled thumbnail を要求せず、通常の代表画像だけで十分な時間を保つ。
+const advanceProfileSlideshow = () => {
+    const previewPrograms = profileThumbnailPrograms.value;
+    if (previewPrograms.length === 0 || hoveredProgram.value !== null) return;
+    if (activeProfileRandomFrame.value === null) {
+        if (activeProfileThumbnailIndex.value < previewPrograms.length - 1) {
+            activeProfileThumbnailIndex.value += 1;
+            return;
+        }
+        profileRepresentativeRoundCount.value += 1;
+        activeProfileThumbnailIndex.value = 0;
+        if (profileRepresentativeRoundCount.value < 3) return;
+    }
+    if (profileRandomFrameCount.value < 3) {
+        const candidates = previewPrograms.filter(program => {
+            return !profileRandomProgramIDs.has(program.id) &&
+                (program.recorded_video.thumbnail_info?.tile.total_tiles ?? 0) > 2;
+        });
+        if (candidates.length > 0) {
+            const program = candidates[Math.floor(Math.random() * candidates.length)];
+            const totalTiles = program.recorded_video.thumbnail_info!.tile.total_tiles;
+            profileRandomProgramIDs.add(program.id);
+            activeProfileRandomFrame.value = {
+                programID: program.id,
+                tileIndex: 1 + Math.floor(Math.random() * (totalTiles - 2)),
+            };
+            profileRandomFrameCount.value += 1;
+            return;
+        }
+    }
+    activeProfileThumbnailIndex.value = 0;
+    activeProfileRandomFrame.value = null;
+    profileRepresentativeRoundCount.value = 0;
+    profileRandomFrameCount.value = 0;
+    profileRandomProgramIDs.clear();
+};
+
+onMounted(() => {
+    fetchPrograms();
+    profileThumbnailTimerID = window.setInterval(advanceProfileSlideshow, 4000);
+});
+
+onBeforeUnmount(() => {
+    if (profileThumbnailTimerID !== null) window.clearInterval(profileThumbnailTimerID);
+    if (episodeThumbnailPreviewResetTimerID !== null) window.clearTimeout(episodeThumbnailPreviewResetTimerID);
+    if (episodeThumbnailPreviewAnimationFrameID !== null) {
+        window.cancelAnimationFrame(episodeThumbnailPreviewAnimationFrameID);
+    }
+    if (episodeThumbnailPreviewActivationTimerID !== null) {
+        window.clearTimeout(episodeThumbnailPreviewActivationTimerID);
+    }
+});
 
 </script>
 <style lang="scss" scoped>
@@ -308,27 +659,35 @@ onMounted(fetchPrograms);
     }
 
     &__bangumi {
-        display: flex;
+        display: grid;
+        grid-template-columns: 112px minmax(240px, 68ch) minmax(280px, 1fr);
+        align-items: start;
         gap: 12px;
         margin-bottom: 16px;
         padding: 10px;
         background: rgb(var(--v-theme-background-lighten-2) / 45%);
         border-radius: 7px;
-        > img {
-            flex: 0 0 auto;
-            width: 112px;
-            height: 158px;
-            object-fit: cover;
-            border-radius: 5px;
-            @include smartphone-vertical {
-                width: 76px;
-                height: 108px;
-            }
+        @include tablet-vertical {
+            grid-template-columns: 112px minmax(0, 1fr);
+        }
+        @include smartphone-vertical {
+            grid-template-columns: 76px minmax(0, 1fr);
+        }
+    }
+
+    &__bangumi-cover {
+        min-width: 0;
+        > img { display: block; width: 112px; height: 158px; object-fit: cover; border-radius: 5px; }
+        @include smartphone-vertical {
+            > img { width: 76px; height: 108px; }
         }
     }
 
     &__bangumi-profile {
+        display: flex;
+        flex-direction: column;
         min-width: 0;
+        min-height: 158px;
         max-width: 68ch;
         p {
             color: rgb(var(--v-theme-text-darken-1));
@@ -344,14 +703,193 @@ onMounted(fetchPrograms);
             font-family: 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
             opacity: 0.82;
         }
-        a {
-            display: inline-flex;
+        > a {
+            display: flex;
             align-items: center;
+            align-self: flex-start;
             gap: 3px;
+            margin-top: auto;
             color: rgb(var(--v-theme-primary));
-            font-size: 12px;
+            font-size: 11px;
             text-decoration: none;
         }
+        @include smartphone-vertical { min-height: 108px; }
+    }
+
+    &__profile-thumbnails {
+        position: relative;
+        align-self: start;
+        justify-self: stretch;
+        width: 100%;
+        max-width: 440px;
+        height: 220px;
+        margin: 0 auto;
+        perspective: 700px;
+        @include tablet-vertical { display: none; }
+    }
+
+    &__profile-thumbnails--keyframes {
+        max-width: 390px;
+    }
+
+    &__profile-seekbar {
+        position: absolute;
+        right: 18%;
+        bottom: 8%;
+        left: 18%;
+        z-index: 6;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        opacity: 0.48;
+        transition: opacity 160ms ease;
+        &:hover,
+        &:focus-within { opacity: 1; }
+        input {
+            appearance: none;
+            width: 100%;
+            height: 16px;
+            margin: 0;
+            cursor: pointer;
+            background: transparent;
+            &::-webkit-slider-runnable-track {
+                height: 2px;
+                background: linear-gradient(90deg,
+                    rgb(var(--v-theme-primary) / 62%),
+                    rgb(var(--v-theme-primary) / 20%));
+                border-radius: 1px;
+            }
+            &::-webkit-slider-thumb {
+                width: 3px;
+                height: 15px;
+                margin-top: -6px;
+                appearance: none;
+                background: rgb(var(--v-theme-primary));
+                border: 0;
+                border-radius: 2px;
+                box-shadow: 0 0 5px rgb(var(--v-theme-primary) / 55%);
+            }
+            &::-moz-range-track {
+                height: 2px;
+                background: rgb(var(--v-theme-primary) / 28%);
+                border: 0;
+                border-radius: 1px;
+            }
+            &::-moz-range-progress {
+                height: 2px;
+                background: rgb(var(--v-theme-primary) / 62%);
+            }
+            &::-moz-range-thumb {
+                width: 3px;
+                height: 15px;
+                background: rgb(var(--v-theme-primary));
+                border: 0;
+                border-radius: 2px;
+            }
+        }
+        > span {
+            align-self: flex-end;
+            color: rgb(var(--v-theme-text-darken-1));
+            font-size: 8px;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+            text-align: right;
+        }
+    }
+
+    &__profile-thumbnail {
+        position: absolute;
+        top: 50%;
+        left: 16%;
+        z-index: 1;
+        width: 68%;
+        aspect-ratio: 16 / 9;
+        padding: 0;
+        cursor: pointer;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: cover;
+        border: 1px solid rgb(var(--v-theme-text) / 22%);
+        border-radius: 7px;
+        box-shadow: 0 5px 15px rgb(0 0 0 / 36%);
+        transition: background-position 80ms linear, transform 180ms ease, opacity 180ms ease;
+        span {
+            position: absolute;
+            right: 6px;
+            bottom: 5px;
+            padding: 1px 5px;
+            color: white;
+            font-size: 10px;
+            line-height: 1.45;
+            text-shadow: 0 1px 2px black;
+            background: rgb(0 0 0 / 65%);
+            border-radius: 3px;
+        }
+        &--position-0 { transform: translate(-62%, -50%) rotateY(20deg) scale(0.66); opacity: 0.52; }
+        &--position-1 { z-index: 2; transform: translate(-36%, -50%) rotateY(14deg) scale(0.82); opacity: 0.76; }
+        &--position-2 { z-index: 4; transform: translate(0, -50%); }
+        &--position-3 { z-index: 2; transform: translate(36%, -50%) rotateY(-14deg) scale(0.82); opacity: 0.76; }
+        &--position-4 { transform: translate(62%, -50%) rotateY(-20deg) scale(0.66); opacity: 0.52; }
+        &--slideshow {
+            animation: profile-thumbnail-fade-in 420ms ease-out both;
+            @media (prefers-reduced-motion: reduce) { animation: none; }
+        }
+    }
+
+    &__profile-thumbnails--count-1 &__profile-thumbnail--position-0 {
+        left: 0;
+        z-index: 3;
+        width: 100%;
+        aspect-ratio: 2.15 / 1;
+        transform: translate(0, -50%);
+        opacity: 1;
+    }
+
+    &__profile-thumbnails--count-2 &__profile-thumbnail--position-0 {
+        transform: translate(-24%, -50%) rotateY(12deg) scale(0.9);
+        opacity: 0.82;
+    }
+
+    &__profile-thumbnails--count-2 &__profile-thumbnail--position-1 {
+        transform: translate(24%, -50%) rotateY(-12deg) scale(0.9);
+    }
+
+    &__profile-thumbnails--count-3 &__profile-thumbnail--position-0 {
+        transform: translate(-42%, -50%) rotateY(16deg) scale(0.82);
+        opacity: 0.72;
+    }
+
+    &__profile-thumbnails--count-3 &__profile-thumbnail--position-1 {
+        z-index: 4;
+        transform: translate(0, -50%);
+        opacity: 1;
+    }
+
+    &__profile-thumbnails--count-3 &__profile-thumbnail--position-2 {
+        transform: translate(42%, -50%) rotateY(-16deg) scale(0.82);
+        opacity: 0.72;
+    }
+
+    &__profile-thumbnails--count-4 &__profile-thumbnail--position-0 {
+        transform: translate(-52%, -50%) rotateY(18deg) scale(0.72);
+        opacity: 0.6;
+    }
+
+    &__profile-thumbnails--count-4 &__profile-thumbnail--position-1 {
+        z-index: 4;
+        transform: translate(-12%, -50%);
+        opacity: 1;
+    }
+
+    &__profile-thumbnails--count-4 &__profile-thumbnail--position-2 {
+        transform: translate(25%, -50%) rotateY(-12deg) scale(0.84);
+        opacity: 0.78;
+    }
+
+    &__profile-thumbnails--count-4 &__profile-thumbnail--position-3 {
+        transform: translate(53%, -50%) rotateY(-18deg) scale(0.7);
+        opacity: 0.58;
     }
 
     &__matrix-scroll {
@@ -471,6 +1009,42 @@ onMounted(fetchPrograms);
         }
     }
 
+    &__episode-tile-preview {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        background-repeat: no-repeat;
+        transition: background-position 70ms linear;
+    }
+
+    &__episode-hover-position {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        z-index: 3;
+        width: 1px;
+        pointer-events: none;
+        background: rgb(var(--v-theme-primary));
+        box-shadow: 0 0 5px rgb(var(--v-theme-primary));
+        span {
+            position: absolute;
+            top: 5px;
+            left: 4px;
+            padding: 1px 4px;
+            color: white;
+            font-size: 9px;
+            line-height: 1.45;
+            white-space: nowrap;
+            text-shadow: 0 1px 2px black;
+            background: rgb(0 0 0 / 70%);
+            border-radius: 3px;
+        }
+        &--right-half span {
+            right: 4px;
+            left: auto;
+        }
+    }
+
     &__episode-placeholder {
         background: rgb(var(--v-theme-background-lighten-2) / 34%);
         border: 1px dashed rgb(var(--v-theme-text-darken-1) / 18%);
@@ -493,7 +1067,7 @@ onMounted(fetchPrograms);
         right: 8px;
         bottom: 6px;
         left: 8px;
-        z-index: 1;
+        z-index: 2;
         min-width: 0;
         text-shadow: 0 1px 3px rgb(0 0 0 / 85%);
         span {
@@ -503,6 +1077,17 @@ onMounted(fetchPrograms);
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+    }
+}
+
+@keyframes profile-thumbnail-fade-in {
+    from {
+        filter: brightness(0.82);
+        opacity: 0;
+    }
+    to {
+        filter: brightness(1);
+        opacity: 1;
     }
 }
 

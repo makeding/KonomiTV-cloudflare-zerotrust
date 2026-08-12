@@ -102,9 +102,22 @@ export default defineComponent({
             this.playerStore.is_offline_playback = offline_video !== null;
             this.playerStore.offline_video = offline_video;
 
+            // Series のキーフレームプレビューなどから秒数が明示された場合は、視聴履歴より優先して再生を開始する。
+            // 不正な値は無視し、従来通り PlayerController 側の視聴履歴・録画開始マージンの順で復帰させる。
+            const seek_query = Array.isArray(this.$route.query.t) ? this.$route.query.t[0] : this.$route.query.t;
+            const requested_seek_seconds = typeof seek_query === 'string' ? Number(seek_query) : null;
+            const seek_seconds = requested_seek_seconds !== null && Number.isFinite(requested_seek_seconds) &&
+                requested_seek_seconds >= 0
+                ? Math.min(requested_seek_seconds, recorded_program.recorded_video.duration)
+                : null;
+
             // PlayerController を初期化
             player_controller = new PlayerController('Video');
-            await player_controller.init();
+            await player_controller.init({
+                default_quality: null,
+                playback_rate: null,
+                seek_seconds,
+            });
         },
 
         // 再生セッションを破棄する
