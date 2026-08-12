@@ -17,11 +17,12 @@ router = APIRouter(
 )
 
 # ページングで一度に取得するシリーズ番組の数
-PAGE_SIZE = 30
+PAGE_SIZE = 50
 
 # EPG の公式情報欄から番組公式サイトだけを選び、SNS や配信サービスへのリンクは除外する。
 OFFICIAL_WEBSITE_URL_PATTERN = re.compile(r'https?://[^\s<>"\'）)】]+')
 NON_OFFICIAL_WEBSITE_HOSTS = {
+    'bs4.jp',
     'instagram.com',
     'tiktok.com',
     'tver.jp',
@@ -63,7 +64,7 @@ async def SeriesListAPI(
     page: Annotated[int, Query(description='ページ番号。')] = 1,
 ):
     """
-    すべてのシリーズ番組を一度に 30 件ずつ取得する。<br>
+    すべてのシリーズ番組を一度に 50 件ずつ取得する。<br>
     order には "desc" か "asc" を指定する。<br>
     page (ページ番号) には 1 以上の整数を指定する。
     """
@@ -83,7 +84,7 @@ async def SeriesSearchAPI(
     page: Annotated[int, Query(description='ページ番号。')] = 1,
 ):
     """
-    指定されたキーワードでシリーズ番組を一度に 30 件ずつ検索する。<br>
+    指定されたキーワードでシリーズ番組を一度に 50 件ずつ検索する。<br>
     キーワードは title または description のいずれかに部分一致するシリーズ番組を検索する。<br>
     order には "desc" か "asc" を指定する。<br>
     page (ページ番号) には 1 以上の整数を指定する。

@@ -23,6 +23,13 @@ class SeriesRouterTest(unittest.TestCase):
             'https://tver.jp/series/example\nhttps://www.youtube.com/@example\nhttps://x.com/example',
         ]))
 
+    def test_broadcaster_program_page_is_not_official_website(self) -> None:
+        """放送局の番組ページは作品公式サイトとして公開しない。"""
+
+        self.assertIsNone(ExtractOfficialWebsiteURL([
+            '番組ホームページ https://www.bs4.jp/magilumiere2/',
+        ]))
+
 
 if __name__ == '__main__':
     unittest.main()

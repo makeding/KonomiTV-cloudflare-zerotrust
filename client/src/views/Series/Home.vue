@@ -72,7 +72,7 @@
                         class="series-pagination"
                         active-color="primary"
                         density="comfortable"
-                        :length="Math.ceil(total_series / 30)"
+                        :length="Math.ceil(total_series / 50)"
                         :total-visible="Utils.isSmartphoneVertical() ? 5 : 7"
                         @update:model-value="updatePage" />
                 </div>
@@ -178,7 +178,7 @@ onMounted(async () => {
 
 .series-home-container {
     width: 100%;
-    max-width: 1440px;
+    max-width: 1800px;
     padding: 20px;
     margin: 0 auto;
     @include smartphone-horizontal {
@@ -195,6 +195,8 @@ onMounted(async () => {
         gap: 16px;
         margin-bottom: 20px;
         @include smartphone-vertical {
+            flex-wrap: wrap;
+            gap: 8px;
             padding: 0 8px;
         }
     }
@@ -215,18 +217,32 @@ onMounted(async () => {
     &__sort {
         flex: 0 0 190px;
         max-width: 190px;
+        @include smartphone-vertical {
+            flex-basis: 160px;
+            max-width: 160px;
+        }
     }
 }
 
 .series-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    // 最大 5 列を保ちつつ、サイドナビゲーション込みの実際の表示幅に応じて列数を自然に切り替える
+    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
     gap: 12px;
+    @include tablet-horizontal {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+    }
     @include tablet-vertical {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+    }
+    @include smartphone-horizontal {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
     }
     @include smartphone-vertical {
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
     }
 }
@@ -243,6 +259,9 @@ onMounted(async () => {
     border-radius: 8px;
     box-shadow: 0 2px 6px rgb(0 0 0 / 18%);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+    @include smartphone-vertical {
+        aspect-ratio: 4 / 3;
+    }
     &:hover {
         box-shadow: 0 5px 14px rgb(0 0 0 / 28%);
         transform: translateY(-2px);
@@ -255,6 +274,7 @@ onMounted(async () => {
     }
 
     &__thumbnails {
+        z-index: 0;
         background: rgb(var(--v-theme-background-lighten-2));
     }
 
@@ -304,6 +324,7 @@ onMounted(async () => {
     }
 
     &__overlay {
+        z-index: 4;
         background: linear-gradient(180deg, rgb(0 0 0 / 4%) 20%, rgb(0 0 0 / 82%) 100%);
     }
 
@@ -312,8 +333,13 @@ onMounted(async () => {
         right: 16px;
         bottom: 14px;
         left: 16px;
-        z-index: 1;
+        z-index: 5;
         min-width: 0;
+        @include smartphone-vertical {
+            right: 10px;
+            bottom: 9px;
+            left: 10px;
+        }
     }
 
     &__title {
@@ -324,6 +350,9 @@ onMounted(async () => {
         text-shadow: 0 1px 4px rgb(0 0 0 / 75%);
         text-overflow: ellipsis;
         white-space: nowrap;
+        @include smartphone-vertical {
+            font-size: 14px;
+        }
     }
 
     &__meta {
@@ -336,6 +365,11 @@ onMounted(async () => {
         font-size: 12px;
         text-shadow: 0 1px 3px rgb(0 0 0 / 80%);
         white-space: nowrap;
+        @include smartphone-vertical {
+            gap: 4px;
+            margin-top: 4px;
+            font-size: 11px;
+        }
     }
 
     &__genre {
@@ -348,9 +382,13 @@ onMounted(async () => {
         position: absolute;
         right: 12px;
         top: 12px;
-        z-index: 1;
+        z-index: 5;
         color: white;
         filter: drop-shadow(0 1px 3px rgb(0 0 0 / 80%));
+        @include smartphone-vertical {
+            top: 8px;
+            right: 8px;
+        }
     }
 }
 
