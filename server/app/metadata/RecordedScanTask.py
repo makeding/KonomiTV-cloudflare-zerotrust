@@ -83,11 +83,8 @@ class RecordedFileMetadataRefreshError(Exception):
 class RecordedScanTask:
     """
     録画フォルダの監視とメタデータの DB への同期を行うタスク
-    Mirakurun 構成ではサーバーの起動中に常時稼働し、以下の処理を担う
-    EDCB / EPGStation 構成では常駐せず、手動スキャンと再生前のオンデマンド再解析だけを担う
-    - サーバー起動時の録画フォルダの一括スキャン・同期
-    - 録画フォルダ以下のファイルシステム変更の監視を開始し、変更があれば随時メタデータを解析後、DB に永続化
-    - 録画中ファイルの状態管理
+    Mirakurun 構成では録画フォルダの一括スキャンと変更監視を常駐させる
+    EDCB / EPGStation 構成ではローカル監視を行わず、録画バックエンドが返すファイルだけを同期する
     """
 
     # シングルトンインスタンス
@@ -236,7 +233,12 @@ class RecordedScanTask:
 
 
     async def __syncActiveRecordingFiles(self) -> None:
-        """録画バックエンドが把握している録画中ファイルだけを DB と同期する。"""
+        """
+        録画バックエンドが把握している録画中ファイルだけを DB と同期する。
+
+        Returns:
+            None
+        """
 
         active_recording_file_paths = await self.__getActiveRecordingFilePaths()
         if active_recording_file_paths.is_reliable is False:
@@ -296,7 +298,12 @@ class RecordedScanTask:
 
 
     async def __syncEPGStationRecentRecordedFiles(self) -> None:
-        """EPGStation が把握している直近の録画済みファイルだけを DB と同期する。"""
+        """
+        EPGStation が把握している直近の録画済みファイルだけを DB と同期する。
+
+        Returns:
+            None
+        """
 
         if self.config.general.backend != 'EPGStation':
             return
@@ -328,7 +335,12 @@ class RecordedScanTask:
 
 
     async def __syncBackendRecordingLoop(self) -> None:
-        """録画バックエンドの録画中・録画完了状態を定期的に同期する。"""
+        """
+        録画バックエンドの録画中・録画完了状態を定期的に同期する。
+
+        Returns:
+            None
+        """
 
         next_recent_recorded_sync_at = datetime.now(tz=JST)
         while self._is_backend_recording_sync_running:
@@ -349,7 +361,12 @@ class RecordedScanTask:
 
 
     async def startBackendRecordingSync(self) -> None:
-        """EDCB / EPGStation の API を使った録画同期だけを開始する。"""
+        """
+        EDCB / EPGStation の API を使った録画同期だけを開始する。
+
+        Returns:
+            None
+        """
 
         if self._is_backend_recording_sync_running:
             return
@@ -358,7 +375,12 @@ class RecordedScanTask:
 
 
     async def stopBackendRecordingSync(self) -> None:
-        """EDCB / EPGStation の API を使った録画同期を停止する。"""
+        """
+        EDCB / EPGStation の API を使った録画同期を停止する。
+
+        Returns:
+            None
+        """
 
         if self._is_backend_recording_sync_running is False:
             return
