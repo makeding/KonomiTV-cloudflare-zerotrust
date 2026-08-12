@@ -99,5 +99,21 @@ class BangumiClientAsyncTest(unittest.IsolatedAsyncioTestCase):
         get_collection_subjects.assert_not_awaited()
 
 
+    async def test_deleted_collection_subject_does_not_abort_episode_sync(self) -> None:
+        """收藏一覧に残る削除済み条目は空の episode 一覧として扱う。"""
+
+        response = AsyncMock()
+        response.status_code = 404
+        httpx_client = AsyncMock()
+        httpx_client.get.return_value = response
+        httpx_client.__aenter__.return_value = httpx_client
+        httpx_client.__aexit__.return_value = None
+        with patch('app.utils.BangumiClient.HTTPX_CLIENT', return_value=httpx_client):
+            episodes = await BangumiClient._getEpisodes(295001)
+
+        self.assertEqual(episodes, [])
+        response.raise_for_status.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
