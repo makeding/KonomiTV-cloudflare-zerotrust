@@ -129,64 +129,8 @@
                     <path fill="currentColor" d="M7 3h2a1 1 0 0 0-2 0M6 3a2 2 0 1 1 4 0h4a.5.5 0 0 1 0 1h-.564l-1.205 8.838A2.5 2.5 0 0 1 9.754 15H6.246a2.5 2.5 0 0 1-2.477-2.162L2.564 4H2a.5.5 0 0 1 0-1zm1 3.5a.5.5 0 0 0-1 0v5a.5.5 0 0 0 1 0zM9.5 6a.5.5 0 0 0-.5.5v5a.5.5 0 0 0 1 0v-5a.5.5 0 0 0-.5-.5"></path>
                 </svg>
             </div>
-            <div v-if="!forOffline || offlineVideo !== null" class="recorded-program__menu">
-                <v-menu location="bottom end" :close-on-content-click="true">
-                    <template v-slot:activator="{ props }">
-                        <div v-ripple class="recorded-program__menu-button"
-                            v-bind="props"
-                            @click.prevent.stop=""
-                            @mousedown.prevent.stop="">
-                            <svg width="19px" height="19px" viewBox="0 0 16 16">
-                                <path fill="currentColor" d="M9.5 13a1.5 1.5 0 1 1-3 0a1.5 1.5 0 0 1 3 0m0-5a1.5 1.5 0 1 1-3 0a1.5 1.5 0 0 1 3 0m0-5a1.5 1.5 0 1 1-3 0a1.5 1.5 0 0 1 3 0"/>
-                            </svg>
-                        </div>
-                    </template>
-                    <v-list density="compact" bg-color="background-lighten-1" class="recorded-program__menu-list">
-                        <v-list-item @click="showOfflineDownload = true" :disabled="program.recorded_video.status === 'Recording'">
-                            <template v-slot:prepend>
-                                <Icon icon="fluent:cloud-arrow-down-20-regular" width="20px" height="20px" />
-                            </template>
-                            <v-list-item-title class="ml-3">オフライン再生用に保存 ({{offlineMenuSizeLabel}})</v-list-item-title>
-                        </v-list-item>
-                        <v-list-item @click="show_video_info = true">
-                            <template v-slot:prepend>
-                                <svg width="20px" height="20px" viewBox="0 0 16 16">
-                                    <path fill="currentColor" d="M8.499 7.5a.5.5 0 1 0-1 0v3a.5.5 0 0 0 1 0zm.25-2a.749.749 0 1 1-1.499 0a.749.749 0 0 1 1.498 0M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1M2 8a6 6 0 1 1 12 0A6 6 0 0 1 2 8"></path>
-                                </svg>
-                            </template>
-                            <v-list-item-title class="ml-3">録画ファイル情報を表示</v-list-item-title>
-                        </v-list-item>
-                        <v-list-item @click="downloadVideo" :disabled="program.recorded_video.status === 'Recording'">
-                            <template v-slot:prepend>
-                                <Icon icon="fluent:arrow-download-24-regular" width="20px" height="20px" />
-                            </template>
-                            <v-list-item-title class="ml-3">
-                                {{program.recorded_video.container_format === 'MMT/TLV' ? '元の TLV をダウンロード' : '録画ファイル本体をダウンロード'}}
-                                ({{ Utils.formatBytes(program.recorded_video.file_size) }})
-                            </v-list-item-title>
-                        </v-list-item>
-                        <v-list-item @click="showReanalyzeModal" v-ftooltip="'再生時に必要な録画ファイル情報や番組情報などを解析し直します'">
-                            <template v-slot:prepend>
-                                <Icon icon="fluent:book-arrow-clockwise-20-regular" width="20px" height="20px" />
-                            </template>
-                            <v-list-item-title class="ml-3">メタデータを再解析</v-list-item-title>
-                        </v-list-item>
-                        <v-list-item @click="regenerateThumbnail()" v-ftooltip="'サムネイルのみを再生成します（数分かかります） 変更を反映するにはブラウザキャッシュの削除が必要です'">
-                            <template v-slot:prepend>
-                                <Icon icon="fluent:image-arrow-counterclockwise-24-regular" width="20px" height="20px" />
-                            </template>
-                            <v-list-item-title class="ml-3">サムネイルを再生成</v-list-item-title>
-                        </v-list-item>
-                        <v-divider></v-divider>
-                        <v-list-item @click="showDeleteConfirmation" :disabled="program.recorded_video.status === 'Recording'" class="recorded-program__menu-list-item--danger">
-                            <template v-slot:prepend>
-                                <Icon icon="fluent:delete-20-regular" width="20px" height="20px" />
-                            </template>
-                            <v-list-item-title class="ml-3">録画ファイルを削除</v-list-item-title>
-                        </v-list-item>
-                    </v-list>
-                </v-menu>
-            </div>
+            <RecordedProgramMenu v-if="!forOffline || offlineVideo !== null"
+                :program="program" @deleted="emit('deleted', $event)" />
         </div>
         <div v-if="displayedOfflineDownloadProgress !== null" class="recorded-program__offline-progress">
             <div class="recorded-program__offline-progress-bar"
@@ -194,9 +138,6 @@
             </div>
         </div>
     </component>
-    <RecordedFileInfoDialog :program="program" v-model:show="show_video_info" />
-    <OfflineVideoDownloadDialog :program="program" v-model:show="showOfflineDownload" />
-
     <!-- オフライン保存削除確認ダイアログ -->
     <v-dialog v-model="showOfflineDeleteConfirmation" max-width="715">
         <v-card>
@@ -230,87 +171,17 @@
         </v-card>
     </v-dialog>
 
-    <!-- 録画ファイル削除確認ダイアログ -->
-    <v-dialog max-width="750" v-model="show_delete_confirmation">
-        <v-card>
-            <v-card-title class="d-flex justify-center pt-6 font-weight-bold">本当に録画ファイルを削除しますか？</v-card-title>
-            <v-card-text class="pt-2 pb-0">
-                <div class="delete-confirmation__file-path mb-4">{{ program.recorded_video.file_path }}</div>
-                <div class="text-error-lighten-1 font-weight-bold">
-                    この録画ファイルに関連するすべてのデータ (サムネイル / .ts.program.txt / .ts.err を含む) が削除されます。<br>
-                    元に戻すことはできません。本当に録画ファイルを削除しますか？
-                </div>
-            </v-card-text>
-            <v-card-actions class="pt-4 px-6 pb-6">
-                <v-spacer></v-spacer>
-                <v-btn color="text" variant="text" @click="show_delete_confirmation = false">
-                    <Icon icon="fluent:dismiss-16-filled" width="18px" height="18px" />
-                    <span class="ml-1">キャンセル</span>
-                </v-btn>
-                <v-btn class="px-3" color="error" variant="flat" @click="deleteVideo">
-                    <Icon icon="fluent:delete-16-regular" width="18px" height="18px" />
-                    <span class="ml-1">録画ファイルを削除</span>
-                </v-btn>
-            </v-card-actions>
-        </v-card>
-    </v-dialog>
-
-    <!-- メタデータ再解析の確認ダイアログ -->
-    <v-dialog v-model="show_reanalyze_modal" max-width="650px" scrollable>
-        <v-card class="reanalyze-confirmation">
-            <v-card-title class="pt-6 px-6 pb-2">
-                <Icon icon="fluent:book-arrow-clockwise-20-regular" width="22px" height="22px" />
-                <span class="ml-3">メタデータを再解析</span>
-            </v-card-title>
-            <v-card-text class="px-6 pb-3">
-                <div class="text-subtitle-1 font-weight-bold mb-3">{{ program.title }}</div>
-                <div class="reanalyze-confirmation__file-path mb-4">{{ program.recorded_video.file_path }}</div>
-                <div class="mb-4">
-                    再生時に必要な録画ファイル情報や番組情報などを解析し直します。<br>
-                    複数のチャンネルが含まれる録画ファイルの場合、特定のチャンネルを選択して解析できます。
-                </div>
-                <div v-if="available_channels && available_channels.length > 1" class="mb-4">
-                    <div class="text-subtitle-2 mb-2">解析するチャンネルを選択してください:</div>
-                    <v-radio-group v-model="selected_service_id" hide-details>
-                        <v-radio label="自動選択（推奨）" :value="null"></v-radio>
-                        <v-radio v-for="channel in available_channels" :key="channel.service_id"
-                            :label="`${channel.channel_name} (Service ID: ${channel.service_id})`" :value="channel.service_id">
-                        </v-radio>
-                    </v-radio-group>
-                </div>
-                <div v-else-if="available_channels && available_channels.length === 1" class="mb-4">
-                    <div class="text-subtitle-2">利用可能なチャンネル:</div>
-                    <div>{{ available_channels[0].channel_name }} (Service ID: {{ available_channels[0].service_id }})</div>
-                </div>
-                <div v-if="loading_channels" class="mb-4">
-                    <div class="d-flex align-center">
-                        <v-progress-circular indeterminate size="20"></v-progress-circular>
-                        <span class="ml-2">利用可能なチャンネルを取得中...</span>
-                    </div>
-                </div>
-            </v-card-text>
-            <v-card-actions class="pt-4 px-6 pb-6">
-                <v-spacer></v-spacer>
-                <v-btn variant="text" @click="cancelReanalyzeModal">キャンセル</v-btn>
-                <v-btn color="secondary" variant="flat" @click="executeReanalyze" :disabled="loading_channels">
-                    再解析を開始
-                </v-btn>
-            </v-card-actions>
-        </v-card>
-    </v-dialog>
 </template>
 <script lang="ts" setup>
 
-import { ref, computed, onBeforeUnmount, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 
-import OfflineVideoDownloadDialog from '@/components/Videos/Dialogs/OfflineVideoDownloadDialog.vue';
-import RecordedFileInfoDialog from '@/components/Videos/Dialogs/RecordedFileInfoDialog.vue';
+import RecordedProgramMenu from '@/components/Videos/RecordedProgramMenu.vue';
 import Message from '@/message';
 import OfflineVideos, { type IOfflineDownloadJob, type IOfflineVideo } from '@/services/OfflineVideos';
-import Videos, { type IRecordedProgram } from '@/services/Videos';
+import { type IRecordedProgram } from '@/services/Videos';
 import useSettingsStore from '@/stores/SettingsStore';
-import useUserStore from '@/stores/UserStore';
-import Utils, { PlayerUtils, ProgramUtils } from '@/utils';
+import Utils, { ProgramUtils } from '@/utils';
 
 // Props
 const props = withDefaults(defineProps<{
@@ -335,75 +206,10 @@ const emit = defineEmits<{
     (e: 'dismissOfflineJob', jobID: string): void;
 }>();
 
-// ファイル情報ダイアログの表示状態
-const show_video_info = ref(false);
-// 削除確認ダイアログの表示状態
-const show_delete_confirmation = ref(false);
-// オフライン保存ダイアログの表示状態
-const showOfflineDownload = ref(false);
 // オフライン保存削除確認ダイアログの表示状態
 const showOfflineDeleteConfirmation = ref(false);
 // オフライン保存の削除中は確定ボタンの二重操作を防ぐ
 const isDeletingOfflineVideo = ref(false);
-// メタデータ再解析ダイアログとチャンネル選択の状態
-const show_reanalyze_modal = ref(false);
-const available_channels = ref<Array<{service_id: number, channel_name: string}> | null>(null);
-const selected_service_id = ref<number | null>(null);
-const loading_channels = ref(false);
-let cancelChannelFetch = false;
-
-// 録画ファイルのダウンロード (location.href を変更し、ダウンロード自体はブラウザに任せる)
-const downloadVideo = () => {
-    window.location.href = `${Utils.api_base_url}/videos/${props.program.id}/download`;
-};
-
-// メタデータ再解析モーダルを表示し、録画に含まれるチャンネル一覧を取得する
-const showReanalyzeModal = async () => {
-    cancelChannelFetch = true;
-    show_reanalyze_modal.value = true;
-    loading_channels.value = true;
-    selected_service_id.value = null;
-    cancelChannelFetch = false;
-    try {
-        const channels = await Videos.fetchVideoAvailableChannels(props.program.id);
-        if (cancelChannelFetch === false) available_channels.value = channels;
-    } catch (error) {
-        console.error('Failed to fetch available channels:', error);
-        if (cancelChannelFetch === false) available_channels.value = [];
-    } finally {
-        if (cancelChannelFetch === false) loading_channels.value = false;
-    }
-};
-
-// チャンネル取得結果を破棄して再解析モーダルを閉じる
-const cancelReanalyzeModal = () => {
-    cancelChannelFetch = true;
-    loading_channels.value = false;
-    show_reanalyze_modal.value = false;
-};
-
-// 選択したサービス ID を指定してメタデータを再解析する
-const executeReanalyze = async () => {
-    show_reanalyze_modal.value = false;
-    Message.success('メタデータの再解析を開始します。完了までしばらくお待ちください。');
-    const result = await Videos.reanalyzeVideo(props.program.id, selected_service_id.value ?? undefined);
-    if (result === true) {
-        Message.success('メタデータの再解析が完了しました。');
-    }
-};
-
-onBeforeUnmount(() => {
-    cancelChannelFetch = true;
-});
-
-// サムネイル再生成
-const regenerateThumbnail = async () => {
-    Message.success('サムネイルの再生成を開始しました。完了までしばらくお待ちください。');
-    const result = await Videos.regenerateThumbnail(props.program.id);
-    if (result === true) {
-        Message.success('サムネイルの再生成が完了しました。');
-    }
-};
 
 // マイリストに追加/削除
 const settingsStore = useSettingsStore();
@@ -551,11 +357,6 @@ const offlineSizeLabel = computed(() => {
     return null;
 });
 
-// 録画一覧メニュー向けの既定画質 (720p) 見積もり容量
-const offlineMenuSizeLabel = computed(() => {
-    const isHEVC = PlayerUtils.isHEVCVideoSupported();
-    return OfflineVideos.formatDefaultMenuSizeLabel(props.program, isHEVC);
-});
 
 // 保存ジョブの進捗率 (0〜99)。完了確定前は 100% にしない
 const offlineDownloadProgress = computed(() => {
@@ -624,28 +425,6 @@ const confirmDeleteOfflineVideo = async (): Promise<void> => {
     Message.success('オフライン保存を削除しました。');
 };
 
-// 録画ファイル削除確認ダイアログを表示
-const showDeleteConfirmation = () => {
-    const userStore = useUserStore();
-    if (userStore.user === null || userStore.user.is_admin === false) {
-        Message.warning('録画ファイルを削除するには管理者権限が必要です。\n管理者アカウントでログインし直してください。');
-        return;
-    }
-    show_delete_confirmation.value = true;
-};
-
-// 録画ファイル削除
-const deleteVideo = async () => {
-    show_delete_confirmation.value = false;
-    Message.info('録画ファイルの削除を開始します。完了までしばらくお待ちください。');
-
-    const result = await Videos.deleteVideo(props.program.id);
-    if (result === true) {
-        Message.success('録画ファイルを削除しました。');
-        // 親コンポーネントに削除イベントを発行
-        emit('deleted', props.program.id);
-    }
-};
 
 </script>
 <style lang="scss" scoped>
@@ -1159,103 +938,6 @@ const deleteVideo = async () => {
         }
     }
 
-    &__menu {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-        position: absolute;
-        top: 65%;
-        right: 12px;
-        transform: translateY(-50%);
-        cursor: pointer;
-        @include tablet-vertical {
-            right: 6px;
-        }
-        @include smartphone-horizontal {
-            right: 6px;
-        }
-        @include smartphone-vertical {
-            right: 4px;
-        }
-
-        &-button {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 32px;
-            height: 32px;
-            color: rgb(var(--v-theme-text-darken-1));
-            border-radius: 50%;
-            transition: color 0.15s ease, background-color 0.15s ease;
-            user-select: none;
-            @include tablet-vertical {
-                width: 28px;
-                height: 28px;
-                svg {
-                    width: 18px;
-                    height: 18px;
-                }
-            }
-            @include smartphone-horizontal {
-                width: 28px;
-                height: 28px;
-                svg {
-                    width: 18px;
-                    height: 18px;
-                }
-            }
-            @include smartphone-vertical {
-                width: 28px;
-                height: 28px;
-                svg {
-                    width: 18px;
-                    height: 18px;
-                }
-            }
-
-            &:before {
-                content: "";
-                position: absolute;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                border-radius: inherit;
-                background-color: currentColor;
-                color: inherit;
-                opacity: 0;
-                transition: opacity 0.2s cubic-bezier(0.4, 0, 0.6, 1);
-                pointer-events: none;
-            }
-            &:hover {
-                color: rgb(var(--v-theme-text));
-                &:before {
-                    opacity: 0.15;
-                }
-            }
-            // タッチデバイスで hover を無効にする
-            @media (hover: none) {
-                &:hover {
-                    &:before {
-                        opacity: 0;
-                    }
-                }
-            }
-        }
-
-        &-list {
-            :deep(.v-list-item-title) {
-                text-autospace: normal;
-                font-size: 14px !important;
-            }
-
-            :deep(.v-list-item) {
-                min-height: 36px !important;
-            }
-        }
-    }
-
     &--offline {
         .recorded-program__content-header {
             @include smartphone-vertical {
@@ -1296,7 +978,7 @@ const deleteVideo = async () => {
             opacity: 0.65;
         }
         .recorded-program__mylist,
-        .recorded-program__menu {
+        :deep(.recorded-program-menu) {
             pointer-events: auto;
         }
     }
@@ -1339,32 +1021,6 @@ const deleteVideo = async () => {
     0% { opacity: 0; }
     50% { opacity: 1; }
     100% { opacity: 0; }
-}
-
-.delete-confirmation {
-    &__file-path {
-        padding: 12px;
-        background-color: rgb(var(--v-theme-background-lighten-1));
-        border-radius: 4px;
-        font-size: 14px;
-        word-break: break-all;
-        white-space: pre-wrap;
-    }
-}
-
-.reanalyze-confirmation {
-    &__file-path {
-        padding: 12px;
-        background-color: rgb(var(--v-theme-background-lighten-1));
-        border-radius: 4px;
-        font-size: 14px;
-        word-break: break-all;
-        white-space: pre-wrap;
-    }
-}
-
-.recorded-program__menu-list-item--danger {
-    color: rgb(var(--v-theme-error)) !important;
 }
 
 </style>

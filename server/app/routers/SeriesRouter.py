@@ -122,7 +122,7 @@ async def OnAirSeriesListAPI():
     _, rows = await connection.execute_query(
         """
         SELECT rp.series_id, s.title AS series_title, s.genres, rp.title AS program_title,
-               rp.id, rp.channel_id, rp.start_time
+               rp.id, rp.channel_id, rp.start_time, rp.episode_number
         FROM recorded_programs rp
         INNER JOIN series s ON s.id = rp.series_id
         WHERE rp.series_id IS NOT NULL
@@ -133,11 +133,24 @@ async def OnAirSeriesListAPI():
         """,
     )
     samples_by_series: dict[int, list[dict[str, Any]]] = {}
+    sample_keys_by_series: dict[int, set[str]] = {}
     for row in rows:
         series_id = int(row['series_id'])
         samples = samples_by_series.setdefault(series_id, [])
-        if len(samples) < 12 and REPEAT_BROADCAST_TITLE_PATTERN.search(str(row['program_title'])) is None:
+        sample_keys = sample_keys_by_series.setdefault(series_id, set())
+        episode_number = str(row['episode_number']).strip() if row['episode_number'] is not None else ''
+        start_time = ParseDatetimeStringToJST(str(row['start_time']))
+        sample_key = f'episode:{episode_number}' if episode_number else f'date:{start_time.date().isoformat()}'
+
+        # 同じ自然話数の別局版は Series の重ねサムネイルを重複させない。
+        # 話数が取れない番組も、同日の多局同時録画は 1 枚にまとめる。
+        if (
+            len(samples) < 12
+            and sample_key not in sample_keys
+            and REPEAT_BROADCAST_TITLE_PATTERN.search(str(row['program_title'])) is None
+        ):
             samples.append(row)
+            sample_keys.add(sample_key)
 
     # 初回放送直後のアニメ・ドラマ・バラエティも掲載するため、未来 EPG の明示的な話数を
     # SeriesIndexer と同じ規則で解析し、次回放送が確認できる Series を控える。
@@ -257,10 +270,24 @@ async def GetSeriesSummaries(
             COALESCE((
                 SELECT JSON_GROUP_ARRAY(recent_recorded_programs.id)
                 FROM (
-                    SELECT rp_thumbnail.id
-                    FROM recorded_programs rp_thumbnail
-                    WHERE rp_thumbnail.series_id = s.id
-                    ORDER BY rp_thumbnail.start_time DESC, rp_thumbnail.id DESC
+                    SELECT distinct_thumbnails.id
+                    FROM (
+                        SELECT
+                            rp_thumbnail.id,
+                            rp_thumbnail.start_time,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY CASE
+                                    WHEN NULLIF(TRIM(rp_thumbnail.episode_number), '') IS NOT NULL
+                                        THEN 'episode:' || TRIM(rp_thumbnail.episode_number)
+                                    ELSE 'date:' || DATE(rp_thumbnail.start_time)
+                                END
+                                ORDER BY rp_thumbnail.start_time DESC, rp_thumbnail.id DESC
+                            ) AS duplicate_rank
+                        FROM recorded_programs rp_thumbnail
+                        WHERE rp_thumbnail.series_id = s.id
+                    ) AS distinct_thumbnails
+                    WHERE distinct_thumbnails.duplicate_rank = 1
+                    ORDER BY distinct_thumbnails.start_time DESC, distinct_thumbnails.id DESC
                     LIMIT 3
                 ) AS recent_recorded_programs
             ), '[]') AS thumbnail_recorded_program_ids,

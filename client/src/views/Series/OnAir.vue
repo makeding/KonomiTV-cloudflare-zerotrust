@@ -23,7 +23,11 @@
                     </div>
                     <div v-else class="on-air-week">
                         <section v-for="day in weekdays" :key="day.index"
-                            class="on-air-day" :class="`on-air-day--${day.index}`">
+                            class="on-air-day"
+                            :class="[
+                                `on-air-day--${day.index}`,
+                                {'on-air-day--attention': hasAttentionSeries(day.index)},
+                            ]">
                             <header>
                                 <h3>{{day.label}}</h3>
                                 <span>{{seriesByWeekday[day.index].length}}件</span>
@@ -31,6 +35,7 @@
                             <div class="on-air-day__cards">
                                 <button v-for="series in seriesByWeekday[day.index]" :key="series.id"
                                     v-ripple class="on-air-card" type="button"
+                                    :class="{'on-air-card--attention': isInAttentionWindow(series)}"
                                     :aria-expanded="expandedSeriesID === series.id"
                                     @click="toggleSeries(series.id)">
                                     <div class="on-air-card__thumbnails"
@@ -56,11 +61,6 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <Icon class="on-air-card__chevron"
-                                        :icon="expandedSeriesID === series.id
-                                            ? 'fluent:chevron-up-12-regular'
-                                            : 'fluent:chevron-down-12-regular'"
-                                        width="20px" />
                                 </button>
                                 <p v-if="seriesByWeekday[day.index].length === 0" class="on-air-day__empty">録画なし</p>
                             </div>
@@ -68,7 +68,7 @@
                     </div>
                 </div>
                 <v-dialog :model-value="expandedSeriesID !== null" class="on-air-dialog"
-                    :style="dialogOverlayStyle" scrollable @update:model-value="closeSeries">
+                    :style="dialogOverlayStyle" scroll-strategy="none" @update:model-value="closeSeries">
                     <v-card class="on-air-dialog__card">
                         <v-btn class="on-air-dialog__close" icon="mdi-close" variant="text"
                             aria-label="閉じる" @click="closeSeries()" />
@@ -101,7 +101,7 @@ import Navigation from '@/components/Navigation.vue';
 import SeriesEpisodeList from '@/components/Series/SeriesEpisodeList.vue';
 import SPHeaderBar from '@/components/SPHeaderBar.vue';
 import Series, { IOnAirSeries, ISeriesSummary } from '@/services/Series';
-import Utils from '@/utils';
+import Utils, { dayjsOriginal } from '@/utils';
 
 const weekdays = [
     { index: 0, label: '月' }, { index: 1, label: '火' }, { index: 2, label: '水' },
@@ -127,6 +127,29 @@ const dialogOverlayStyle = computed(() => ({
     width: `${dialogOverlayBounds.value.width}px`,
     height: `${dialogOverlayBounds.value.height}px`,
 }));
+const currentJST = ref(dayjsOriginal().tz('Asia/Tokyo'));
+let currentTimeUpdateTimer: number | null = null;
+
+// 番組表の曜日・時刻は日本時間なので、ブラウザのローカルタイムゾーンには依存させない。
+// 現在時刻の 3 時間前から翌日 5 時までを、直近で確認したい放送枠として扱う。
+const isInAttentionWindow = (series: IOnAirSeries): boolean => {
+    const attentionStart = currentJST.value.subtract(3, 'hour');
+    const attentionEnd = currentJST.value.add(1, 'day').startOf('day').add(5, 'hour');
+    const currentWeekday = (currentJST.value.day() + 6) % 7;
+    const weekStart = currentJST.value.startOf('day').subtract(currentWeekday, 'day');
+    const [hour, minute] = series.broadcast_time.split(':').map(Number);
+    const baseOccurrence = weekStart.add(series.weekday, 'day').hour(hour).minute(minute).second(0);
+
+    // 日曜から月曜へ跨ぐ場合も拾えるよう、前後週の同じ放送枠も照合する。
+    return [-7, 0, 7].some(dayOffset => {
+        const occurrence = baseOccurrence.add(dayOffset, 'day');
+        return occurrence.isBetween(attentionStart, attentionEnd, null, '[]');
+    });
+};
+
+const hasAttentionSeries = (weekday: number): boolean => {
+    return seriesByWeekday.value[weekday].some(isInAttentionWindow);
+};
 
 const updateDialogOverlayBounds = () => {
     if (!onAirWrapper.value) return;
@@ -186,12 +209,16 @@ onMounted(async () => {
     wrapperResizeObserver = new ResizeObserver(updateDialogOverlayBounds);
     if (onAirWrapper.value) wrapperResizeObserver.observe(onAirWrapper.value);
     window.addEventListener('resize', updateDialogOverlayBounds);
+    currentTimeUpdateTimer = window.setInterval(() => {
+        currentJST.value = dayjsOriginal().tz('Asia/Tokyo');
+    }, 60_000);
     await loadOnAirSeries();
 });
 
 onBeforeUnmount(() => {
     wrapperResizeObserver?.disconnect();
     window.removeEventListener('resize', updateDialogOverlayBounds);
+    if (currentTimeUpdateTimer !== null) window.clearInterval(currentTimeUpdateTimer);
 });
 
 watch(() => route.params.series_id, async () => {
@@ -232,11 +259,28 @@ watch(() => route.params.series_id, async () => {
     &--6 { --on-air-day-color: #ff69b4; }
     &__cards { display: flex; flex-direction: column; gap: 8px; }
     &__empty { padding: 24px 8px; color: rgb(var(--v-theme-text-darken-1)); text-align: center; }
+    &--attention {
+        padding: 5px;
+        margin: -5px;
+        background: rgb(var(--v-theme-primary) / 9%);
+        border-radius: 9px;
+    }
 }
 .on-air-card {
     position: relative; display: block; aspect-ratio: 16 / 10; overflow: hidden;
     width: 100%; padding: 0; border: 0; font: inherit; text-align: left; cursor: pointer;
     color: white; text-decoration: none; background: rgb(var(--v-theme-background-lighten-2)); border-radius: 8px;
+    box-shadow: 0 2px 6px rgb(0 0 0 / 18%);
+    transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+    &:hover, &:focus-visible {
+        z-index: 1;
+        filter: brightness(1.07);
+        box-shadow: 0 6px 16px rgb(0 0 0 / 34%);
+        transform: translateY(-2px) scale(1.012);
+    }
+    @media (hover: none) {
+        &:hover { filter: none; box-shadow: 0 2px 6px rgb(0 0 0 / 18%); transform: none; }
+    }
     &__thumbnails, &__shade { position: absolute; inset: 0; }
     &__thumbnails img { position: absolute; width: 94%; height: 94%; object-fit: cover; border-radius: 7px; }
     &__thumbnail--1 { right: 0; bottom: 0; z-index: 3; }
@@ -245,19 +289,47 @@ watch(() => route.params.series_id, async () => {
     &__thumbnails--1 img { width: 100%; height: 100%; border-radius: 0; }
     &__shade { z-index: 4; background: linear-gradient(180deg, rgb(0 0 0 / 8%), rgb(0 0 0 / 88%)); }
     &__body { position: absolute; right: 9px; bottom: 8px; left: 9px; z-index: 5; }
-    &__chevron { position: absolute; top: 7px; right: 7px; z-index: 5; filter: drop-shadow(0 1px 3px black); }
     time { font-size: 16px; font-weight: 700; }
     strong { display: -webkit-box; margin-top: 2px; overflow: hidden; font-size: 12px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     &__meta { display: flex; align-items: center; justify-content: space-between; margin-top: 5px; font-size: 10px; }
     &__logos { display: flex; gap: 3px; }
     &__logo { --ch-sprite-width: 34; --ch-sprite-height: 20; --ch-sprite-border-radius: 3; overflow: hidden; border-radius: 3px; }
+    &--attention {
+        outline: 2px solid rgb(var(--v-theme-primary) / 78%);
+        box-shadow: 0 0 0 4px rgb(var(--v-theme-primary) / 12%);
+    }
 }
 .on-air-dialog {
-    :deep(.v-overlay__content) { width: min(1800px, calc(100% - 48px)); max-width: none; max-height: 92%; }
-    &__card { position: relative; overflow-y: auto; padding: 18px; background: rgb(var(--v-theme-background)); }
-    &__close { position: sticky; top: 0; z-index: 20; align-self: flex-end; margin-bottom: -48px; }
+    :deep(.v-overlay__content) {
+        width: min(1480px, calc(100% - 64px));
+        max-width: none;
+        max-height: 84dvh;
+    }
+    &__card {
+        position: relative; overflow-y: auto; padding: 0;
+        background: transparent !important; box-shadow: none !important;
+    }
+    &__close {
+        position: sticky; top: 8px; z-index: 20; align-self: flex-end;
+        margin: 0 8px -48px 0; background: rgb(var(--v-theme-background-lighten-1));
+    }
     &__loading { min-height: 60vh; padding: 44px 12px 12px; }
     &__loading :deep(.v-skeleton-loader) { min-height: 52vh; }
+
+    // 通常の Series ページより表示面積が限られるため、外枠だけを広げず内容も一段大きくする。
+    :deep(.series-episode-list) { padding: 22px 26px 24px; }
+    :deep(.series-episode-list__header h3) { font-size: 24px; }
+    :deep(.series-episode-list__bangumi > img) { width: 128px; height: 181px; }
+    :deep(.series-episode-list__bangumi-profile p) { font-size: 13px; }
+    :deep(.series-episode-list__matrix) {
+        grid-template-columns: 64px 94px repeat(var(--episode-column-count), 184px);
+    }
+    :deep(.series-episode-list__channel-logo) {
+        --ch-sprite-width: 56;
+        --ch-sprite-height: 32;
+    }
+    :deep(.series-episode-list__channel-name span) { font-size: 13px; }
+    :deep(.series-episode-list__episode-label span) { font-size: 11px; }
 }
 @include smartphone-vertical {
     .on-air-container { padding: 8px; }
@@ -275,7 +347,6 @@ watch(() => route.params.series_id, async () => {
     }
     .on-air-card {
         &__body { right: 7px; bottom: 6px; left: 7px; }
-        &__chevron { top: 5px; right: 5px; }
         time { font-size: 14px; }
         strong { font-size: 11px; line-height: 1.35; }
         &__meta { margin-top: 3px; font-size: 9px; }
@@ -284,16 +355,35 @@ watch(() => route.params.series_id, async () => {
     .on-air-dialog {
         :deep(.v-overlay__content) {
             position: absolute;
-            right: 8px;
-            bottom: calc(env(safe-area-inset-bottom) + 64px);
-            left: 8px;
-            width: auto;
-            max-height: 72dvh;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            max-height: none;
             margin: 0;
         }
-        &__card { padding: 8px; border-radius: 12px; }
-        &__loading { min-height: 46dvh; }
-        &__loading :deep(.v-skeleton-loader) { min-height: 42dvh; }
+        &__card {
+            width: 100%;
+            min-width: 0;
+            height: 100%;
+            padding: 0;
+            background: rgb(var(--v-theme-background)) !important;
+            border-radius: 0;
+        }
+        &__loading { min-height: 100%; }
+        &__loading :deep(.v-skeleton-loader) { min-height: calc(100dvh - 64px); }
+        :deep(.series-episode-list) { min-height: 100%; padding: 14px 12px 18px; border-radius: 0; }
+        :deep(.series-episode-list__header h3) { font-size: 21px; }
+        :deep(.series-episode-list__bangumi > img) { width: 76px; height: 108px; }
+        :deep(.series-episode-list__bangumi-profile p) { font-size: 12px; }
+        :deep(.series-episode-list__matrix) {
+            grid-template-columns: 52px 56px repeat(var(--episode-column-count), 145px);
+        }
+        :deep(.series-episode-list__channel-logo) {
+            --ch-sprite-width: 44;
+            --ch-sprite-height: 25;
+        }
+        :deep(.series-episode-list__channel-name span) { font-size: 12px; }
+        :deep(.series-episode-list__episode-label span) { font-size: 10px; }
     }
 }
 

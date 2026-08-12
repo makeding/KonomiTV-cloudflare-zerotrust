@@ -5,7 +5,7 @@
                 <h3>{{title}}</h3>
                 <small v-if="bangumiSubjectNameCn">{{bangumiSubjectNameCn}}</small>
             </div>
-            <span>{{total_programs}}話</span>
+            <span>{{seriesCountLabel}}</span>
         </div>
         <div v-if="bangumiSubjectId" class="series-episode-list__bangumi">
             <img v-if="bangumiSubjectImageUrl" :src="bangumiSubjectImageUrl" alt="" loading="lazy" decoding="async">
@@ -43,22 +43,28 @@
                     </div>
                     <div class="series-episode-list__channel-name">
                         <span>{{channel_row.name}}</span>
-                        <small>{{channel_row.program_count}}話</small>
+                        <small>{{channel_row.episode_label}}</small>
                     </div>
                     <template v-for="(program, slot_index) in channel_row.programs"
                         :key="episode_matrix.slots[slot_index].key">
-                        <router-link v-if="program"
-                            v-ripple
-                            class="series-episode-list__episode"
-                            :to="`/videos/watch/${program.id}`">
-                            <img loading="lazy" decoding="async"
-                                :src="`${Utils.api_base_url}/videos/${program.id}/thumbnail`"
-                                alt="">
-                            <div class="series-episode-list__episode-label">
-                                <span>{{getEpisodeCaption(program)}}</span>
-                            </div>
-                        </router-link>
-                        <div v-else class="series-episode-list__episode-placeholder" aria-hidden="true"></div>
+                        <div v-if="program" class="series-episode-list__episode">
+                            <router-link v-ripple class="series-episode-list__episode-link"
+                                :to="`/videos/watch/${program.id}`">
+                                <img loading="lazy" decoding="async"
+                                    :src="`${Utils.api_base_url}/videos/${program.id}/thumbnail`"
+                                    alt="">
+                                <div class="series-episode-list__episode-label">
+                                    <span>{{getEpisodeCaption(program)}}</span>
+                                </div>
+                            </router-link>
+                            <RecordedProgramMenu :program="program" variant="Thumbnail"
+                                @deleted="onProgramDeleted" />
+                        </div>
+                        <div v-else class="series-episode-list__episode-placeholder"
+                            :class="{'series-episode-list__episode-placeholder--missing':
+                                episode_matrix.slots[slot_index].key.startsWith('episode:')}">
+                            <span v-if="episode_matrix.slots[slot_index].key.startsWith('episode:')">未録画</span>
+                        </div>
                     </template>
                 </template>
             </div>
@@ -69,6 +75,7 @@
 
 import { computed, onMounted, ref } from 'vue';
 
+import RecordedProgramMenu from '@/components/Videos/RecordedProgramMenu.vue';
 import { IRecordedProgram } from '@/services/Videos';
 import Videos from '@/services/Videos';
 import Utils, { dayjs } from '@/utils';
@@ -93,7 +100,7 @@ interface IChannelRow {
     id: string;
     channel_id: string | null;
     name: string;
-    program_count: number;
+    episode_label: string;
     programs: Array<IRecordedProgram | null>;
 }
 
@@ -140,15 +147,30 @@ const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
 };
 
 const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(() => {
-    const slots = [...new Map(programs.value.flatMap(program =>
+    const observedSlots = [...new Map(programs.value.flatMap(program =>
         getEpisodeSlots(program).map(slot => [slot.key, slot] as const),
     )).values()].sort((left, right) => episode_number_collator.compare(left.key, right.key));
+    const integerEpisodeNumbers = observedSlots
+        .filter(slot => /^episode:\d+$/.test(slot.key))
+        .map(slot => Number(slot.key.slice('episode:'.length)));
+    const continuousEpisodeSlots = integerEpisodeNumbers.length > 0
+        ? Array.from(
+            {
+                length: Math.max(...integerEpisodeNumbers) - Math.min(...integerEpisodeNumbers) + 1,
+            },
+            (_, index): IEpisodeSlot => {
+                const episodeNumber = Math.min(...integerEpisodeNumbers) + index;
+                return {key: `episode:${episodeNumber}`, label: `第${episodeNumber}話`};
+            },
+        )
+        : [];
+    const otherSlots = observedSlots.filter(slot => !/^episode:\d+$/.test(slot.key));
+    const slots = [...continuousEpisodeSlots, ...otherSlots];
 
     const groups = new Map<string, {
         id: string;
         channel_id: string | null;
         name: string;
-        program_count: number;
         programs: Map<string, IRecordedProgram>;
     }>();
     for (const program of programs.value) {
@@ -157,10 +179,8 @@ const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(
             id,
             channel_id: program.channel?.id ?? null,
             name: program.channel?.name ?? 'チャンネル情報なし',
-            program_count: 0,
             programs: new Map<string, IRecordedProgram>(),
         };
-        group.program_count++;
         for (const slot of getEpisodeSlots(program)) {
             if (!group.programs.has(slot.key)) group.programs.set(slot.key, program);
         }
@@ -171,14 +191,41 @@ const episode_matrix = computed<{ slots: IEpisodeSlot[]; rows: IChannelRow[] }>(
         id: group.id,
         channel_id: group.channel_id,
         name: group.name,
-        program_count: group.program_count,
+        episode_label: formatEpisodeCoverage(slots, group.programs),
         programs: slots.map(slot => group.programs.get(slot.key) ?? null),
     }));
     return { slots, rows };
 });
 
+// 同じ話数の別局録画は数えず、視聴者が「どこまで録れているか」を一目で把握できる表記にする。
+const formatEpisodeCoverage = (
+    slots: IEpisodeSlot[],
+    programsBySlot: Map<string, IRecordedProgram>,
+): string => {
+    const episodeSlots = slots.filter(slot => slot.key.startsWith('episode:'));
+    if (episodeSlots.length === 0) return `${programsBySlot.size}件の録画`;
+    const recordedCount = episodeSlots.filter(slot => programsBySlot.has(slot.key)).length;
+    const missingCount = episodeSlots.length - recordedCount;
+    return missingCount > 0
+        ? `${recordedCount}話録画・${missingCount}話未録画`
+        : `${recordedCount}話録画`;
+};
+
+const seriesCountLabel = computed(() => {
+    const episodeSlots = episode_matrix.value.slots.filter(slot => slot.key.startsWith('episode:'));
+    if (episodeSlots.length === 0) return `${total_programs.value}件の録画`;
+    const latestEpisode = episodeSlots[episodeSlots.length - 1].key.slice('episode:'.length);
+    return `第${latestEpisode}話まで`;
+});
+
 const getEpisodeCaption = (program: IRecordedProgram): string => {
     return program.subtitle || dayjs(program.start_time).format('YYYY/M/D (dd) HH:mm');
+};
+
+// 共通メニューから録画ファイルを削除した場合は、Series 全体を取り直さず表示中の行列だけを更新する。
+const onProgramDeleted = (programID: number) => {
+    programs.value = programs.value.filter(program => program.id !== programID);
+    total_programs.value = Math.max(0, total_programs.value - 1);
 };
 
 const fetchPrograms = async () => {
@@ -401,8 +448,16 @@ onMounted(fetchPrograms);
         position: relative;
         overflow: hidden;
         color: white;
-        text-decoration: none;
         background: rgb(var(--v-theme-background-lighten-2));
+    }
+
+    &__episode-link {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        color: white;
+        text-decoration: none;
+        border-radius: inherit;
         img {
             width: 100%;
             height: 100%;
@@ -419,6 +474,18 @@ onMounted(fetchPrograms);
     &__episode-placeholder {
         background: rgb(var(--v-theme-background-lighten-2) / 34%);
         border: 1px dashed rgb(var(--v-theme-text-darken-1) / 18%);
+        &--missing {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgb(var(--v-theme-error-lighten-1));
+            background: rgb(var(--v-theme-error) / 7%);
+            border-color: rgb(var(--v-theme-error) / 30%);
+            span {
+                font-size: 11px;
+                font-weight: 700;
+            }
+        }
     }
 
     &__episode-label {
