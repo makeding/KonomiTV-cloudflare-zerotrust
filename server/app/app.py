@@ -45,6 +45,7 @@ from app.routers import (
     VideoStreamsRouter,
 )
 from app.streams.LiveStream import LiveStream
+from app.utils.BangumiClient import BangumiClient
 from app.utils.edcb.EDCBTuner import EDCBTuner
 from app.utils.FastAPITaskUtil import repeat_every
 
@@ -274,6 +275,13 @@ async def UpdateChannelAndProgram():
 @repeat_every(seconds=0.5 * 60, wait_first=0.5 * 60, logger=logging.logger)
 async def UpdateChannelJikkyoStatus():
     await Channel.updateJikkyoStatus()
+
+# 30分に1回、連携済み Bangumi アカウントの在看・看過一覧から Series の条目情報を更新する。
+## 条目検索を Series ごとに行わず、アカウントごとの收藏一覧を候補プールとして一括照合する。
+@app.on_event('startup')
+@repeat_every(seconds=30 * 60, wait_first=10, logger=logging.logger)
+async def UpdateBangumiCollections():
+    await BangumiClient.syncAllLinkedUsers()
 
 # サーバーの終了時に実行する
 cleanup = False

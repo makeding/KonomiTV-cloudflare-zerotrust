@@ -4,6 +4,19 @@
             <h3>{{title}}</h3>
             <span>{{total_programs}}話</span>
         </div>
+        <div v-if="bangumiSubjectId" class="series-episode-list__bangumi">
+            <img v-if="bangumiSubjectImageUrl" :src="bangumiSubjectImageUrl" alt="" loading="lazy" decoding="async">
+            <div class="series-episode-list__bangumi-profile">
+                <strong>{{bangumiSubjectNameCn || bangumiSubjectName || title}}</strong>
+                <small v-if="bangumiSubjectName && bangumiSubjectName !== title">{{bangumiSubjectName}}</small>
+                <p v-if="bangumiSubjectSummary">{{bangumiSubjectSummary}}</p>
+                <a :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
+                    target="_blank" rel="noopener noreferrer" @click.stop>
+                    Bangumi で見る
+                    <Icon icon="fluent:open-16-regular" width="13px" />
+                </a>
+            </div>
+        </div>
         <div v-if="is_loading" class="series-episode-list__loading">
             <v-skeleton-loader v-for="index in 6" :key="index" type="image" />
         </div>
@@ -61,6 +74,11 @@ import Utils, { dayjs } from '@/utils';
 const props = defineProps<{
     seriesId: number;
     title: string;
+    bangumiSubjectId: number | null;
+    bangumiSubjectName: string | null;
+    bangumiSubjectNameCn: string | null;
+    bangumiSubjectSummary: string | null;
+    bangumiSubjectImageUrl: string | null;
 }>();
 
 interface IEpisodeSlot {
@@ -202,6 +220,51 @@ onMounted(fetchPrograms);
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
         gap: 8px;
+    }
+
+    &__bangumi {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 16px;
+        padding: 10px;
+        background: rgb(var(--v-theme-background-lighten-2) / 45%);
+        border-radius: 7px;
+        > img {
+            flex: 0 0 auto;
+            width: 64px;
+            height: 88px;
+            object-fit: cover;
+            border-radius: 5px;
+        }
+    }
+
+    &__bangumi-profile {
+        min-width: 0;
+        strong,
+        small {
+            display: block;
+        }
+        small,
+        p {
+            color: rgb(var(--v-theme-text-darken-1));
+        }
+        p {
+            display: -webkit-box;
+            max-width: 920px;
+            margin: 5px 0;
+            overflow: hidden;
+            font-size: 12px;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+        }
+        a {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            color: rgb(var(--v-theme-primary));
+            font-size: 12px;
+            text-decoration: none;
+        }
     }
 
     &__matrix-scroll {

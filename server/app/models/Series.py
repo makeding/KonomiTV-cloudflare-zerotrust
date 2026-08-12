@@ -28,6 +28,12 @@ class Series(TortoiseModel):
     title = fields.TextField()
     description = fields.TextField()
     genres = cast(TortoiseField[list[Genre]], fields.JSONField(default=[], encoder=lambda x: json.dumps(x, ensure_ascii=False)))  # type: ignore
+    # Bangumi の收藏一覧と照合できたアニメだけ、条目概要をローカルへ保持する。
+    bangumi_subject_id = cast(TortoiseField[int | None], fields.IntField(null=True))
+    bangumi_subject_name = cast(TortoiseField[str | None], fields.TextField(null=True))
+    bangumi_subject_name_cn = cast(TortoiseField[str | None], fields.TextField(null=True))
+    bangumi_subject_summary = cast(TortoiseField[str | None], fields.TextField(null=True))
+    bangumi_subject_image_url = cast(TortoiseField[str | None], fields.TextField(null=True))
     broadcast_periods: fields.ReverseRelation[SeriesBroadcastPeriod]
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)

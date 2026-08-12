@@ -89,7 +89,12 @@
                                 :key="`episodes-${expandedSeriesInRow(series_row)!.id}`"
                                 class="series-grid__episodes"
                                 :seriesId="expandedSeriesInRow(series_row)!.id"
-                                :title="expandedSeriesInRow(series_row)!.title" />
+                                :title="expandedSeriesInRow(series_row)!.title"
+                                :bangumiSubjectId="expandedSeriesInRow(series_row)!.bangumi_subject_id"
+                                :bangumiSubjectName="expandedSeriesInRow(series_row)!.bangumi_subject_name"
+                                :bangumiSubjectNameCn="expandedSeriesInRow(series_row)!.bangumi_subject_name_cn"
+                                :bangumiSubjectSummary="expandedSeriesInRow(series_row)!.bangumi_subject_summary"
+                                :bangumiSubjectImageUrl="expandedSeriesInRow(series_row)!.bangumi_subject_image_url" />
                         </template>
                     </div>
                     <div v-else class="series-empty">

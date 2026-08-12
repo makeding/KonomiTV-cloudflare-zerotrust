@@ -1,39 +1,11 @@
 import unittest
-from datetime import datetime
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
-from app.models.RecordedProgram import RecordedProgram
 from app.utils.BangumiClient import BangumiClient
 
 
-def CreateRecordedProgram(
-    episode_number: str,
-    start_time: datetime,
-    subtitle: str | None = None,
-) -> RecordedProgram:
-    """
-    Bangumi 候補の照合に必要な録画番組情報を作成する。
-
-    Args:
-        episode_number (str): EPG から抽出した話数。
-        start_time (datetime): 録画番組の放送開始時刻。
-        subtitle (str | None): EPG から抽出した各話副題。
-
-    Returns:
-        RecordedProgram: 照合テスト用の録画番組。
-    """
-
-    return cast(RecordedProgram, SimpleNamespace(
-        series_title = '無職転生Ⅱ ～異世界行ったら本気だす～',
-        episode_number = episode_number,
-        subtitle = subtitle,
-        start_time = start_time,
-    ))
-
-
 class BangumiClientTest(unittest.TestCase):
-    """Bangumi の分割クールと各話を誤同期しない照合条件を検証する。"""
+    """Bangumi 收藏候補の一括照合と視聴完了判定を検証する。"""
 
     def test_only_single_positive_integer_episode_is_accepted(self) -> None:
         """単一の正整数以外の話数は自動同期しない。"""
@@ -44,67 +16,66 @@ class BangumiClientTest(unittest.TestCase):
         self.assertIsNone(BangumiClient.parseEpisodeNumber('4.5'))
         self.assertIsNone(BangumiClient.parseEpisodeNumber(None))
 
-    def test_continuous_sort_number_selects_second_cour_episode(self) -> None:
-        """ep が 1 に戻っても sort が続く分割クールは通し話数で照合できる。"""
 
-        recorded_program = CreateRecordedProgram('14', datetime(2024, 4, 7, 23, 0))
-        episodes: list[dict[str, Any]] = [{
-            'id': 1233194,
-            'type': 0,
-            'ep': 1,
-            'sort': 13,
-            'airdate': '2024-04-07',
-            'name': '夢のマイホーム',
-            'name_cn': '我梦想中的家',
-        }]
-        match = BangumiClient.scoreCandidate(
-            recorded_program,
-            [recorded_program],
-            {'id': 444557, 'name': '無職転生Ⅱ ～異世界行ったら本気だす～', 'name_cn': ''},
-            episodes,
+    def test_long_title_matches_collection_subject_without_search(self) -> None:
+        """長い EPG 作品名でも收藏一覧内の同名条目へ完全一致できる。"""
+
+        expected_subject: dict[str, Any] = {
+            'id': 590786,
+            'type': 2,
+            'name': 'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた。',
+            'name_cn': '『你们先走我断后』，于是10年后我成为了传说',
+        }
+        unrelated_subject: dict[str, Any] = {
+            'id': 8365,
+            'type': 2,
+            'name': 'ここはグリーン・ウッド',
+            'name_cn': '绿林寮',
+        }
+
+        matched_subject = BangumiClient._findSubject(
+            'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた。',
+            [unrelated_subject, expected_subject],
         )
 
-        self.assertIsNotNone(match)
-        assert match is not None
-        self.assertEqual(match.subject_id, 444557)
-        self.assertEqual(match.episode_id, 1233194)
-        self.assertGreaterEqual(match.score, BangumiClient.MINIMUM_MATCH_SCORE)
+        self.assertIsNotNone(matched_subject)
+        assert matched_subject is not None
+        self.assertEqual(matched_subject['id'], 590786)
 
-    def test_title_variant_needs_date_subtitle_and_sequence_evidence(self) -> None:
-        """タイトル表記が異なる候補は、放送日・各話名・話数列が揃った場合だけ閾値を超える。"""
 
-        recorded_program = CreateRecordedProgram('7', datetime(2026, 8, 13, 23, 0), 'こころあらたに')
-        recorded_program.series_title = 'バンドリ！ ゆめ∞みた'
-        episodes: list[dict[str, Any]] = [{
-            'id': 7007,
-            'type': 0,
-            'ep': 7,
-            'sort': 6,
-            'airdate': '2026-08-13',
-            'name': 'こころあらたに',
+    def test_trailing_period_difference_is_ignored(self) -> None:
+        """EPG だけが長い作品名の末尾句点を省略しても同じ收藏条目として扱う。"""
+
+        subject = {
+            'id': 590786,
+            'type': 2,
+            'name': 'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた。',
             'name_cn': '',
-        }]
-        match = BangumiClient.scoreCandidate(
-            recorded_program,
-            [recorded_program],
-            {'id': 583729, 'name': 'BanG Dream! ゆめ∞みた', 'name_cn': ''},
-            episodes,
+        }
+        matched_subject = BangumiClient._findSubject(
+            'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた',
+            [subject],
         )
 
-        self.assertIsNotNone(match)
-        assert match is not None
-        self.assertGreaterEqual(match.score, BangumiClient.MINIMUM_MATCH_SCORE)
+        self.assertIsNotNone(matched_subject)
 
-        recorded_program.subtitle = None
-        weak_match = BangumiClient.scoreCandidate(
-            recorded_program,
-            [recorded_program],
-            {'id': 583729, 'name': 'BanG Dream! ゆめ∞みた', 'name_cn': ''},
-            episodes,
-        )
-        self.assertIsNotNone(weak_match)
-        assert weak_match is not None
-        self.assertLess(weak_match.score, BangumiClient.MINIMUM_MATCH_SCORE)
+
+    def test_ambiguous_collection_titles_are_not_matched(self) -> None:
+        """同点の收藏条目が複数ある場合は誤って自動確定しない。"""
+
+        subjects = [
+            {'id': 1, 'type': 2, 'name': '同名作品', 'name_cn': ''},
+            {'id': 2, 'type': 2, 'name': '同名作品', 'name_cn': ''},
+        ]
+
+        self.assertIsNone(BangumiClient._findSubject('同名作品', subjects))
+
+
+    def test_playback_completion_is_decided_at_ninety_percent(self) -> None:
+        """30 分番組は 27 分到達時点から完了と判定する。"""
+
+        self.assertFalse(BangumiClient.isPlaybackCompleted(1619.9, 1800.0))
+        self.assertTrue(BangumiClient.isPlaybackCompleted(1620.0, 1800.0))
 
 
 if __name__ == '__main__':

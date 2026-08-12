@@ -175,6 +175,9 @@ async def BangumiAuthAPI(
     current_user.bangumi_access_token = current_user.encryptBangumiAccessToken(access_token)
     await current_user.save()
 
+    # 認証 API の応答を外部收藏一覧のページングから切り離し、以後の照合をバックエンドだけで進める。
+    BangumiClient.scheduleUserCollectionSync(current_user)
+
     logging.info(
         f'[BangumiRouter][BangumiAuthAPI] Linked Bangumi account. '
         f'[konomitv_user_id: {current_user.id}, bangumi_user_id: {bangumi_user_id}]',
@@ -182,20 +185,22 @@ async def BangumiAuthAPI(
 
 
 @router.post(
-    '/videos/{video_id}/complete',
-    summary = 'Bangumi エピソード視聴完了 API',
+    '/videos/{video_id}/progress',
+    summary = 'Bangumi 録画視聴進捗 API',
     status_code = status.HTTP_204_NO_CONTENT,
 )
-async def BangumiEpisodeCompleteAPI(
-    video_id: Annotated[int, Path(description='視聴完了とする録画番組の ID。')],
+async def BangumiPlaybackProgressAPI(
+    video_id: Annotated[int, Path(description='視聴中の録画番組 ID。')],
+    progress_request: Annotated[schemas.BangumiPlaybackProgressRequest, Body(description='録画視聴進捗。')],
     current_user: Annotated[User, Depends(GetCurrentUser)],
 ):
     """
-    指定した録画番組を Bangumi の通常エピソードへ照合し、「看過」に更新する。<br>
+    指定した録画番組の視聴進捗を受け取り、90% 以上なら照合済み Bangumi エピソードを「看過」に更新する。<br>
     JWT エンコードされたアクセストークンが Authorization: Bearer に設定されていないとアクセスできない。
 
     Args:
-        video_id (int): 視聴完了とする録画番組 ID。
+        video_id (int): 視聴中の録画番組 ID。
+        progress_request (schemas.BangumiPlaybackProgressRequest): プレイヤーが解決した再生位置と録画時間。
         current_user (User): ログイン中の KonomiTV ユーザー。
 
     Returns:
@@ -210,6 +215,10 @@ async def BangumiEpisodeCompleteAPI(
             status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail = 'Bangumi account is not linked',
         )
+
+    # 完了判定はクライアントのイベント発火条件に依存させず、受信した実再生時間からバックエンドで行う。
+    if BangumiClient.isPlaybackCompleted(progress_request.playback_position, progress_request.duration) is False:
+        return
 
     recorded_program = await RecordedProgram.get_or_none(id=video_id).prefetch_related('recorded_video')
     if recorded_program is None:
@@ -233,24 +242,12 @@ async def BangumiEpisodeCompleteAPI(
         if is_completed:
             return
 
-    # 未照合の録画だけ、同じ Series の話数列と放送日から Bangumi の対象話を確定する
+    # 条目・話数照合は收藏一覧同期だけが担当し、再生 API から作品ごとの検索を発生させない。
     if recorded_program.bangumi_subject_id is None or recorded_program.bangumi_episode_id is None:
-        try:
-            match = await BangumiClient.matchRecordedProgram(recorded_program)
-        except (httpx.NetworkError, httpx.TimeoutException, httpx.HTTPStatusError) as ex:
-            logging.error('[BangumiRouter][BangumiEpisodeCompleteAPI] Failed to match Bangumi episode.', exc_info=ex)
-            raise HTTPException(
-                status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail = 'Failed to match Bangumi episode',
-            ) from ex
-        if match is None:
-            logging.info(
-                f'[BangumiRouter][BangumiEpisodeCompleteAPI] No unique Bangumi episode match. [video_id: {video_id}]',
-            )
-            return
-        recorded_program.bangumi_subject_id = match.subject_id
-        recorded_program.bangumi_episode_id = match.episode_id
-        await recorded_program.save(update_fields=['bangumi_subject_id', 'bangumi_episode_id'])
+        logging.info(
+            f'[BangumiRouter][BangumiPlaybackProgressAPI] Bangumi episode is not mapped. [video_id: {video_id}]',
+        )
+        return
 
     # 外部更新に成功した後で完了記録を作り、失敗を成功として扱わない
     access_token = current_user.decryptBangumiAccessToken()
@@ -265,7 +262,7 @@ async def BangumiEpisodeCompleteAPI(
         defaults = {'source_recorded_program_id': recorded_program.id},
     )
     logging.info(
-        f'[BangumiRouter][BangumiEpisodeCompleteAPI] Completed Bangumi episode. '
+        f'[BangumiRouter][BangumiPlaybackProgressAPI] Completed Bangumi episode. '
         f'[konomitv_user_id: {current_user.id}, video_id: {video_id}, '
         f'bangumi_episode_id: {recorded_program.bangumi_episode_id}]',
     )

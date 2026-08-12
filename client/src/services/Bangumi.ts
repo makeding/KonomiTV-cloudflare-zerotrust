@@ -7,6 +7,12 @@ export interface IBangumiAuthRequest {
     access_token: string;
 }
 
+/** Bangumi の視聴完了判定へ送信する録画再生進捗 */
+export interface IBangumiPlaybackProgressRequest {
+    playback_position: number;
+    duration: number;
+}
+
 
 class Bangumi {
 
@@ -54,13 +60,17 @@ class Bangumi {
 
 
     /**
-     * 視聴完了した録画番組のエピソードを Bangumi で「看過」にする
+     * 録画番組の再生進捗を送信し、バックエンドで Bangumi の視聴完了を判定する
      * @param video_id 録画番組 ID
+     * @param progress_request プレイヤーが解決した再生位置と録画時間
      * @returns 同期 API が成功した場合は true、失敗した場合は false
      */
-    static async completeEpisode(video_id: number): Promise<boolean> {
+    static async updatePlaybackProgress(
+        video_id: number,
+        progress_request: IBangumiPlaybackProgressRequest,
+    ): Promise<boolean> {
 
-        const response = await APIClient.post(`/bangumi/videos/${video_id}/complete`);
+        const response = await APIClient.post(`/bangumi/videos/${video_id}/progress`, progress_request);
         if (response.type === 'error') {
             APIClient.showGenericError(response, 'Bangumi の視聴状態を更新できませんでした。');
             return false;

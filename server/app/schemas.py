@@ -272,6 +272,10 @@ class SeriesSummary(PydanticModel):
     channel_ids: list[str]
     official_website_url: str | None
     bangumi_subject_id: int | None
+    bangumi_subject_name: str | None
+    bangumi_subject_name_cn: str | None
+    bangumi_subject_summary: str | None
+    bangumi_subject_image_url: str | None
     recorded_programs_count: int
     created_at: datetime
     updated_at: datetime
@@ -285,6 +289,11 @@ class Series(PydanticModel):
     title: str
     description: str
     genres: list[Genre]
+    bangumi_subject_id: int | None
+    bangumi_subject_name: str | None
+    bangumi_subject_name_cn: str | None
+    bangumi_subject_summary: str | None
+    bangumi_subject_image_url: str | None
     broadcast_periods: list[SeriesBroadcastPeriod]
     created_at: datetime
     updated_at: datetime
@@ -772,6 +781,10 @@ class ThirdpartyAuthURL(BaseModel):
 
 class BangumiAuthRequest(BaseModel):
     access_token: Annotated[str, Field(min_length=1, max_length=512)]
+
+class BangumiPlaybackProgressRequest(BaseModel):
+    playback_position: Annotated[float, Field(ge=0)]
+    duration: Annotated[float, Field(gt=0)]
 
 # ***** Twitter 連携 *****
 

@@ -153,7 +153,10 @@ class BangumiRouterTest(unittest.IsolatedAsyncioTestCase):
         httpx_client = FakeHTTPXClient(response)
         current_user = FakeUser()
 
-        with patch('app.routers.BangumiRouter.HTTPX_CLIENT', return_value=httpx_client):
+        with (
+            patch('app.routers.BangumiRouter.HTTPX_CLIENT', return_value=httpx_client),
+            patch('app.routers.BangumiRouter.BangumiClient.scheduleUserCollectionSync') as schedule_sync,
+        ):
             await BangumiAuthAPI(
                 auth_request = schemas.BangumiAuthRequest(access_token='  personal-token\n'),
                 current_user = current_user,  # type: ignore[arg-type]
@@ -167,6 +170,7 @@ class BangumiRouterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current_user.bangumi_user_avatar_url, 'https://lain.bgm.tv/avatar.jpg')
         self.assertEqual(current_user.bangumi_access_token, 'encrypted:personal-token')
         self.assertTrue(current_user.saved)
+        schedule_sync.assert_called_once_with(current_user)
 
 
     async def test_invalid_access_token_does_not_replace_existing_link(self) -> None:

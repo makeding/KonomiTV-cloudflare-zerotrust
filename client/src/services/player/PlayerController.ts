@@ -2175,8 +2175,8 @@ class PlayerController {
                 }
             });
 
-            // Bangumi 連携済みのログインユーザーが録画の 90% まで再生したら、対応話を「看過」にする
-            // プレイヤーが解決した duration を使うことで、MMTS でも DB 上の録画時間に依存しない
+            // Bangumi 連携済みのログインユーザーが終盤まで再生したら、実再生位置をバックエンドへ送信する
+            // 90% の完了判定と Bangumi の条目・話数解決はバックエンドだけが担当する
             this.player.on('timeupdate', () => {
                 if (!this.player || !this.player.video || this.is_bangumi_episode_completion_requested) {
                     return;
@@ -2197,7 +2197,13 @@ class PlayerController {
 
                 // timeupdate は短時間に複数回発火するため、await より前にフラグを立てて重複送信を防ぐ
                 this.is_bangumi_episode_completion_requested = true;
-                void Bangumi.completeEpisode(player_store.recorded_program.id);
+                void Bangumi.updatePlaybackProgress(player_store.recorded_program.id, {
+                    playback_position: this.player.video.currentTime,
+                    duration,
+                }).then((is_success) => {
+                    // 一時的な API エラーでは、同じプレイヤーセッション内の次回 timeupdate から再送できるようにする
+                    if (is_success === false) this.is_bangumi_episode_completion_requested = false;
+                });
             });
 
             // 視聴開始から WATCHED_HISTORY_THRESHOLD_SECONDS 秒間このページが開かれ続けていたら、視聴履歴に追加する

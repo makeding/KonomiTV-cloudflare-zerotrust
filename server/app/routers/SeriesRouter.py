@@ -117,6 +117,11 @@ async def GetSeriesSummaries(
             s.title,
             s.description,
             s.genres,
+            s.bangumi_subject_id,
+            s.bangumi_subject_name,
+            s.bangumi_subject_name_cn,
+            s.bangumi_subject_summary,
+            s.bangumi_subject_image_url,
             COALESCE((
                 SELECT JSON_GROUP_ARRAY(recent_recorded_programs.id)
                 FROM (
@@ -161,13 +166,6 @@ async def GetSeriesSummaries(
                     ORDER BY priority, rp_website.start_time DESC
                 ) AS official_details
             ), '[]') AS official_website_sources,
-            (
-                SELECT MIN(rp_bangumi.bangumi_subject_id)
-                FROM recorded_programs rp_bangumi
-                WHERE rp_bangumi.series_id = s.id
-                  AND rp_bangumi.bangumi_subject_id IS NOT NULL
-                HAVING COUNT(DISTINCT rp_bangumi.bangumi_subject_id) = 1
-            ) AS bangumi_subject_id,
             COUNT(rp.id) AS recorded_programs_count,
             MAX(rv.file_created_at) AS latest_video_file_created_at,
             s.created_at,
@@ -200,9 +198,6 @@ async def GetSeriesSummaries(
                 'thumbnail_recorded_program_ids': json.loads(row['thumbnail_recorded_program_ids']),
                 'channel_ids': json.loads(row['channel_ids']),
                 'official_website_url': ExtractOfficialWebsiteURL(json.loads(row['official_website_sources'])),
-                'bangumi_subject_id': row['bangumi_subject_id'] if any(
-                    genre['major'] == 'アニメ・特撮' for genre in genres
-                ) else None,
             }))
 
         return schemas.SeriesSummaryList(
