@@ -709,9 +709,13 @@ onBeforeUnmount(() => {
     }
 
     &__loading-episode {
+        width: 170px;
+        height: calc(170px * 9 / 16);
         aspect-ratio: 16 / 9;
+        overflow: hidden;
         border-radius: 6px;
-        :deep(.v-skeleton-loader__image) { height: 100%; }
+        :deep(.v-skeleton-loader__bone),
+        :deep(.v-skeleton-loader__image) { width: 100%; height: 100%; }
     }
 
     &__bangumi {

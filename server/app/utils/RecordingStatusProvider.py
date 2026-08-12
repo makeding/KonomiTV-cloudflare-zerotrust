@@ -16,6 +16,7 @@ from app.utils.edcb.CtrlCmdUtil import CtrlCmdUtil
 
 
 EPGSTATION_API_TIMEOUT_SECONDS = 5.0
+EPGSTATION_RECORDED_SYNC_PAGE_LIMIT = 20
 
 
 @dataclass(slots=True)
@@ -31,6 +32,15 @@ class ActiveRecordingFilePaths:
 
     paths: set[str]
     backend: Literal['EDCB', 'EPGStation', 'FileSystem']
+    is_reliable: bool
+
+
+@dataclass(slots=True)
+class RecentRecordedFilePaths:
+    """EPGStation が把握している直近の録画済みファイルパス一覧。"""
+
+    paths: set[str]
+    total: int
     is_reliable: bool
 
 
@@ -283,6 +293,59 @@ def _ExtractEPGStationRecordingFilePaths(payload: Any) -> set[str]:
             extracted_paths.update(_ExtractEPGStationRecordingFilePaths(item))
 
     return extracted_paths
+
+
+async def GetEPGStationRecentRecordedFilePaths(config: ServerSettings) -> RecentRecordedFilePaths:
+    """
+    EPGStation から直近の録画済みファイルパス一覧を取得する。
+
+    Args:
+        config (ServerSettings): サーバー設定。
+
+    Returns:
+        RecentRecordedFilePaths: EPGStation から取得した直近の録画済みファイルパス一覧。
+    """
+
+    if config.general.backend != 'EPGStation':
+        return RecentRecordedFilePaths(paths=set(), total=0, is_reliable=False)
+
+    base_url = str(config.general.epgstation_url).rstrip('/')
+    endpoint_url = (
+        f'{base_url}/api/recorded?'
+        f'isHalfWidth=false&hasOriginalFile=true&offset=0&limit={EPGSTATION_RECORDED_SYNC_PAGE_LIMIT}'
+    )
+    async with HTTPX_CLIENT() as client:
+        try:
+            response = await client.get(endpoint_url, timeout=EPGSTATION_API_TIMEOUT_SECONDS)
+        except (httpx.NetworkError, httpx.TimeoutException) as ex:
+            logging.warning(
+                f'[RecordingStatusProvider][EPGStation] Failed to request recent recorded list. '
+                f'({type(ex).__name__}: {ex})'
+            )
+            return RecentRecordedFilePaths(paths=set(), total=0, is_reliable=False)
+        except Exception as ex:
+            logging.warning('[RecordingStatusProvider][EPGStation] Failed to request recent recorded list.', exc_info=ex)
+            return RecentRecordedFilePaths(paths=set(), total=0, is_reliable=False)
+
+    if response.status_code != 200:
+        logging.warning(
+            f'[RecordingStatusProvider][EPGStation] Unexpected status code from recent recorded list: '
+            f'{response.status_code} [{endpoint_url}]'
+        )
+        return RecentRecordedFilePaths(paths=set(), total=0, is_reliable=False)
+
+    try:
+        payload = response.json()
+    except Exception as ex:
+        logging.warning('[RecordingStatusProvider][EPGStation] Failed to parse recent recorded list.', exc_info=ex)
+        return RecentRecordedFilePaths(paths=set(), total=0, is_reliable=False)
+
+    total = payload.get('total', 0) if isinstance(payload, dict) else 0
+    return RecentRecordedFilePaths(
+        paths = _ExpandRecordingPathCandidatesSet(_ExtractEPGStationRecordingFilePaths(payload), config),
+        total = total if isinstance(total, int) else 0,
+        is_reliable = True,
+    )
 
 
 async def _GetActiveRecordingFilePathsFromEPGStation(config: ServerSettings) -> ActiveRecordingFilePaths:

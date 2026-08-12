@@ -6,7 +6,7 @@ import concurrent.futures
 import pathlib
 import weakref
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import ClassVar, Literal, cast
 
 import anyio
@@ -32,6 +32,7 @@ from app.utils.NotificationService import NotificationManager
 from app.utils.ProcessLimiter import ProcessLimiter
 from app.utils.RecordingStatusProvider import (
     ActiveRecordingFilePaths,
+    GetEPGStationRecentRecordedFilePaths,
     GetActiveRecordingFilePaths,
     IsActiveRecordingFilePath,
 )
@@ -107,6 +108,12 @@ class RecordedScanTask:
     # 録画バックエンドから取得した録画中ファイルパスのキャッシュ有効時間 (秒)
     ACTIVE_RECORDING_PATHS_CACHE_SECONDS: ClassVar[int] = 5
 
+    # 録画バックエンドが把握している録画状態を同期する間隔 (秒)
+    ACTIVE_RECORDING_SYNC_INTERVAL_SECONDS: ClassVar[int] = 5
+
+    # EPGStation が把握している直近の録画済み一覧を同期する間隔 (秒)
+    EPGSTATION_RECENT_RECORDED_SYNC_INTERVAL_SECONDS: ClassVar[int] = 60
+
     # 録画中ファイルの最小データ長 (秒)
     MINIMUM_RECORDING_SECONDS: ClassVar[int] = 60
 
@@ -160,9 +167,18 @@ class RecordedScanTask:
         self._active_recording_paths_cache: ActiveRecordingFilePaths | None = None
         self._active_recording_paths_cache_updated_at: datetime | None = None
         self._active_recording_paths_lock = asyncio.Lock()
+        # 録画バックエンド同期のログを状態変化時だけ出すため、直前の状態を保持する。
+        ## 参照箇所: __syncActiveRecordingFiles()
+        ## 前提条件: ファイル実体ではなく、比較用のパス文字列だけを保持する。
+        self._active_recording_paths_log_signature: tuple[bool, tuple[str, ...]] | None = None
         # タスクの状態管理
         self._is_running = False
         self._task: asyncio.Task[None] | None = None
+        # EDCB / EPGStation の API だけを定期的に確認する同期タスクを保持する。
+        ## 参照箇所: startBackendRecordingSync(), stopBackendRecordingSync()
+        ## 前提条件: このタスクは録画フォルダの全件スキャンや変更監視を一切起動しない。
+        self._is_backend_recording_sync_running = False
+        self._backend_recording_sync_task: asyncio.Task[None] | None = None
 
         # 録画フォルダ以下の一括スキャンを実行中かどうか
         self._is_batch_scan_running = False
