@@ -294,7 +294,7 @@ const rootTag = computed(() => isOfflineInteractionBlocked.value === true ? 'div
 const rootBindings = computed(() => {
     if (rootTag.value !== 'router-link') return {};
     return {
-        to: props.program.recorded_video.status === 'Recorded'
+        to: props.program.recorded_video.status !== 'AnalysisFailed'
             ? (props.forOffline ? `/videos/watch/${props.program.id}?source=offline` : `/videos/watch/${props.program.id}`)
             : { path: '' },
     };
