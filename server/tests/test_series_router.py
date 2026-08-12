@@ -86,22 +86,32 @@ class SeriesRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
             {
                 'series_id': 1, 'series_title': '新番組', 'genres': anime_genres,
                 'program_title': '新番組 #1', 'id': 101, 'channel_id': 'gr011',
-                'start_time': (now - timedelta(days=1)).isoformat(),
+                'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '1',
+                'is_partially_recorded': True,
             },
             {
                 'series_id': 2, 'series_title': '8K紀行', 'genres': documentary_genres,
                 'program_title': '8K紀行 第1回', 'id': 201, 'channel_id': 'bs811',
-                'start_time': (now - timedelta(days=1)).isoformat(),
+                'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '1',
+                'is_partially_recorded': False,
             },
             {
                 'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
                 'program_title': '週刊バラエティ #2', 'id': 302, 'channel_id': 'gr041',
-                'start_time': (now - timedelta(days=1)).isoformat(),
+                'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '2',
+                'is_partially_recorded': True,
+            },
+            {
+                'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
+                'program_title': '週刊バラエティ #2', 'id': 303, 'channel_id': 'gr051',
+                'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '2',
+                'is_partially_recorded': False,
             },
             {
                 'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
                 'program_title': '週刊バラエティ #1', 'id': 301, 'channel_id': 'gr041',
-                'start_time': (now - timedelta(days=8)).isoformat(),
+                'start_time': (now - timedelta(days=8)).isoformat(), 'episode_number': '1',
+                'is_partially_recorded': False,
             },
         ]
         future_rows = [{
@@ -118,6 +128,9 @@ class SeriesRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
         next_broadcast = now + timedelta(days=6)
         self.assertEqual(anime.weekday, next_broadcast.weekday())
         self.assertEqual(anime.broadcast_time, f'{next_broadcast.hour:02d}:{(next_broadcast.minute // 5) * 5:02d}')
+        self.assertEqual(anime.partially_recorded_episodes_count, 1)
+        weekly_variety = next(series for series in result.series_list if series.id == 3)
+        self.assertEqual(weekly_variety.partially_recorded_episodes_count, 0)
 
 
 if __name__ == '__main__':

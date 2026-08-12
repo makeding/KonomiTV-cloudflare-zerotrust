@@ -120,6 +120,10 @@
                         :length="Math.ceil(total_series / 50)"
                         :total-visible="Utils.isSmartphoneVertical() ? 5 : 7"
                         @update:model-value="updatePage" />
+
+                    <!-- 分页器はカード直下に保ちつつ、展開前から詳細相当のページ高を確保する。 -->
+                    <div v-if="expanded_series_id === null && series_list.length > 0"
+                        class="series-details-reserve" aria-hidden="true"></div>
                 </div>
             </div>
         </main>
@@ -619,6 +623,14 @@ onBeforeUnmount(() => {
     p {
         margin-top: 8px;
         font-size: 14px;
+    }
+}
+
+.series-details-reserve {
+    height: clamp(440px, 52vh, 620px);
+    pointer-events: none;
+    @include smartphone-vertical {
+        height: 70vh;
     }
 }
 

@@ -149,7 +149,7 @@ async def OnAirSeriesListAPI():
     _, rows = await connection.execute_query(
         """
         SELECT rp.series_id, s.title AS series_title, s.genres, rp.title AS program_title,
-               rp.id, rp.channel_id, rp.start_time, rp.episode_number
+               rp.id, rp.channel_id, rp.start_time, rp.episode_number, rp.is_partially_recorded
         FROM recorded_programs rp
         INNER JOIN series s ON s.id = rp.series_id
         WHERE rp.series_id IS NOT NULL
@@ -162,15 +162,25 @@ async def OnAirSeriesListAPI():
     samples_by_series: dict[int, list[dict[str, Any]]] = {}
     sample_keys_by_series: dict[int, set[str]] = {}
     episode_numbers_by_series: dict[int, set[int]] = {}
+    complete_episode_numbers_by_series: dict[int, set[int]] = {}
+    partially_recorded_episode_numbers_by_series: dict[int, set[int]] = {}
     for row in rows:
         series_id = int(row['series_id'])
         samples = samples_by_series.setdefault(series_id, [])
         sample_keys = sample_keys_by_series.setdefault(series_id, set())
         episode_number = str(row['episode_number']).strip() if row['episode_number'] is not None else ''
         if episode_number:
-            episode_numbers_by_series.setdefault(series_id, set()).update(
-                ExtractIntegerEpisodeNumbers(episode_number),
-            )
+            integer_episode_numbers = ExtractIntegerEpisodeNumbers(episode_number)
+            episode_numbers_by_series.setdefault(series_id, set()).update(integer_episode_numbers)
+
+            # 同じ自然話数に別局版がある場合、1 件でも完全な録画があれば視聴には困らない。
+            # 部分録画しか存在しない自然話数だけを、一覧カードで警告できるよう分けて集計する。
+            if bool(row['is_partially_recorded']):
+                partially_recorded_episode_numbers_by_series.setdefault(series_id, set()).update(
+                    integer_episode_numbers,
+                )
+            else:
+                complete_episode_numbers_by_series.setdefault(series_id, set()).update(integer_episode_numbers)
         start_time = ParseDatetimeStringToJST(str(row['start_time']))
         sample_key = f'episode:{episode_number}' if episode_number else f'date:{start_time.date().isoformat()}'
 
@@ -262,6 +272,10 @@ async def OnAirSeriesListAPI():
                 - len(episode_numbers_by_series[series_id])
                 if episode_numbers_by_series.get(series_id)
                 else 0
+            ),
+            partially_recorded_episodes_count = len(
+                partially_recorded_episode_numbers_by_series.get(series_id, set())
+                - complete_episode_numbers_by_series.get(series_id, set())
             ),
             weekday = weekday,
             broadcast_time = f'{hour:02d}:{minute:02d}',

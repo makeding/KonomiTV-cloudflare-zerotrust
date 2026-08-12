@@ -294,6 +294,7 @@ class OnAirSeries(BaseModel):
     channel_ids: list[str]
     recorded_episodes_count: int
     missing_episodes_count: int
+    partially_recorded_episodes_count: int
     weekday: Annotated[int, Field(ge=0, le=6)]
     broadcast_time: str
     latest_broadcast_at: datetime

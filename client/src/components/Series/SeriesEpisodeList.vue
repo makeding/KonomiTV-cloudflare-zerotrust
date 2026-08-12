@@ -57,7 +57,17 @@
             </div>
         </div>
         <div v-if="is_loading" class="series-episode-list__loading">
-            <v-skeleton-loader v-for="index in 6" :key="index" type="image" />
+            <div class="series-episode-list__loading-corner">放送局</div>
+            <v-skeleton-loader v-for="index in 6" :key="`header-${index}`"
+                class="series-episode-list__loading-heading" type="text" />
+            <template v-for="row in 2" :key="`row-${row}`">
+                <div class="series-episode-list__loading-channel">
+                    <v-skeleton-loader type="avatar" />
+                    <v-skeleton-loader type="text" />
+                </div>
+                <v-skeleton-loader v-for="column in (row === 1 ? 6 : 4)" :key="`episode-${row}-${column}`"
+                    class="series-episode-list__loading-episode" type="image" />
+            </template>
         </div>
         <div v-else class="series-episode-list__matrix-scroll">
             <div class="series-episode-list__matrix"
@@ -102,6 +112,10 @@
                                         hoveredPointerPositionRatio > 0.5}"
                                     :style="{left: `${hoveredPointerPositionRatio * 100}%`}">
                                     <span>{{formatTileTime(program, hoveredTileIndex)}}</span>
+                                </div>
+                                <div v-if="program.is_partially_recorded"
+                                    class="series-episode-list__episode-partial-warning">
+                                    ⚠ 一部のみ録画
                                 </div>
                                 <div class="series-episode-list__episode-label">
                                     <span>{{getEpisodeCaption(program)}}</span>
@@ -663,8 +677,41 @@ onBeforeUnmount(() => {
 
     &__loading {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+        grid-template-columns: 142px repeat(6, 170px);
         gap: 8px;
+        width: max-content;
+        min-width: 100%;
+        overflow: hidden;
+    }
+
+    &__loading-corner,
+    &__loading-heading {
+        align-self: center;
+        color: rgb(var(--v-theme-text-darken-1));
+        font-size: 11px;
+        text-align: center;
+    }
+
+    &__loading-corner { text-align: left; }
+
+    &__loading-heading {
+        :deep(.v-skeleton-loader__text) { width: 42%; margin: 0 auto; }
+    }
+
+    &__loading-channel {
+        display: grid;
+        grid-template-columns: 52px 1fr;
+        align-items: center;
+        gap: 10px;
+        min-height: 96px;
+        :deep(.v-skeleton-loader__avatar) { width: 52px; height: 30px; border-radius: 4px; }
+        :deep(.v-skeleton-loader__text) { width: 72px; }
+    }
+
+    &__loading-episode {
+        aspect-ratio: 16 / 9;
+        border-radius: 6px;
+        :deep(.v-skeleton-loader__image) { height: 100%; }
     }
 
     &__bangumi {
@@ -1086,6 +1133,21 @@ onBeforeUnmount(() => {
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+    }
+
+    &__episode-partial-warning {
+        position: absolute;
+        top: 6px;
+        left: 7px;
+        z-index: 4;
+        padding: 2px 5px;
+        color: white;
+        font-size: 9px;
+        font-weight: 700;
+        line-height: 1.35;
+        text-shadow: 0 1px 2px rgb(0 0 0 / 85%);
+        background: rgb(var(--v-theme-warning-darken-1) / 90%);
+        border-radius: 3px;
     }
 }
 

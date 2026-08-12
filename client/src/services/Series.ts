@@ -37,6 +37,7 @@ export interface IOnAirSeries {
     channel_ids: string[];
     recorded_episodes_count: number;
     missing_episodes_count: number;
+    partially_recorded_episodes_count: number;
     weekday: number;
     broadcast_time: string;
     latest_broadcast_at: string;

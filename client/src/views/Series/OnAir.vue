@@ -18,10 +18,7 @@
                         <v-btn to="/series/" variant="tonal" prepend-icon="mdi-view-grid-outline">すべてのシリーズ</v-btn>
                     </div>
 
-                    <div v-if="isLoading" class="on-air-loading">
-                        <v-skeleton-loader v-for="index in 14" :key="index" type="image" />
-                    </div>
-                    <div v-else ref="onAirGridElement" class="on-air-week">
+                    <div ref="onAirGridElement" class="on-air-week">
                         <header v-for="day in weekdays" :key="`header-${day.index}`"
                             class="on-air-day-header"
                             :class="[
@@ -29,12 +26,17 @@
                                 {'on-air-day-header--attention': hasAttentionSeries(day.index)},
                             ]">
                                 <h3>{{day.label}}</h3>
-                                <span>{{seriesByWeekday[day.index].length}}件</span>
+                                <span>{{isLoading ? '取得中…' : `${seriesByWeekday[day.index].length}件`}}</span>
                         </header>
-                        <template v-for="(seriesRow, rowIndex) in onAirRows" :key="`row-${rowIndex}`">
+                        <template v-if="isLoading">
+                            <v-skeleton-loader v-for="cell in skeletonCells"
+                                :key="`skeleton-${cell.weekday}-${cell.row}`"
+                                type="image" class="on-air-card-skeleton"
+                                :style="{gridColumn: cell.weekday + 1, gridRow: cell.row + 2}" />
+                        </template>
+                        <template v-else v-for="(seriesRow, rowIndex) in onAirRows" :key="`row-${rowIndex}`">
                             <div v-for="(series, weekday) in seriesRow" :key="`cell-${rowIndex}-${weekday}`"
-                                class="on-air-cell"
-                                :class="{'on-air-cell--last': series && isLastSeriesForWeekday(series, weekday)}">
+                                class="on-air-cell">
                                 <button v-if="series"
                                     class="on-air-card" type="button"
                                     :class="{'on-air-card--attention': isInAttentionWindow(series)}"
@@ -50,14 +52,18 @@
                                     </div>
                                     <div class="on-air-card__shade"></div>
                                     <div class="on-air-card__body">
-                                        <time>{{series.broadcast_time}}</time>
+                                        <time>{{getDisplayBroadcastTime(series)}}</time>
                                         <strong>{{series.title}}</strong>
                                         <div class="on-air-card__meta">
-                                            <span>
+                                            <span class="on-air-card__episode-status">
                                                 {{series.recorded_episodes_count}}話
-                                                <template v-if="series.missing_episodes_count > 0">
+                                                <span v-if="series.missing_episodes_count > 0" class="on-air-card__status-warning">
                                                     ・{{series.missing_episodes_count}}話未録画
-                                                </template>
+                                                </span>
+                                                <span v-if="series.partially_recorded_episodes_count > 0"
+                                                    class="on-air-card__status-warning">
+                                                    ・{{series.partially_recorded_episodes_count}}話部分録画
+                                                </span>
                                             </span>
                                             <div class="on-air-card__logos">
                                                 <div v-for="channelId in series.channel_ids.slice(0, 2)" :key="channelId"
@@ -70,6 +76,7 @@
                                         </div>
                                     </div>
                                 </button>
+                                <div v-else class="on-air-cell__placeholder"></div>
                             </div>
                             <div v-if="expandedSeriesInRow(seriesRow)" class="on-air-week__episodes">
                                 <div v-if="isSummaryLoading" class="on-air-week__loading">
@@ -86,6 +93,9 @@
                                     :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
                             </div>
                         </template>
+                        <!-- 展開前から詳細相当の空間を確保し、クリック時にページ全体が急に伸びるのを防ぐ。 -->
+                        <div v-if="expandedSeriesID === null && seriesList.length > 0"
+                            class="on-air-week__episodes-reserve" aria-hidden="true"></div>
                     </div>
                 </div>
             </div>
@@ -103,6 +113,7 @@ import Navigation from '@/components/Navigation.vue';
 import SeriesEpisodeList from '@/components/Series/SeriesEpisodeList.vue';
 import SPHeaderBar from '@/components/SPHeaderBar.vue';
 import Series, { IOnAirSeries, ISeriesSummary } from '@/services/Series';
+import useSettingsStore from '@/stores/SettingsStore';
 import Utils, { dayjsOriginal } from '@/utils';
 
 const weekdays = [
@@ -110,16 +121,42 @@ const weekdays = [
     { index: 3, label: '木' }, { index: 4, label: '金' }, { index: 5, label: '土' },
     { index: 6, label: '日' },
 ];
+// 実際の週間編成の密度に近く見えるよう、曜日ごとに異なる枚数の骨格を配置する。
+const skeletonWeekdayCounts = [3, 2, 4, 2, 3, 3, 5];
+const skeletonCells = skeletonWeekdayCounts.flatMap((count, weekday) =>
+    Array.from({length: count}, (_, row) => ({weekday, row})),
+);
 const seriesList = ref<IOnAirSeries[]>([]);
 const isLoading = ref(true);
 const route = useRoute();
 const router = useRouter();
+const settingsStore = useSettingsStore();
 const expandedSeriesID = ref<number | null>(null);
 const expandedSeriesSummary = ref<ISeriesSummary | null>(null);
 const isSummaryLoading = ref(false);
 const onAirGridElement = ref<HTMLElement | null>(null);
+
+// 既存の番組表設定と同じく、28 時間表記では 0:00〜3:59 を前日の 24:00〜27:59 として並べる。
+// API の曜日・時刻は自然時刻のまま保持し、このページの表示順とラベルだけを切り替える。
+const getDisplayWeekday = (series: IOnAirSeries): number => {
+    const hour = Number.parseInt(series.broadcast_time.slice(0, 2), 10);
+    return settingsStore.settings.use_28hour_clock && hour < 4 ? (series.weekday + 6) % 7 : series.weekday;
+};
+
+const getDisplayBroadcastMinutes = (series: IOnAirSeries): number => {
+    const [hour, minute] = series.broadcast_time.split(':').map(Number);
+    return (settingsStore.settings.use_28hour_clock && hour < 4 ? hour + 24 : hour) * 60 + minute;
+};
+
+const getDisplayBroadcastTime = (series: IOnAirSeries): string => {
+    const displayMinutes = getDisplayBroadcastMinutes(series);
+    return `${Math.floor(displayMinutes / 60).toString().padStart(2, '0')}:${(displayMinutes % 60).toString().padStart(2, '0')}`;
+};
+
 const seriesByWeekday = computed(() => weekdays.map(day =>
-    seriesList.value.filter(series => series.weekday === day.index),
+    seriesList.value
+        .filter(series => getDisplayWeekday(series) === day.index)
+        .sort((first, second) => getDisplayBroadcastMinutes(first) - getDisplayBroadcastMinutes(second)),
 ));
 const onAirRows = computed(() => {
     const rowCount = Math.max(0, ...seriesByWeekday.value.map(series => series.length));
@@ -153,10 +190,6 @@ const hasAttentionSeries = (weekday: number): boolean => {
 
 const expandedSeriesInRow = (seriesRow: Array<IOnAirSeries | null>): IOnAirSeries | undefined => {
     return seriesRow.find(series => series?.id === expandedSeriesID.value) ?? undefined;
-};
-
-const isLastSeriesForWeekday = (series: IOnAirSeries, weekday: number): boolean => {
-    return seriesByWeekday.value[weekday].at(-1)?.id === series.id;
 };
 
 const syncExpandedSeriesFromRoute = async () => {
@@ -226,11 +259,15 @@ watch(() => route.params.series_id, async () => {
     display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px;
     h2 { font-size: 24px; }
 }
-.on-air-week, .on-air-loading {
+.on-air-week {
     display: grid; grid-template-columns: repeat(7, minmax(180px, 1fr)); gap: 10px;
     padding-bottom: 8px;
 }
-.on-air-loading :deep(.v-skeleton-loader) { aspect-ratio: 16 / 10; min-width: 180px; }
+.on-air-card-skeleton {
+    aspect-ratio: 16 / 10;
+    min-width: 180px;
+    :deep(.v-skeleton-loader__image) { height: 100%; }
+}
 .on-air-day-header {
     --on-air-day-color: #64748b;
     display: flex; align-items: baseline; justify-content: space-between;
@@ -251,10 +288,15 @@ watch(() => route.params.series_id, async () => {
 }
 .on-air-cell {
     min-width: 0;
-    &--last { position: sticky; top: 75px; z-index: 1; align-self: start; }
+    &__placeholder { min-width: 0; }
 }
 .on-air-week {
     &__episodes { grid-column: 1 / -1; min-width: 0; margin: 2px 0 8px; }
+    &__episodes-reserve {
+        grid-column: 1 / -1;
+        height: clamp(440px, 52vh, 620px);
+        pointer-events: none;
+    }
     &__loading {
         min-height: 340px; padding: 18px;
         background: rgb(var(--v-theme-background-lighten-1)); border-radius: 8px;
@@ -286,17 +328,27 @@ watch(() => route.params.series_id, async () => {
     time { font-size: 16px; font-weight: 700; }
     strong { display: -webkit-box; margin-top: 2px; overflow: hidden; font-size: 12px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     &__meta { display: flex; align-items: center; justify-content: space-between; margin-top: 5px; font-size: 10px; }
+    &__episode-status { min-width: 0; }
+    &__status-warning { color: rgb(var(--v-theme-warning-lighten-1)); font-weight: 700; }
     &__logos { display: flex; gap: 3px; }
     &__logo { --ch-sprite-width: 34; --ch-sprite-height: 20; --ch-sprite-border-radius: 3; overflow: hidden; border-radius: 3px; }
     &--attention {
         outline: 2px solid rgb(var(--v-theme-primary) / 78%);
         box-shadow: 0 0 0 4px rgb(var(--v-theme-primary) / 12%);
     }
+    &--attention &__shade {
+        background: linear-gradient(
+            180deg,
+            rgb(var(--v-theme-primary) / 18%),
+            rgb(var(--v-theme-primary) / 26%) 52%,
+            rgb(0 0 0 / 88%)
+        );
+    }
 }
 @include smartphone-vertical {
     .on-air-container { padding: 8px; }
     .on-air-header { align-items: flex-start; padding: 0 8px; }
-    .on-air-week, .on-air-loading {
+    .on-air-week {
         grid-template-columns: repeat(7, min(36vw, 180px));
         gap: 8px;
         overflow-x: auto;
@@ -308,7 +360,6 @@ watch(() => route.params.series_id, async () => {
         scroll-snap-align: start;
         h3 { font-size: 16px; }
     }
-    .on-air-cell--last { position: static; }
     .on-air-card {
         &__body { right: 7px; bottom: 6px; left: 7px; }
         time { font-size: 14px; }
@@ -317,6 +368,10 @@ watch(() => route.params.series_id, async () => {
         &__logo { --ch-sprite-width: 30; --ch-sprite-height: 18; --ch-sprite-border-radius: 3; }
     }
     .on-air-week__episodes { min-width: calc(7 * min(36vw, 180px) + 6 * 8px); }
+    .on-air-week__episodes-reserve {
+        min-width: calc(7 * min(36vw, 180px) + 6 * 8px);
+        height: 70vh;
+    }
 }
 
 </style>
