@@ -3,7 +3,7 @@
         <HeaderBar />
         <main>
             <Navigation />
-            <div class="on-air-wrapper">
+            <div ref="onAirWrapper" class="on-air-wrapper">
                 <SPHeaderBar />
                 <div class="on-air-container">
                     <Breadcrumbs :crumbs="[
@@ -67,32 +67,32 @@
                         </section>
                     </div>
                 </div>
+                <v-dialog :model-value="expandedSeriesID !== null" class="on-air-dialog"
+                    :style="dialogOverlayStyle" scrollable @update:model-value="closeSeries">
+                    <v-card class="on-air-dialog__card">
+                        <v-btn class="on-air-dialog__close" icon="mdi-close" variant="text"
+                            aria-label="閉じる" @click="closeSeries()" />
+                        <div v-if="isSummaryLoading" class="on-air-dialog__loading">
+                            <v-skeleton-loader type="heading, image, paragraph, paragraph" />
+                        </div>
+                        <SeriesEpisodeList v-else-if="expandedSeriesSummary"
+                            :seriesId="expandedSeriesSummary.id"
+                            :title="expandedSeriesSummary.title"
+                            :description="expandedSeriesSummary.description"
+                            :bangumiSubjectId="expandedSeriesSummary.bangumi_subject_id"
+                            :bangumiSubjectName="expandedSeriesSummary.bangumi_subject_name"
+                            :bangumiSubjectNameCn="expandedSeriesSummary.bangumi_subject_name_cn"
+                            :bangumiSubjectSummary="expandedSeriesSummary.bangumi_subject_summary"
+                            :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
+                    </v-card>
+                </v-dialog>
             </div>
         </main>
-        <v-dialog :model-value="expandedSeriesID !== null" class="on-air-dialog"
-            :fullscreen="Utils.isSmartphoneVertical()" scrollable @update:model-value="closeSeries">
-            <v-card class="on-air-dialog__card">
-                <v-btn class="on-air-dialog__close" icon="mdi-close" variant="text"
-                    aria-label="閉じる" @click="closeSeries()" />
-                <div v-if="isSummaryLoading" class="on-air-dialog__loading">
-                    <v-skeleton-loader type="heading, image, paragraph, paragraph" />
-                </div>
-                <SeriesEpisodeList v-else-if="expandedSeriesSummary"
-                    :seriesId="expandedSeriesSummary.id"
-                    :title="expandedSeriesSummary.title"
-                    :description="expandedSeriesSummary.description"
-                    :bangumiSubjectId="expandedSeriesSummary.bangumi_subject_id"
-                    :bangumiSubjectName="expandedSeriesSummary.bangumi_subject_name"
-                    :bangumiSubjectNameCn="expandedSeriesSummary.bangumi_subject_name_cn"
-                    :bangumiSubjectSummary="expandedSeriesSummary.bangumi_subject_summary"
-                    :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
-            </v-card>
-        </v-dialog>
     </div>
 </template>
 <script lang="ts" setup>
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
@@ -115,9 +115,31 @@ const router = useRouter();
 const expandedSeriesID = ref<number | null>(null);
 const expandedSeriesSummary = ref<ISeriesSummary | null>(null);
 const isSummaryLoading = ref(false);
+const onAirWrapper = ref<HTMLElement | null>(null);
+const dialogOverlayBounds = ref({top: 0, left: 0, width: 0, height: 0});
+let wrapperResizeObserver: ResizeObserver | null = null;
 const seriesByWeekday = computed(() => weekdays.map(day =>
     seriesList.value.filter(series => series.weekday === day.index),
 ));
+const dialogOverlayStyle = computed(() => ({
+    top: `${dialogOverlayBounds.value.top}px`,
+    left: `${dialogOverlayBounds.value.left}px`,
+    width: `${dialogOverlayBounds.value.width}px`,
+    height: `${dialogOverlayBounds.value.height}px`,
+}));
+
+const updateDialogOverlayBounds = () => {
+    if (!onAirWrapper.value) return;
+    const wrapperBounds = onAirWrapper.value.getBoundingClientRect();
+    const top = Math.max(0, wrapperBounds.top);
+    const left = Math.max(0, wrapperBounds.left);
+    dialogOverlayBounds.value = {
+        top,
+        left,
+        width: window.innerWidth - left,
+        height: window.innerHeight - top,
+    };
+};
 
 const syncExpandedSeriesFromRoute = async () => {
     const routeSeriesID = Array.isArray(route.params.series_id)
@@ -160,7 +182,16 @@ const loadOnAirSeries = async () => {
 };
 
 onMounted(async () => {
+    updateDialogOverlayBounds();
+    wrapperResizeObserver = new ResizeObserver(updateDialogOverlayBounds);
+    if (onAirWrapper.value) wrapperResizeObserver.observe(onAirWrapper.value);
+    window.addEventListener('resize', updateDialogOverlayBounds);
     await loadOnAirSeries();
+});
+
+onBeforeUnmount(() => {
+    wrapperResizeObserver?.disconnect();
+    window.removeEventListener('resize', updateDialogOverlayBounds);
 });
 
 watch(() => route.params.series_id, async () => {
@@ -171,7 +202,7 @@ watch(() => route.params.series_id, async () => {
 </script>
 <style lang="scss" scoped>
 
-.on-air-wrapper { width: 100%; min-width: 0; }
+.on-air-wrapper { position: relative; width: 100%; min-width: 0; }
 .on-air-container { max-width: 1800px; padding: 20px; margin: 0 auto; }
 .on-air-header {
     display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px;
@@ -211,7 +242,7 @@ watch(() => route.params.series_id, async () => {
     &__logo { --ch-sprite-width: 34; --ch-sprite-height: 20; --ch-sprite-border-radius: 3; overflow: hidden; border-radius: 3px; }
 }
 .on-air-dialog {
-    :deep(.v-overlay__content) { width: min(1800px, calc(100vw - 48px)); max-width: none; max-height: 92vh; }
+    :deep(.v-overlay__content) { width: min(1800px, calc(100% - 48px)); max-width: none; max-height: 92%; }
     &__card { position: relative; overflow-y: auto; padding: 18px; background: rgb(var(--v-theme-background)); }
     &__close { position: sticky; top: 0; z-index: 20; align-self: flex-end; margin-bottom: -48px; }
     &__loading { min-height: 60vh; padding: 44px 12px 12px; }
@@ -224,8 +255,18 @@ watch(() => route.params.series_id, async () => {
     .on-air-week, .on-air-loading { grid-template-columns: repeat(7, 74vw); scroll-snap-type: x proximity; }
     .on-air-day { min-width: 74vw; scroll-snap-align: start; }
     .on-air-dialog {
-        :deep(.v-overlay__content) { width: 100%; max-height: none; }
-        &__card { padding: 8px; }
+        :deep(.v-overlay__content) {
+            position: absolute;
+            right: 8px;
+            bottom: calc(env(safe-area-inset-bottom) + 64px);
+            left: 8px;
+            width: auto;
+            max-height: 72dvh;
+            margin: 0;
+        }
+        &__card { padding: 8px; border-radius: 12px; }
+        &__loading { min-height: 46dvh; }
+        &__loading :deep(.v-skeleton-loader) { min-height: 42dvh; }
     }
 }
 

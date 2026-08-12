@@ -6,7 +6,8 @@
             <span class="mt-1">テレビをみる</span>
         </v-btn>
         <v-btn class="bottom-navigation-button" to="/videos/"
-            :class="{'v-btn--active': $route.path.startsWith('/videos') || $route.path.startsWith('/series')}">
+            :class="{'v-btn--active': $route.path.startsWith('/videos') ||
+                ($route.path.startsWith('/series') && !$route.path.startsWith('/series/on-air'))}">
             <Icon icon="fluent:movies-and-tv-20-regular" width="30px" />
             <span class="mt-1">ビデオをみる</span>
         </v-btn>
@@ -15,10 +16,10 @@
             <Icon icon="fluent:timer-16-regular" width="30px" />
             <span class="mt-1">録画予約</span>
         </v-btn>
-        <v-btn class="bottom-navigation-button" to="/captures/"
-            :class="{'v-btn--active': $route.path.startsWith('/captures')}">
-            <Icon icon="fluent:image-multiple-24-regular" width="30px" />
-            <span class="mt-1">キャプチャ</span>
+        <v-btn class="bottom-navigation-button" to="/series/on-air"
+            :class="{'v-btn--active': $route.path.startsWith('/series/on-air')}">
+            <Icon icon="fluent:calendar-clock-20-regular" width="30px" />
+            <span class="mt-1">放送中</span>
         </v-btn>
         <v-btn class="bottom-navigation-button" to="/mypage/"
             :class="{'v-btn--active': $route.path.startsWith('/mypage')}">
