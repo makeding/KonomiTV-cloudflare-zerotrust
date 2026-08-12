@@ -47,8 +47,22 @@
 
             <template v-if="selectedDevice !== null && selectedPlaybackState.content_type !== 'Idle'">
                 <v-divider class="my-2" />
-                <div class="remote-device-menu__section-title">
-                    {{ selectedPlaybackState.content_type === 'Live' ? 'ライブ再生中' : '録画番組を再生中' }}
+                <div class="remote-device-menu__now-playing">
+                    <div v-if="selectedPlaybackState.artwork_url" class="remote-device-menu__artwork"
+                        :class="{'remote-device-menu__artwork--logo': selectedPlaybackState.content_type === 'Live'}">
+                        <img :src="selectedPlaybackState.artwork_url" alt="" />
+                    </div>
+                    <div class="remote-device-menu__media-info">
+                        <div class="remote-device-menu__section-title">
+                            {{ selectedPlaybackState.content_type === 'Live' ? 'ライブ再生中' : '録画番組を再生中' }}
+                        </div>
+                        <div v-if="selectedPlaybackState.title" class="remote-device-menu__media-title">
+                            {{ selectedPlaybackState.title }}
+                        </div>
+                        <div v-if="selectedPlaybackState.subtitle" class="remote-device-menu__media-subtitle">
+                            {{ selectedPlaybackState.subtitle }}
+                        </div>
+                    </div>
                 </div>
                 <div class="remote-device-menu__controls">
                     <v-btn icon size="small" variant="text" :disabled="selectedPlaybackState.can_seek !== true" aria-label="10秒戻る"
@@ -90,6 +104,9 @@ import Utils from '@/utils';
 
 interface IRemotePlaybackState {
     content_type: 'Idle' | 'Live' | 'Recorded';
+    title?: string;
+    subtitle?: string;
+    artwork_url?: string;
     is_playing?: boolean;
     can_seek?: boolean;
 }
@@ -107,11 +124,34 @@ const selectedPlaybackState = computed<IRemotePlaybackState>(() => {
     return selectedDevice.value?.state as unknown as IRemotePlaybackState ?? {content_type: 'Idle'};
 });
 let refreshInterval: number | null = null;
+let refreshInProgress = false;
+let devicesMissingSince: number | null = null;
 
 async function refreshDevices(): Promise<void> {
+    if (refreshInProgress === true) return;
+    refreshInProgress = true;
     isLoading.value = devices.value.length === 0;
-    devices.value = await RemoteControl.fetchDevices() ?? [];
-    isLoading.value = false;
+    try {
+        const fetchedDevices = await RemoteControl.fetchDevices();
+        // 通信失敗時は直前の成功結果を維持し、一瞬だけ「オフライン」に切り替わるのを防ぐ。
+        if (fetchedDevices === null) return;
+
+        if (fetchedDevices.length > 0 || devices.value.length === 0) {
+            devices.value = fetchedDevices;
+            devicesMissingSince = null;
+            return;
+        }
+
+        // Komorebi の WebSocket 再接続中に一覧が一時的に空になるため、3秒継続した場合だけオフラインへ切り替える。
+        devicesMissingSince ??= performance.now();
+        if (performance.now() - devicesMissingSince >= 3_000) {
+            devices.value = [];
+            devicesMissingSince = null;
+        }
+    } finally {
+        isLoading.value = false;
+        refreshInProgress = false;
+    }
 }
 
 function handleMenuVisibility(visible: boolean): void {
@@ -166,7 +206,56 @@ if (isPinned.value === true) {
     }
 
     &__section-title {
-        padding: 4px 16px 8px;
+        margin-bottom: 4px;
+        color: rgb(var(--v-theme-text-darken-1));
+        font-size: 12px;
+    }
+
+    &__now-playing {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        padding: 4px 12px 10px;
+    }
+
+    &__artwork {
+        width: 96px;
+        height: 54px;
+        overflow: hidden;
+        flex: 0 0 auto;
+        border-radius: 4px;
+        background: rgb(var(--v-theme-background));
+
+        img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        &--logo img {
+            padding: 6px;
+            object-fit: contain;
+        }
+    }
+
+    &__media-info {
+        min-width: 0;
+    }
+
+    &__media-title,
+    &__media-subtitle {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &__media-title {
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    &__media-subtitle {
+        margin-top: 2px;
         color: rgb(var(--v-theme-text-darken-1));
         font-size: 12px;
     }
