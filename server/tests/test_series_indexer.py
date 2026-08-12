@@ -1,6 +1,10 @@
 import unittest
 
-from app.metadata.SeriesIndexer import NormalizeSeriesTitle, ParseSeriesTitle
+from app.metadata.SeriesIndexer import (
+    IsStrictSeriesTitlePrefix,
+    NormalizeSeriesTitle,
+    ParseSeriesTitle,
+)
 from app.routers.VideosRouter import CalculateStringSimilarity
 from app.schemas import Genre
 
@@ -286,6 +290,81 @@ class SeriesIndexerTest(unittest.TestCase):
         self.assertEqual(bs_4k.display_title, 'ヘルモード ~やり込み好きのゲーマーは廃設定の異世界で無双する~')
         self.assertEqual(bs_4k.episode_number, '17')
         self.assertEqual(numbered_work.display_title, '作品2')
+
+    def test_at_x_full_title_in_description_matches_other_channels(self) -> None:
+        """AT-X が description 先頭へ置く正式作品名を、短縮タイトルの補完に使う。"""
+
+        at_x = ParseSeriesTitle(
+            'ブチ切れ令嬢は報復を誓いました。 #02 [字]',
+            ANIME_GENRES,
+            '■ブチ切れ令嬢は報復を誓いました。 ～魔導書の力で祖国を叩き潰します～',
+        )
+        bs_11 = ParseSeriesTitle(
+            '[新]ブチ切れ令嬢は報復を誓いました。～魔導書の力で祖国を叩き潰します～ 第01話',
+            ANIME_GENRES,
+        )
+        self.assertIsNotNone(at_x)
+        self.assertIsNotNone(bs_11)
+        assert at_x is not None and bs_11 is not None
+        self.assertEqual(at_x.normalized_title, bs_11.normalized_title)
+        self.assertEqual(at_x.episode_number, '2')
+
+    def test_broadcast_edition_suffixes_match_the_base_series(self) -> None:
+        """放送局固有の編集版表記だけを外し、同じ自然話数を一つの Series へまとめる。"""
+
+        cases = [
+            (
+                'ぬきたし THE ANIMATION 青藍島ver. #02',
+                'ぬきたし THE ANIMATION #2',
+                None,
+            ),
+            (
+                'New PANTY & STOCKING with GAR… #02',
+                'アニメ New PANTY & STOCKING with GARTERBELT CENSORED版 第2回',
+                '■New PANTY & STOCKING with GARTERBELT\n≪オリジナル版≫',
+            ),
+        ]
+        for edition_title, base_title, edition_description in cases:
+            with self.subTest(edition_title=edition_title):
+                edition = ParseSeriesTitle(edition_title, ANIME_GENRES, edition_description)
+                base = ParseSeriesTitle(base_title, ANIME_GENRES)
+                self.assertIsNotNone(edition)
+                self.assertIsNotNone(base)
+                assert edition is not None and base is not None
+                self.assertEqual(edition.normalized_title, base.normalized_title)
+                self.assertEqual(edition.display_title, base.display_title)
+                self.assertEqual(edition.episode_number, base.episode_number)
+
+    def test_unknown_version_suffix_is_preserved(self) -> None:
+        """未確認の ver. 表記は作品名の可能性があるため、汎用的には削除しない。"""
+
+        parsed = ParseSeriesTitle('架空作品 完全版ver. #2', ANIME_GENRES)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.display_title, '架空作品 完全版ver.')
+
+    def test_description_episode_heading_is_not_used_as_series_title(self) -> None:
+        """description の ■ が各話見出しなら、元の作品名を維持する。"""
+
+        parsed = ParseSeriesTitle(
+            '3年Z組銀八先生 第2講[字]',
+            ANIME_GENRES,
+            '■見た目が変わっても中身は変わらないのが人間',
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.display_title, '3年Z組銀八先生')
+
+    def test_short_title_alias_requires_an_explicit_subtitle_boundary(self) -> None:
+        """別局の短縮名は副題境界を持つ正式名だけへ寄せ、続編番号には寄せない。"""
+
+        short_title = NormalizeSeriesTitle('落第賢者の学院無双')
+        full_title = NormalizeSeriesTitle('落第賢者の学院無双 ～二度目の転生、Sランクチート魔術師冒険録～')
+        sequel_title = NormalizeSeriesTitle('落第賢者の学院無双2')
+        similar_title = NormalizeSeriesTitle('落第賢者の学院無双外伝')
+        self.assertTrue(IsStrictSeriesTitlePrefix(short_title, full_title))
+        self.assertFalse(IsStrictSeriesTitlePrefix(short_title, sequel_title))
+        self.assertFalse(IsStrictSeriesTitlePrefix(short_title, similar_title))
 
     def test_generic_short_program_is_still_rejected(self) -> None:
         """短い作品名を許可しても、既知の汎用番組は Series 化しない。"""

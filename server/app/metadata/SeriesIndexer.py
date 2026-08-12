@@ -83,6 +83,12 @@ TRAILING_EPISODE_PATTERN = re.compile(r'\s+(?P<episode>[0-9]+(?:\.[0-9]+)?)\s*$'
 # 一部放送局が装飾用の閉じ波線の直後へ付けるクール番号。
 ## 「作品名～2 17」の最初の 2 だけを作品名から外し、末尾の 17 は通常どおり話数として扱う。
 BROADCASTER_COUR_SUFFIX_PATTERN = re.compile(r'^(?P<title>.+[～~])(?P<cour>[2-9])$')
+# 同一作品を放送局ごとに区別する末尾の編集版表記。作品・話数は同一なので Series 識別名からだけ除外する。
+## 「ver.」全般を削ると作品名そのものを壊すため、実データで同一話数の別局版を確認できた表記だけを列挙する。
+BROADCAST_EDITION_SUFFIX_PATTERN = re.compile(
+    r'\s*(?:CENSORED版|青藍島ver\.)$',
+    flags=re.IGNORECASE,
+)
 QUOTED_SUBTITLE_PATTERN = re.compile(r'[「『](?P<subtitle>.*?)[」』]')
 QUOTED_LEVEL_EPISODE_PATTERN = re.compile(
     r'^Lv\s*(?P<episode>[0-9]+(?:\.[0-9]+)?)\s+(?P<subtitle>.+)$',
@@ -182,6 +188,23 @@ def NormalizeSeriesTitle(title: str) -> str:
 
     # NFKC で全角英数字や互換文字を揃え、空白差を作品同一性へ影響させない。
     return re.sub(r'\s+', '', unicodedata.normalize('NFKC', title)).casefold()
+
+
+def IsStrictSeriesTitlePrefix(short_title: str, long_title: str) -> bool:
+    """
+    短縮作品名と正式作品名を、安全な副題境界を持つ前方一致として比較する。
+
+    Args:
+        short_title (str): 短縮された作品名の正規化キー。
+        long_title (str): 副題まで含む正式作品名の正規化キー。
+
+    Returns:
+        bool: 長い作品名が短い作品名に明示的な副題を加えた形なら True。
+    """
+
+    if not long_title.startswith(short_title) or len(long_title) <= len(short_title) + 1:
+        return False
+    return long_title[len(short_title)] in {'~', '～', '-', '―', '—', ':', '：', '「', '『', '【'}
 
 
 def ParseSeriesTitle(
@@ -289,6 +312,34 @@ def ParseSeriesTitle(
         if broadcaster_cour_suffix_match is not None:
             display_title = broadcaster_cour_suffix_match.group('title')
 
+    # AT-X はタイトル欄を短縮し、description の先頭行へ「■短縮名 + 正式な副題」を置くことがある。
+    ## 先頭行が解析済みの作品名から始まり、かつ実際に長い場合だけ正式名として採用することで、
+    ## テレビ東京の「■各話サブタイトル」のような同じ記号を使う本文は作品名へ混入させない。
+    if description is not None:
+        description_first_line = unicodedata.normalize('NFKC', description.splitlines()[0]).strip()
+        if description_first_line.startswith('■'):
+            description_series_title = description_first_line.removeprefix('■').strip()
+            normalized_display_title = NormalizeSeriesTitle(display_title)
+            normalized_description_series_title = NormalizeSeriesTitle(description_series_title)
+            # AT-X の表示上限で末尾が「…」になった場合は、NFKC 後の三点を外した前方一致で補完する。
+            ## 省略記号がない短い作品名には適用せず、別作品を説明文へ引っ張る範囲を限定する。
+            normalized_truncated_title = normalized_display_title.removesuffix('...')
+            if (
+                len(normalized_description_series_title) > len(normalized_display_title) and
+                (
+                    normalized_description_series_title.startswith(normalized_display_title) or
+                    (
+                        normalized_truncated_title != normalized_display_title and
+                        normalized_description_series_title.startswith(normalized_truncated_title)
+                    )
+                )
+            ):
+                display_title = description_series_title
+
+    # AT-X の独自編集版や他局の CENSORED 版は、同じ自然話数を持つ同一作品として扱う。
+    ## 録画タイトル自体は変更せず、Series の表示・比較に使う作品名からだけ既知の版表記を外す。
+    display_title = BROADCAST_EDITION_SUFFIX_PATTERN.sub('', display_title).strip()
+
     # 話数の後ろに残る語句は放送枠名を除き、副題が別途なければ副題として保存する。
     trailing_text = episode_source[episode_match.end():].strip()
     trailing_text = re.sub(r'^\s*[◆◇].*$', '', trailing_text).strip()
@@ -350,15 +401,38 @@ class SeriesIndexer:
                 ])
             return False
 
-        # normalized_title の完全一致だけで Series を再利用し、fuzzy 類似度による誤統合を防ぐ。
-        series, is_series_created = await Series.get_or_create(
-            normalized_title = parsed_title.normalized_title,
-            defaults = {
-                'title': parsed_title.display_title,
-                'description': '',
-                'genres': recorded_program.genres,
-            },
-        )
+        # 原則は normalized_title の完全一致だけで Series を再利用し、fuzzy 類似度による誤統合を防ぐ。
+        series = await Series.get_or_none(normalized_title=parsed_title.normalized_title)
+        is_series_created = False
+
+        # 一部放送局は副題を丸ごと省略するため、同じ話数が別局の正式作品名へ既に存在する場合に限り、
+        ## 「短縮名 + 明示的な副題境界」の前方一致を作品名 alias として扱う。
+        if recorded_program.channel_id is not None:
+            longer_series_candidates = await Series.filter(
+                normalized_title__startswith = parsed_title.normalized_title,
+            ).all()
+            for candidate in longer_series_candidates:
+                if candidate.id == (series.id if series is not None else None):
+                    continue
+                if not IsStrictSeriesTitlePrefix(parsed_title.normalized_title, candidate.normalized_title):
+                    continue
+                has_same_episode_on_another_channel = await RecordedProgram.filter(
+                    series_id = candidate.id,
+                    episode_number = parsed_title.episode_number,
+                ).exclude(channel_id=recorded_program.channel_id).exists()
+                if has_same_episode_on_another_channel:
+                    series = candidate
+                    break
+
+        if series is None:
+            series, is_series_created = await Series.get_or_create(
+                normalized_title = parsed_title.normalized_title,
+                defaults = {
+                    'title': parsed_title.display_title,
+                    'description': '',
+                    'genres': recorded_program.genres,
+                },
+            )
 
         series_broadcast_period: SeriesBroadcastPeriod | None = None
         is_period_changed = False
@@ -391,7 +465,7 @@ class SeriesIndexer:
             recorded_program.series_broadcast_period_id != (
                 series_broadcast_period.id if series_broadcast_period is not None else None
             ) or
-            recorded_program.series_title != parsed_title.display_title or
+            recorded_program.series_title != series.title or
             recorded_program.episode_number != parsed_title.episode_number or
             recorded_program.subtitle != parsed_title.subtitle
         )
@@ -399,7 +473,7 @@ class SeriesIndexer:
         recorded_program.series_broadcast_period_id = (
             series_broadcast_period.id if series_broadcast_period is not None else None
         )
-        recorded_program.series_title = parsed_title.display_title
+        recorded_program.series_title = series.title
         recorded_program.episode_number = parsed_title.episode_number
         recorded_program.subtitle = parsed_title.subtitle
         if is_recorded_program_changed:
@@ -439,6 +513,21 @@ class SeriesIndexer:
                 if await cls.linkRecordedProgram(recorded_program):
                     linked_count += 1
                 last_seen_id = recorded_program.id
+
+        # 短縮タイトルが正式タイトルより先に登録された場合でも同じ結果へ収束させる。
+        ## 全録画を再走査せず、厳密な前方一致となる長い Series が実在する短い Series の録画だけを再評価する。
+        all_series = await Series.all()
+        for short_series in all_series:
+            has_longer_candidate = any(
+                candidate.id != short_series.id and
+                IsStrictSeriesTitlePrefix(short_series.normalized_title, candidate.normalized_title)
+                for candidate in all_series
+            )
+            if not has_longer_candidate:
+                continue
+            short_series_programs = await RecordedProgram.filter(series_id=short_series.id).all()
+            for recorded_program in short_series_programs:
+                await cls.linkRecordedProgram(recorded_program)
 
         # ルール改善で別 Series へ移った録画の古い放送期間とカードだけを後始末する。
         ## RecordedProgram がまだ参照する Series は消さないため、CASCADE で録画自体が失われることはない。
