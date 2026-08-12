@@ -1,13 +1,17 @@
 
 import json
 import re
+from collections import Counter
+from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Query, status
 from tortoise import connections
 
 from app import logging, schemas
+from app.constants import JST
 from app.models.Series import Series
+from app.utils import ParseDatetimeStringToJST
 
 
 # ルーター
@@ -30,6 +34,7 @@ NON_OFFICIAL_WEBSITE_HOSTS = {
     'x.com',
     'youtube.com',
 }
+REPEAT_BROADCAST_TITLE_PATTERN = re.compile(r'(?:\[再\]|【再】|再放送)')
 
 
 def ExtractOfficialWebsiteURL(sources: list[str]) -> str | None:
@@ -91,6 +96,83 @@ async def SeriesSearchAPI(
     """
 
     return await GetSeriesSummaries(query=query, order=order, page=page)
+
+
+@router.get(
+    '/on-air',
+    summary = '放送中シリーズ一覧 API',
+    response_description = 'ローカル録画から推定した曜日別の放送中シリーズ。',
+    response_model = schemas.OnAirSeriesList,
+)
+async def OnAirSeriesListAPI():
+    """
+    最近の非再放送録画から、各 Series の通常放送曜日と時刻を推定する。
+
+    Returns:
+        schemas.OnAirSeriesList: 直近 21 日以内に通常放送がある Series の一覧。
+    """
+
+    # 各 Series の直近 12 件を Python 側で集計できる最小限の列だけ取得する。
+    ## 一時的な時刻変更や特番 1 件より、繰り返し現れる通常枠を優先する。
+    connection = connections.get('default')
+    _, rows = await connection.execute_query(
+        """
+        SELECT rp.series_id, s.title AS series_title, rp.title AS program_title,
+               rp.id, rp.channel_id, rp.start_time
+        FROM recorded_programs rp
+        INNER JOIN series s ON s.id = rp.series_id
+        WHERE rp.series_id IS NOT NULL
+          AND rp.title NOT LIKE '%[再]%'
+          AND rp.title NOT LIKE '%【再】%'
+          AND rp.title NOT LIKE '%再放送%'
+        ORDER BY rp.series_id, rp.start_time DESC, rp.id DESC
+        """,
+    )
+    samples_by_series: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        series_id = int(row['series_id'])
+        samples = samples_by_series.setdefault(series_id, [])
+        if len(samples) < 12 and REPEAT_BROADCAST_TITLE_PATTERN.search(str(row['program_title'])) is None:
+            samples.append(row)
+
+    cutoff = datetime.now(JST) - timedelta(days=21)
+    on_air_series: list[schemas.OnAirSeries] = []
+    for series_id, samples in samples_by_series.items():
+        if len(samples) == 0:
+            continue
+        parsed_samples = [(sample, ParseDatetimeStringToJST(str(sample['start_time']))) for sample in samples]
+        latest_broadcast_at = parsed_samples[0][1]
+        if latest_broadcast_at < cutoff:
+            continue
+
+        # 5 分単位へ丸めて、放送設備由来の数分の揺れを同じ通常枠として数える。
+        schedule_counts = Counter(
+            (start_time.weekday(), start_time.hour, (start_time.minute // 5) * 5)
+            for _, start_time in parsed_samples
+        )
+        weekday, hour, minute = max(
+            schedule_counts,
+            key = lambda schedule: (
+                schedule_counts[schedule],
+                max(start_time for _, start_time in parsed_samples if (
+                    start_time.weekday(), start_time.hour, (start_time.minute // 5) * 5
+                ) == schedule),
+            ),
+        )
+        on_air_series.append(schemas.OnAirSeries(
+            id = series_id,
+            title = str(samples[0]['series_title']),
+            thumbnail_recorded_program_ids = [int(sample['id']) for sample in samples[:3]],
+            channel_ids = list(dict.fromkeys(
+                str(sample['channel_id']) for sample in samples if sample['channel_id'] is not None
+            )),
+            recorded_programs_count = len(samples),
+            weekday = weekday,
+            broadcast_time = f'{hour:02d}:{minute:02d}',
+            latest_broadcast_at = latest_broadcast_at,
+        ))
+    on_air_series.sort(key=lambda series: (series.weekday, series.broadcast_time, series.title))
+    return schemas.OnAirSeriesList(series_list=on_air_series)
 
 
 async def GetSeriesSummaries(
@@ -217,6 +299,70 @@ async def GetSeriesSummaries(
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail = 'Failed to execute raw SQL query',
         )
+
+
+@router.get(
+    '/{series_id}/list-position',
+    summary = 'シリーズ番組一覧位置 API',
+    response_description = '指定した一覧条件におけるシリーズ番組のページ番号。',
+    response_model = schemas.SeriesListPosition,
+)
+async def SeriesListPositionAPI(
+    series_id: Annotated[int, Path(description='シリーズ番組の ID 。')],
+    query: Annotated[str, Query(description='検索キーワード。')] = '',
+    order: Annotated[Literal['desc', 'asc'], Query(description='ソート順序 (desc or asc) 。')] = 'desc',
+):
+    """
+    シリーズ一覧と同じ検索・並び順におけるページ番号を取得する。
+
+    Args:
+        series_id (int): ページ番号を調べるシリーズ番組の ID。
+        query (str): シリーズ一覧に適用する検索キーワード。
+        order (Literal['desc', 'asc']): シリーズ一覧に適用するソート順序。
+
+    Returns:
+        schemas.SeriesListPosition: 指定したシリーズ番組が含まれるページ番号。
+    """
+
+    # 深いリンクから開いた場合も一覧と完全に同じ位置へ到達できるよう、
+    # 一覧 API と同じ検索条件・最終録画ファイル日時・ID の順序で行番号を付ける。
+    filter_clause = ''
+    filter_params: list[Any] = []
+    if query:
+        filter_clause = 'WHERE LOWER(s.title) LIKE LOWER(?) OR LOWER(s.description) LIKE LOWER(?)'
+        filter_params.extend([f'%{query}%', f'%{query}%'])
+    direction = 'DESC' if order == 'desc' else 'ASC'
+    connection = connections.get('default')
+    _, rows = await connection.execute_query(
+        f"""
+        WITH ordered_series AS (
+            SELECT
+                s.id,
+                ROW_NUMBER() OVER (
+                    ORDER BY MAX(rv.file_created_at) {direction}, s.id {direction}
+                ) AS row_number
+            FROM series s
+            LEFT JOIN recorded_programs rp ON rp.series_id = s.id
+            LEFT JOIN recorded_videos rv ON rv.recorded_program_id = rp.id
+            {filter_clause}
+            GROUP BY s.id
+        )
+        SELECT row_number
+        FROM ordered_series
+        WHERE id = ?
+        """,
+        [*filter_params, series_id],
+    )
+    if len(rows) == 0:
+        logging.warning(
+            f'[SeriesRouter][SeriesListPositionAPI] Specified series_id was not found in the list. '
+            f'[series_id: {series_id}]',
+        )
+        raise HTTPException(
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail = 'Specified series_id was not found in the list',
+        )
+    return schemas.SeriesListPosition(page=((int(rows[0]['row_number']) - 1) // PAGE_SIZE) + 1)
 
 
 @router.get(

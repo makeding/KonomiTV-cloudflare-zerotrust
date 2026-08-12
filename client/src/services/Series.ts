@@ -26,6 +26,25 @@ export interface ISeriesList {
     series_list: ISeriesSummary[];
 }
 
+export interface ISeriesListPosition {
+    page: number;
+}
+
+export interface IOnAirSeries {
+    id: number;
+    title: string;
+    thumbnail_recorded_program_ids: number[];
+    channel_ids: string[];
+    recorded_programs_count: number;
+    weekday: number;
+    broadcast_time: string;
+    latest_broadcast_at: string;
+}
+
+export interface IOnAirSeriesList {
+    series_list: IOnAirSeries[];
+}
+
 /** シリーズ一覧に表示する概要情報 */
 export interface ISeriesSummary {
     id: number;
@@ -55,6 +74,15 @@ export interface ISeriesBroadcastPeriod {
 
 
 class Series {
+
+    static async fetchOnAirSeriesList(): Promise<IOnAirSeriesList | null> {
+        const response = await APIClient.get<IOnAirSeriesList>('/series/on-air');
+        if (response.type === 'error') {
+            APIClient.showGenericError(response, '放送中のシリーズを取得できませんでした。');
+            return null;
+        }
+        return response.data;
+    }
 
     /**
      * シリーズ一覧を取得する
@@ -107,6 +135,30 @@ class Series {
         }
 
         return response.data;
+    }
+
+
+    /**
+     * 一覧の検索・ソート条件におけるシリーズのページ番号を取得する
+     * @param series_id シリーズ ID
+     * @param query 検索キーワード
+     * @param order ソート順序
+     * @returns ページ番号 or 取得に失敗した場合は null
+     */
+    static async fetchSeriesListPosition(
+        series_id: number,
+        query: string,
+        order: 'desc' | 'asc',
+    ): Promise<number | null> {
+
+        const response = await APIClient.get<ISeriesListPosition>(`/series/${series_id}/list-position`, {
+            params: { query, order },
+        });
+        if (response.type === 'error') {
+            APIClient.showGenericError(response, 'シリーズの表示位置を取得できませんでした。');
+            return null;
+        }
+        return response.data.page;
     }
 
 

@@ -284,6 +284,22 @@ class SeriesSummaryList(BaseModel):
     total: int
     series_list: list[SeriesSummary]
 
+class SeriesListPosition(BaseModel):
+    page: int
+
+class OnAirSeries(BaseModel):
+    id: int
+    title: str
+    thumbnail_recorded_program_ids: list[int]
+    channel_ids: list[str]
+    recorded_programs_count: int
+    weekday: Annotated[int, Field(ge=0, le=6)]
+    broadcast_time: str
+    latest_broadcast_at: datetime
+
+class OnAirSeriesList(BaseModel):
+    series_list: list[OnAirSeries]
+
 class Series(PydanticModel):
     id: int
     title: str

@@ -59,9 +59,19 @@ const router = createRouter({
             component: () => import('@/views/Series/Home.vue'),
         },
         {
+            path: '/series/on-air',
+            name: 'On Air Series',
+            component: () => import('@/views/Series/OnAir.vue'),
+        },
+        {
+            path: '/series/on-air/:series_id',
+            name: 'On Air Series Detail',
+            component: () => import('@/views/Series/OnAir.vue'),
+        },
+        {
             path: '/series/:series_id',
-            name: 'Series Detail',
-            component: () => import('@/views/Videos/Series.vue'),
+            name: 'Series Home Detail',
+            component: () => import('@/views/Series/Home.vue'),
         },
         {
             path: '/videos/recording',
@@ -204,6 +214,18 @@ const router = createRouter({
         if (savedPosition) {
             // 戻る/進むボタンが押されたときは保存されたスクロール位置を使う
             return savedPosition;
+        } else if (
+            (to.name === 'Series Home' || to.name === 'Series Home Detail') &&
+            (from.name === 'Series Home' || from.name === 'Series Home Detail')
+        ) {
+            // 同じシリーズ一覧上で展開状態だけを切り替える場合は、カードの画面内位置を維持する
+            return false;
+        } else if (
+            (to.name === 'On Air Series' || to.name === 'On Air Series Detail') &&
+            (from.name === 'On Air Series' || from.name === 'On Air Series Detail')
+        ) {
+            // 放送中一覧でも、展開状態だけの切り替えではスクロール位置を変えない
+            return false;
         } else {
             // それ以外は常に先頭にスクロールする
             return {top: 0, left: 0};

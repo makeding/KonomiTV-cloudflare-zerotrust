@@ -10,8 +10,8 @@
         <div v-if="bangumiSubjectId" class="series-episode-list__bangumi">
             <img v-if="bangumiSubjectImageUrl" :src="bangumiSubjectImageUrl" alt="" loading="lazy" decoding="async">
             <div class="series-episode-list__bangumi-profile">
-                <p v-if="programSummary">{{programSummary}}</p>
-                <p v-if="bangumiSummary" class="series-episode-list__chinese-summary">{{bangumiSummary}}</p>
+                <p v-if="japaneseSummary">{{japaneseSummary}}</p>
+                <p v-if="chineseSummary" class="series-episode-list__chinese-summary">{{chineseSummary}}</p>
                 <a :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
                     target="_blank" rel="noopener noreferrer" @click.stop>
                     Bangumi で見る
@@ -104,6 +104,19 @@ const episode_number_collator = new Intl.Collator('ja', { numeric: true });
 
 const programSummary = computed(() => props.description.trim());
 const bangumiSummary = computed(() => props.bangumiSubjectSummary?.trim() ?? '');
+const splitBangumiSummary = computed(() => {
+    const summaryParts = bangumiSummary.value.split(/[【[][简簡]介原文[】\]]/, 2);
+    return {
+        chinese: summaryParts[0]?.trim() ?? '',
+        original: summaryParts[1]?.trim() ?? '',
+    };
+});
+const japaneseSummary = computed(() => {
+    return splitBangumiSummary.value.original.length >= 12
+        ? splitBangumiSummary.value.original
+        : programSummary.value;
+});
+const chineseSummary = computed(() => splitBangumiSummary.value.chinese);
 
 const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
     if (program.episode_number) {

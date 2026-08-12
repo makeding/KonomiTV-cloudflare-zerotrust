@@ -15,7 +15,12 @@
                             シリーズ
                             <span class="series-home-container__count">{{is_loading ? '取得中…' : `${total_series}件`}}</span>
                         </h2>
-                        <v-select
+                        <div class="series-home-container__actions">
+                            <v-btn to="/series/on-air" variant="tonal" color="primary"
+                                prepend-icon="mdi-calendar-week">
+                                放送中
+                            </v-btn>
+                            <v-select
                             v-model="sort_order"
                             :items="[
                                 { title: '更新が新しい順', value: 'desc' },
@@ -29,7 +34,8 @@
                             variant="solo"
                             density="comfortable"
                             hide-details
-                            @update:model-value="updateSortOrder($event as 'desc' | 'asc')" />
+                                @update:model-value="updateSortOrder($event as 'desc' | 'asc')" />
+                        </div>
                     </div>
 
                     <div v-if="is_loading" class="series-grid">
@@ -166,11 +172,30 @@ const updateGridColumnCount = () => {
     grid_column_count.value = Math.max(1, columns);
 };
 
+const getRouteSeriesID = (): number | null => {
+    const routeSeriesID = Array.isArray(route.params.series_id)
+        ? route.params.series_id[0]
+        : route.params.series_id;
+    if (typeof routeSeriesID !== 'string') return null;
+    const parsedSeriesID = Number.parseInt(routeSeriesID, 10);
+    return Number.isFinite(parsedSeriesID) && parsedSeriesID > 0 ? parsedSeriesID : null;
+};
+
+const buildSeriesQuery = (query: string, order: 'desc' | 'asc', page: number) => ({
+    ...(query ? { query } : {}),
+    order,
+    page: page.toString(),
+});
+
 const toggleSeries = async (seriesID: number) => {
     const targetCard = series_grid_element.value?.querySelector<HTMLElement>(`[data-series-id="${seriesID}"]`);
     const targetTopBeforeUpdate = targetCard?.getBoundingClientRect().top;
     const isClosingCurrentSeries = expanded_series_id.value === seriesID;
-    expanded_series_id.value = expanded_series_id.value === seriesID ? null : seriesID;
+    expanded_series_id.value = isClosingCurrentSeries ? null : seriesID;
+    await router.push({
+        path: isClosingCurrentSeries ? '/series/' : `/series/${seriesID}`,
+        query: buildSeriesQuery(search_query.value, sort_order.value, current_page.value),
+    });
 
     // 既存の展開領域が消えると、下側のカードはその高さ分だけ上へ跳ねる。
     // 切り替え先カードの画面内位置を基準にスクロール差分を相殺し、視線の位置を維持する。
@@ -189,7 +214,6 @@ const syncStateFromRoute = () => {
 
 const fetchSeries = async () => {
     is_loading.value = true;
-    expanded_series_id.value = null;
     const result = search_query.value
         ? await Series.searchSeries(search_query.value, sort_order.value, current_page.value)
         : await Series.fetchSeriesList(sort_order.value, current_page.value);
@@ -200,16 +224,42 @@ const fetchSeries = async () => {
     is_loading.value = false;
     await nextTick();
     updateGridColumnCount();
+    await restoreExpandedSeriesFromRoute();
+};
+
+const restoreExpandedSeriesFromRoute = async () => {
+    const routeSeriesID = getRouteSeriesID();
+    if (routeSeriesID === null) {
+        expanded_series_id.value = null;
+        return;
+    }
+
+    // 指定された Series が現在のページにあれば、その場で展開する。
+    if (series_list.value.some(series => series.id === routeSeriesID)) {
+        expanded_series_id.value = routeSeriesID;
+        return;
+    }
+
+    // 深いリンクではページ番号がない、または古いことがあるため、現在の検索・並び順での実ページを解決する。
+    const targetPage = await Series.fetchSeriesListPosition(routeSeriesID, search_query.value, sort_order.value);
+    if (targetPage === null) {
+        expanded_series_id.value = null;
+        return;
+    }
+    if (targetPage !== current_page.value) {
+        await router.replace({
+            path: `/series/${routeSeriesID}`,
+            query: buildSeriesQuery(search_query.value, sort_order.value, targetPage),
+        });
+        return;
+    }
+    expanded_series_id.value = null;
 };
 
 const replaceQuery = async (query: string, order: 'desc' | 'asc', page: number) => {
     await router.replace({
         path: '/series/',
-        query: {
-            ...(query ? { query } : {}),
-            order,
-            page: page.toString(),
-        },
+        query: buildSeriesQuery(query, order, page),
     });
 };
 
@@ -233,11 +283,16 @@ const getMajorGenres = (series: ISeriesSummary): string[] => {
         .slice(0, 2);
 };
 
-watch(() => route.query, async () => {
+watch(() => [route.query.page, route.query.order, route.query.query], async () => {
     if (!is_mounted.value) return;
     syncStateFromRoute();
     await fetchSeries();
-}, { deep: true });
+});
+
+watch(() => route.params.series_id, async () => {
+    if (!is_mounted.value || is_loading.value) return;
+    await restoreExpandedSeriesFromRoute();
+});
 
 onMounted(async () => {
     const userStore = useUserStore();
@@ -310,6 +365,12 @@ onBeforeUnmount(() => {
             flex-basis: 160px;
             max-width: 160px;
         }
+    }
+
+    &__actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
     }
 }
 
