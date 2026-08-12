@@ -56,6 +56,13 @@
                                 <div class="series-card__meta">
                                     <span>{{series.recorded_programs_count}}件の録画</span>
                                     <span v-for="genre in getMajorGenres(series)" :key="genre" class="series-card__genre">{{genre}}</span>
+                                    <img v-for="channel_id in series.channel_ids"
+                                        :key="channel_id"
+                                        class="series-card__channel-logo"
+                                        loading="lazy"
+                                        decoding="async"
+                                        :src="`${Utils.api_base_url}/channels/${channel_id}/logo`"
+                                        alt="">
                                 </div>
                             </div>
                             <Icon class="series-card__chevron" icon="fluent:chevron-right-12-regular" width="22px" />
@@ -376,6 +383,21 @@ onMounted(async () => {
         padding: 2px 6px;
         background: rgb(0 0 0 / 38%);
         border-radius: 10px;
+    }
+
+    &__channel-logo {
+        flex: 0 0 auto;
+        width: 26px;
+        height: 16px;
+        object-fit: contain;
+        filter: drop-shadow(0 1px 2px rgb(0 0 0 / 80%));
+        &:first-of-type {
+            margin-left: auto;
+        }
+        @include smartphone-vertical {
+            width: 22px;
+            height: 14px;
+        }
     }
 
     &__chevron {

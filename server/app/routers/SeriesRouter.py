@@ -128,6 +128,17 @@ async def GetSeriesSummaries(
                 ) AS recent_recorded_programs
             ), '[]') AS thumbnail_recorded_program_ids,
             COALESCE((
+                SELECT JSON_GROUP_ARRAY(series_channels.channel_id)
+                FROM (
+                    SELECT rp_channel.channel_id
+                    FROM recorded_programs rp_channel
+                    WHERE rp_channel.series_id = s.id
+                      AND rp_channel.channel_id IS NOT NULL
+                    GROUP BY rp_channel.channel_id
+                    ORDER BY MAX(rp_channel.start_time) DESC
+                ) AS series_channels
+            ), '[]') AS channel_ids,
+            COALESCE((
                 SELECT JSON_GROUP_ARRAY(official_details.value)
                 FROM (
                     SELECT DISTINCT detail_entry.value AS value,
@@ -184,6 +195,7 @@ async def GetSeriesSummaries(
                 **row,
                 'genres': genres,
                 'thumbnail_recorded_program_ids': json.loads(row['thumbnail_recorded_program_ids']),
+                'channel_ids': json.loads(row['channel_ids']),
                 'official_website_url': ExtractOfficialWebsiteURL(json.loads(row['official_website_sources'])),
                 'bangumi_subject_id': row['bangumi_subject_id'] if any(
                     genre['major'] == 'アニメ・特撮' for genre in genres
