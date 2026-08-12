@@ -89,6 +89,7 @@ class VideoEncodingTask:
     def buildFFmpegOptions(self,
         quality: QUALITY_TYPES,
         output_ts_offset: float,
+        mmt_seek_seconds: float | None = None,
     ) -> list[str]:
         """
         FFmpeg に渡すオプションを組み立てる
@@ -96,6 +97,7 @@ class VideoEncodingTask:
         Args:
             quality (QUALITY_TYPES): 映像の品質
             output_ts_offset (float): 出力 TS のタイムスタンプオフセット (秒)
+            mmt_seek_seconds (float | None): MMT/TLV 入力のシーク位置 (秒)。MPEG-TS 入力では None
 
         Returns:
             list[str]: FFmpeg に渡すオプションが連なる配列
@@ -110,13 +112,25 @@ class VideoEncodingTask:
             # MPEG-2 以外のコーデックでは入力ストリームの解析時間を長めにする (その方がうまくいく)
             analyzeduration += 1000000
 
-        # 入力
-        ## -analyzeduration をつけることで、ストリームの分析時間を短縮できる
-        options.append(f'-f mpegts -analyzeduration {analyzeduration} -i pipe:0')
+        # MMT/TLV は libaribtlv 対応 FFmpeg に元ファイルを直接開かせ、RecordingIndex による input seek を利用する
+        ## MPEG-TS / MPEG-4 は従来どおり tsreadex が正規化した MPEG-TS を標準入力から受け取る
+        if mmt_seek_seconds is not None:
+            options.extend([
+                '-f', 'libaribtlv',
+                '-ss', str(mmt_seek_seconds),
+                '-i', self.video_stream.recorded_program.recorded_video.file_path,
+            ])
+        else:
+            # -analyzeduration をつけることで、ストリームの分析時間を短縮できる
+            options.append(f'-f mpegts -analyzeduration {analyzeduration} -i pipe:0')
 
         # ストリームのマッピング
         ## 音声切り替えのため、主音声・副音声両方をエンコード後の TS に含む
-        options.append('-map 0:v:0 -map 0:a:0 -map 0:a:1 -map 0:d? -ignore_unknown')
+        if mmt_seek_seconds is not None:
+            # MMT/TLV 録画では副音声が存在するとは限らず、字幕は現時点で MPEG-TS 出力へ変換できないため映像と音声だけを選ぶ
+            options.append('-map 0:v:0 -map 0:a:0 -map 0:a:1? -ignore_unknown')
+        else:
+            options.append('-map 0:v:0 -map 0:a:0 -map 0:a:1 -map 0:d? -ignore_unknown')
 
         # フラグ
         ## 主に FFmpeg の起動を高速化するための設定
@@ -187,7 +201,11 @@ class VideoEncodingTask:
         # オプションをスペースで区切って配列にする
         result: list[str] = []
         for option in options:
-            result += option.split(' ')
+            # MMT/TLV の入力ファイル名は空白を含む可能性があるため、subprocess の1引数としてそのまま保持する
+            if mmt_seek_seconds is not None and option == self.video_stream.recorded_program.recorded_video.file_path:
+                result.append(option)
+            else:
+                result += option.split(' ')
 
         return result
 
@@ -439,6 +457,9 @@ class VideoEncodingTask:
         # このため苦肉の策として、メタデータ解析時に映像構成がイレギュラーな TS だと事前に検出した上で、それらの録画ファイルの再生時エンコーダーを FFmpeg に固定する
         ## FFmpeg (ソフトウェアデコード/エンコード) + tsreadex (映像 PID 固定化) の構成であれば、解像度変化のある TS も問題なくエンコードできるっぽい
         recorded_video = self.video_stream.recorded_program.recorded_video
+        # MMT/TLV は libaribtlv 対応 FFmpeg だけが直接入力とランダムシークに対応するため、設定に関わらず FFmpeg を使う
+        if recorded_video.container_format == 'MMT/TLV':
+            ENCODER_TYPE = 'FFmpeg'
         if (
             recorded_video.container_format == 'MPEG-TS' and
             recorded_video.has_video_stream_changes is True and
@@ -497,6 +518,10 @@ class VideoEncodingTask:
             """
 
             nonlocal last_segment_map_flush_keyframe_count
+
+            # segment_map は元 MPEG-TS 上のファイル位置を保存するキャッシュであり、MMT/TLV / MPEG-4 では利用しない
+            if recorded_video.container_format != 'MPEG-TS':
+                return
 
             # キューからワーカースレッドが追加した新着キーフレームを全てローカルリストへ移す
             ## get_nowait() はブロックしないため、イベントループを止めずに済む
@@ -662,7 +687,11 @@ class VideoEncodingTask:
                 tsreadex_read_pipe = None
                 # MPEG-TS のすべてのセグメントで PAT/PMT を確実に取得するための前処理用
                 initial_pat_pmt_data: bytes | None = None
-                if self.video_stream.recorded_program.recorded_video.container_format == 'MPEG-4':
+                tsreadex_service_id = '-1'
+                if recorded_video.container_format == 'MMT/TLV':
+                    # MMT/TLV は tsreadex を通さず、後段で FFmpeg が録画ファイルを直接開く
+                    pass
+                elif recorded_video.container_format == 'MPEG-4':
                     assert file is None
                     # MP4 では psisimux で単一サービスの MPEG-TS を合成して tsreadex -> エンコーダーへの入力とする
                     ## この時、チャンネル情報があれば `-b <NID>/<TSID>/<SID>` の指定に実値を使う
@@ -873,13 +902,18 @@ class VideoEncodingTask:
                     '-',
                 ]
 
-                # tsreadex の読み込み用パイプと書き込み用パイプを作成
-                tsreadex_read_pipe, tsreadex_write_pipe = os.pipe()
+                # MMT/TLV は FFmpeg が元ファイルを直接開くため、tsreadex と接続用パイプを作らない
+                tsreadex_write_pipe: int | None = None
+                if recorded_video.container_format != 'MMT/TLV':
+                    tsreadex_read_pipe, tsreadex_write_pipe = os.pipe()
 
                 try:
+                    if recorded_video.container_format == 'MMT/TLV':
+                        pass
                     # MPEG-TS を処理する場合で、直前に PAT/PMT を抽出できた場合
                     # PAT/PMT を先頭に加えて tsreadex に入力する
-                    if initial_pat_pmt_data is not None:
+                    elif initial_pat_pmt_data is not None:
+                        assert tsreadex_write_pipe is not None
                         # PAT/PMT を先頭に加えた TS データ用の読み込み用パイプと書き込み用パイプを作成
                         tsreadex_stdin_read, tsreadex_stdin_write = os.pipe()
                         tsreadex_stdin_write_generation_token = self.__registerTSReadExInputPipe(tsreadex_stdin_write)
@@ -1006,6 +1040,7 @@ class VideoEncodingTask:
                         loop = asyncio.get_running_loop()
                         self._tsreadex_feed_task = loop.run_in_executor(None, FeedTSStream)
                     else:
+                        assert tsreadex_write_pipe is not None
                         # tsreadex のプロセスを作成・実行
                         try:
                             self._tsreadex_process = await asyncio.subprocess.create_subprocess_exec(
@@ -1021,13 +1056,20 @@ class VideoEncodingTask:
                                 psisimux_read_pipe = None
                 finally:
                     # tsreadex の書き込み用パイプは子プロセスに渡したので、親プロセス側では必ずクローズする
-                    os.close(tsreadex_write_pipe)
+                    if tsreadex_write_pipe is not None:
+                        os.close(tsreadex_write_pipe)
 
                 # FFmpeg
                 if ENCODER_TYPE == 'FFmpeg':
                     # オプションを取得
                     if self.video_stream.quality == 'copy':
                         encoder_options = self.buildFFmpegCopyOptions(output_ts_offset)
+                    elif recorded_video.container_format == 'MMT/TLV':
+                        encoder_options = self.buildFFmpegOptions(
+                            self.video_stream.quality,
+                            output_ts_offset,
+                            mmt_seek_seconds = current_segment.playlist_start_seconds,
+                        )
                     else:
                         encoder_options = self.buildFFmpegOptions(self.video_stream.quality, output_ts_offset)
                     logging.info(f'{self.video_stream.log_prefix} FFmpeg Commands:\nffmpeg {" ".join(encoder_options)}')
@@ -1036,20 +1078,26 @@ class VideoEncodingTask:
                     try:
                         self._encoder_process = await asyncio.subprocess.create_subprocess_exec(
                             LIBRARY_PATH['FFmpeg'], *encoder_options,
-                            stdin = tsreadex_read_pipe,  # tsreadex からの入力
+                            stdin = (
+                                asyncio.subprocess.DEVNULL
+                                if recorded_video.container_format == 'MMT/TLV'
+                                else tsreadex_read_pipe
+                            ),
                             stdout = asyncio.subprocess.PIPE,  # ストリーム出力
                             stderr = asyncio.subprocess.PIPE,  # ストリーム出力
                         )
                     finally:
                         # tsreadex の read 側は子プロセスに渡したので、親プロセス側でクローズする
-                        os.close(tsreadex_read_pipe)
-                        tsreadex_read_pipe = None
+                        if tsreadex_read_pipe is not None:
+                            os.close(tsreadex_read_pipe)
+                            tsreadex_read_pipe = None
 
                 # HWEncC
                 else:
                     # オプションを取得
                     quality = self.video_stream.quality
                     assert quality != 'copy'
+                    assert tsreadex_read_pipe is not None
                     encoder_options = self.buildHWEncCOptions(quality, ENCODER_TYPE, output_ts_offset)
                     logging.info(f'{self.video_stream.log_prefix} {ENCODER_TYPE} Commands:\n{ENCODER_TYPE} {" ".join(encoder_options)}')
 

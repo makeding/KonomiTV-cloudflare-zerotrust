@@ -1344,10 +1344,10 @@ async def VideoAPI(
 @router.get(
     '/{video_id}/download',
     summary = '録画番組ダウンロード API',
-    response_description = '録画番組の MPEG-TS ファイル。',
+    response_description = '録画番組の元ファイル。',
     response_class = FileResponse,
     responses = {
-        200: {'content': {'video/mp2t': {}}},
+        200: {'content': {'video/mp2t': {}, 'application/octet-stream': {}}},
         422: {'description': 'Specified video_id was not found'},
     },
 )
@@ -1355,18 +1355,20 @@ async def VideoDownloadAPI(
     recorded_program: Annotated[RecordedProgram, Depends(GetRecordedProgram)],
 ):
     """
-    指定された録画番組の MPEG-TS ファイルをダウンロードする。
+    指定された録画番組の元ファイルをダウンロードする。
     """
 
     # ファイルパスとファイル名を取得
     file_path = recorded_program.recorded_video.file_path
     filename = pathlib.Path(file_path).name
 
-    # MPEG-TS ファイルをダウンロードさせる
+    # MMT/TLV はブラウザで再生させず原始 TLV ファイルとして保存し、それ以外は従来の MPEG-TS MIME を維持する
+    media_type = 'application/octet-stream' \
+        if recorded_program.recorded_video.container_format == 'MMT/TLV' else 'video/mp2t'
     return FileResponse(
         path = file_path,
         filename = filename,
-        media_type = 'video/mp2t',
+        media_type = media_type,
     )
 
 

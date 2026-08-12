@@ -160,7 +160,10 @@
                             <template v-slot:prepend>
                                 <Icon icon="fluent:arrow-download-24-regular" width="20px" height="20px" />
                             </template>
-                            <v-list-item-title class="ml-3">録画ファイル本体をダウンロード ({{ Utils.formatBytes(program.recorded_video.file_size) }})</v-list-item-title>
+                            <v-list-item-title class="ml-3">
+                                {{program.recorded_video.container_format === 'MMT/TLV' ? '元の TLV をダウンロード' : '録画ファイル本体をダウンロード'}}
+                                ({{ Utils.formatBytes(program.recorded_video.file_size) }})
+                            </v-list-item-title>
                         </v-list-item>
                         <v-list-item @click="showReanalyzeModal" v-ftooltip="'再生時に必要な録画ファイル情報や番組情報などを解析し直します'">
                             <template v-slot:prepend>

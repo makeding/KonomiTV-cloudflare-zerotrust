@@ -704,6 +704,19 @@ class VideoStream:
                 )
                 return
 
+            # MMT/TLV は libaribtlv の RecordingIndex を利用する FFmpeg の input seek に開始位置の解決を任せる
+            ## FFmpeg は直前の RAP からデコードした上で -ss の指定時刻までのフレームを破棄するため、
+            ## HLS 分割側の論理タイムラインは要求されたプレイリスト時刻をそのまま起点にできる
+            if recorded_video.container_format == 'MMT/TLV':
+                segment.source_file_position = None
+                segment.source_start_dts = round(segment.playlist_start_seconds * ts.HZ)
+                logging.info(
+                    f'{self.log_prefix}[Segment {segment_sequence}] '
+                    f'Segment source position delegated to FFmpeg MMT/TLV seek. '
+                    f'[elapsed: {(time.perf_counter() - resolve_start_time) * 1000:.1f}ms]'
+                )
+                return
+
             # MP4 は moov 内テーブルから同期サンプル DTS を短時間で復元できるため、DB キャッシュを作らない
             if self._mp4_keyframe_dts_list is None:
                 self._mp4_keyframe_dts_list = await asyncio.to_thread(
