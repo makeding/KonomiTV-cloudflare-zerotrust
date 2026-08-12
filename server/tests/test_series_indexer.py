@@ -109,6 +109,24 @@ class SeriesIndexerTest(unittest.TestCase):
             NormalizeSeriesTitle('LV999の村人!'),
         )
 
+    def test_lv999_quoted_episode_matches_bs_title(self) -> None:
+        """作品名の LV999 は保持し、引用符内の Lv2 だけを話数として解釈する。"""
+
+        mx = ParseSeriesTitle('LV999の村人 「Lv2 最高に馬鹿だから」[字]', ANIME_GENRES)
+        bs = ParseSeriesTitle('<アニメギルド>LV999 の村人 #2', ANIME_GENRES)
+        self.assertIsNotNone(mx)
+        self.assertIsNotNone(bs)
+        assert mx is not None and bs is not None
+        self.assertEqual(mx.normalized_title, bs.normalized_title)
+        self.assertEqual(mx.episode_number, '2')
+        self.assertEqual(mx.subtitle, '最高に馬鹿だから')
+        self.assertEqual(mx.display_title, 'LV999の村人')
+
+    def test_lv_in_work_title_is_not_an_episode_without_quoted_prefix(self) -> None:
+        """作品名本体に含まれる LV999 だけでは Series を自動生成しない。"""
+
+        self.assertIsNone(ParseSeriesTitle('LV999の村人 総集編', ANIME_GENRES))
+
 
 if __name__ == '__main__':
     unittest.main()

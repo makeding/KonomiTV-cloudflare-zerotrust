@@ -59,6 +59,10 @@ EPISODE_PATTERN = re.compile(
 )
 TRAILING_EPISODE_PATTERN = re.compile(r'\s+(?P<episode>[0-9]+(?:\.[0-9]+)?)\s*$')
 QUOTED_SUBTITLE_PATTERN = re.compile(r'[「『](?P<subtitle>.*?)[」』]')
+QUOTED_LEVEL_EPISODE_PATTERN = re.compile(
+    r'^Lv\s*(?P<episode>[0-9]+(?:\.[0-9]+)?)\s+(?P<subtitle>.+)$',
+    flags=re.IGNORECASE,
+)
 JAPANESE_DIGITS = {
     '〇': 0,
     '零': 0,
@@ -175,7 +179,24 @@ def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | Non
 
     # #6 / 第6話 / Chapter 6 など、話数だと断定できる位置より前を作品名として採用する。
     episode_match = EPISODE_PATTERN.search(title_without_quoted_subtitle)
+    quoted_level_match = QUOTED_LEVEL_EPISODE_PATTERN.fullmatch(subtitle) if subtitle is not None else None
     if episode_match is None:
+        # 一部アニメ局は「Lv2 副題」のように話数を引用符内へ入れるため、引用符の先頭だけを追加で認識する。
+        ## 作品名本体の LV999 などを話数と誤認しないよう、タイトル本体では Lv 表記を検索しない。
+        if quoted_level_match is not None:
+            episode_number = NormalizeEpisodeNumber(quoted_level_match.group('episode'))
+            display_title = title_without_quoted_subtitle.strip(' 　・:-')
+            subtitle = quoted_level_match.group('subtitle').strip()
+            normalized_title = NormalizeSeriesTitle(display_title)
+            if len(normalized_title) < 6 or normalized_title in GENERIC_SERIES_TITLES:
+                return None
+            return ParsedSeriesTitle(
+                display_title = display_title,
+                normalized_title = normalized_title,
+                episode_number = episode_number,
+                subtitle = subtitle,
+            )
+
         # アニメ EPG では末尾の単独数字が話数として使われるため、このジャンルに限り追加で認識する。
         is_anime = any(genre['major'] == 'アニメ・特撮' for genre in genres)
         episode_match = TRAILING_EPISODE_PATTERN.search(title_without_quoted_subtitle) if is_anime else None
