@@ -248,13 +248,16 @@ async def Startup():
         for quality in QUALITY:
             LiveStream(channel.display_channel_id, quality)
 
-    # Mirakurun は録画バックエンドを持たないため、この構成でのみ録画フォルダの一括スキャンと変更監視を開始する。
-    ## EDCB / EPGStation と連携している場合は、起動時の全件スキャン・変更監視・録画状態同期をすべて開始しない。
+    # 録画バックエンドの有無に応じて、ローカル監視とバックエンド同期を明確に分離して開始する。
+    recorded_scan_task = RecordedScanTask()
     if CONFIG.general.backend == 'Mirakurun':
-        recorded_scan_task = RecordedScanTask()
+        # Mirakurun は録画バックエンドを持たないため、録画フォルダの一括スキャンと変更監視を開始する。
         # 録画ファイルの量次第では更新確認に時間がかかるため、start() 内で非同期タスクとして実行する。
         # ref: https://docs.astral.sh/ruff/rules/asyncio-dangling-task/
         await recorded_scan_task.start()
+    else:
+        # EDCB / EPGStation はバックエンド API が返した録画だけを同期し、録画フォルダの全件スキャン・変更監視は開始しない。
+        await recorded_scan_task.startBackendRecordingSync()
 
 # サーバー設定で指定された時間 (デフォルト: 15分) ごとに1回、チャンネル情報と番組情報を更新する
 # チャンネル情報は頻繁に変わるわけではないけど、手動で再起動しなくても自動で変更が適用されてほしい
