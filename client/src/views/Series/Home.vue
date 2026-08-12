@@ -268,20 +268,23 @@ onMounted(async () => {
         box-shadow: 0 4px 14px rgb(0 0 0 / 42%);
 
         &--1 {
-            top: 1%;
-            left: -2%;
-            transform: rotate(-2deg);
+            top: 8%;
+            left: 9%;
+            z-index: 3;
         }
 
         &--2 {
             top: 4%;
             left: 4%;
+            z-index: 2;
             transform: rotate(1deg);
         }
 
         &--3 {
-            top: 8%;
-            left: 9%;
+            top: 1%;
+            left: -2%;
+            z-index: 1;
+            transform: rotate(-2deg);
         }
     }
 

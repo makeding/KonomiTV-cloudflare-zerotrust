@@ -107,6 +107,16 @@ async def ClientSettingsUpdateAPI(
 async def WatchedHistoryAPI(
     current_user: Annotated[User, Depends(GetCurrentUser)],
 ):
+    """
+    ログイン中ユーザーの視聴履歴を取得する。
+
+    Args:
+        current_user (User): JWT から解決したログイン中のユーザー。
+
+    Returns:
+        schemas.WatchedHistory: サーバーに保存されている視聴履歴。
+    """
+
     client_settings = ClientSettings.model_validate(current_user.client_settings)
     return schemas.WatchedHistory(items=client_settings.watched_history)
 
@@ -120,6 +130,17 @@ async def WatchedHistoryUpdateAPI(
     watched_history: Annotated[schemas.WatchedHistory, Body(description='端末上で更新された視聴履歴。')],
     current_user: Annotated[User, Depends(GetCurrentUser)],
 ):
+    """
+    端末から受信した視聴履歴を、ログイン中ユーザーの履歴へマージする。
+
+    Args:
+        watched_history (schemas.WatchedHistory): 端末上で更新された視聴履歴。
+        current_user (User): JWT から解決したログイン中のユーザー。
+
+    Returns:
+        schemas.WatchedHistory: サーバー側でマージした最新の視聴履歴。
+    """
+
     # Web 側の設定同期と複数端末からの履歴更新を直列化し、JSON カラムの更新競合を防ぐ
     lock = GetClientSettingsUpdateLock(current_user.id)
     async with lock:

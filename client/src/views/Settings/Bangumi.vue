@@ -12,8 +12,9 @@
             <a class="link" href="https://bgm.tv/" target="_blank">Bangumi (bgm.tv)</a> の個人アクセストークンを使ってアカウントを連携します。<br>
             今後、視聴した番組を Bangumi の視聴状況へ反映する機能で利用されます。<br>
         </div>
-        <div class="settings__content">
-            <div class="bangumi-account bangumi-account--anonymous" v-if="userStore.user === null || userStore.user.bangumi_user_id === null">
+        <div class="settings__content" :class="{'settings__content--loading': isLoading}">
+            <div class="bangumi-account bangumi-account--anonymous"
+                v-if="isLoading === false && (userStore.user === null || userStore.user.bangumi_user_id === null)">
                 <div class="bangumi-account-wrapper">
                     <Icon class="flex-shrink-0" icon="fluent:movies-and-tv-20-filled" width="45px" />
                     <div class="bangumi-account__info ml-4">
@@ -28,7 +29,8 @@
                     <Icon icon="fluent:plug-connected-20-filled" class="mr-2" height="26" />連携する
                 </v-btn>
             </div>
-            <div class="bangumi-account" v-if="userStore.user !== null && userStore.user.bangumi_user_id !== null">
+            <div class="bangumi-account"
+                v-if="isLoading === false && userStore.user !== null && userStore.user.bangumi_user_id !== null">
                 <div class="bangumi-account-wrapper">
                     <img class="bangumi-account__icon" :src="userStore.user.bangumi_user_avatar_url ?? ''">
                     <div class="bangumi-account__info">
@@ -89,7 +91,7 @@
 </template>
 <script lang="ts" setup>
 
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
 
 import Message from '@/message';
 import Bangumi from '@/services/Bangumi';
@@ -104,6 +106,14 @@ const accountLinkDialog = ref(false);
 const accessToken = ref('');
 const accessTokenShowing = ref(false);
 const linking = ref(false);
+const isLoading = ref(true);
+
+
+// URL から Bangumi 設定へ直接入った場合も、保存済み KonomiTV ログインセッションから連携状態を復元する
+onMounted(async () => {
+    await userStore.fetchUser();
+    isLoading.value = false;
+});
 
 
 /**

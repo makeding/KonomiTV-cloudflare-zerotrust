@@ -328,7 +328,15 @@ async def UserAccessTokenAPI(
 
 @router.post('/device-auth', response_model=schemas.DeviceAuthRequest, status_code=status.HTTP_201_CREATED)
 async def DeviceAuthCreateAPI(request: schemas.DeviceAuthCreateRequest):
-    """Komorebi 向けの一時的な端末ペアリング要求を作成する。"""
+    """
+    Komorebi 向けの一時的な端末ペアリング要求を作成する。
+
+    Args:
+        request (schemas.DeviceAuthCreateRequest): 連携元端末の表示名。
+
+    Returns:
+        schemas.DeviceAuthRequest: 端末コード、ユーザーコード、確認 URL と有効期間。
+    """
     now = datetime.now(JST)
     await DeviceAuth.filter(expires_at__lte=now).delete()
 
@@ -360,7 +368,16 @@ async def DeviceAuthApproveAPI(
     request: schemas.DeviceAuthApprovalRequest,
     current_user: Annotated[User, Depends(GetCurrentUser)],
 ):
-    """ログイン中のユーザーが、テレビに表示されたユーザーコードを承認する。"""
+    """
+    ログイン中のユーザーが、テレビに表示されたユーザーコードを承認する。
+
+    Args:
+        request (schemas.DeviceAuthApprovalRequest): テレビに表示されたユーザーコード。
+        current_user (User): JWT から解決したログイン中のユーザー。
+
+    Returns:
+        None: 承認に成功した場合はレスポンス本文を返さない。
+    """
     pairing = await DeviceAuth.filter(user_code=request.user_code.upper(), expires_at__gt=datetime.now(JST)).get_or_none()
     if pairing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Device authorization request was not found')
@@ -372,7 +389,15 @@ async def DeviceAuthApproveAPI(
 
 @router.post('/device-auth/token', response_model=schemas.UserAccessToken)
 async def DeviceAuthTokenAPI(request: schemas.DeviceAuthTokenRequest):
-    """承認済みペアリング要求を、Komorebi が利用するアクセストークンへ交換する。"""
+    """
+    承認済みペアリング要求を、Komorebi が利用するアクセストークンへ交換する。
+
+    Args:
+        request (schemas.DeviceAuthTokenRequest): Komorebi だけが保持するデバイスコード。
+
+    Returns:
+        schemas.UserAccessToken | Response: 承認後はアクセストークン、承認待ちの間は HTTP 202 。
+    """
     pairing = await DeviceAuth.filter(
         device_code_hash=HashDeviceCode(request.device_code),
         expires_at__gt=datetime.now(JST),
