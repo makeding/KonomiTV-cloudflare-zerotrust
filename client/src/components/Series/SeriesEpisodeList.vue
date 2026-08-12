@@ -9,7 +9,21 @@
             <div class="series-episode-list__bangumi-profile">
                 <strong>{{bangumiSubjectNameCn || bangumiSubjectName || title}}</strong>
                 <small v-if="bangumiSubjectName && bangumiSubjectName !== title">{{bangumiSubjectName}}</small>
-                <p v-if="bangumiSubjectSummary">{{bangumiSubjectSummary}}</p>
+                <div v-if="hasMultipleSummaries" class="series-episode-list__summary-tabs" role="tablist">
+                    <button type="button" role="tab"
+                        :aria-selected="summarySource === 'Program'"
+                        :class="{'is-active': summarySource === 'Program'}"
+                        @click.stop="summarySource = 'Program'">
+                        番組情報
+                    </button>
+                    <button type="button" role="tab"
+                        :aria-selected="summarySource === 'Chinese'"
+                        :class="{'is-active': summarySource === 'Chinese'}"
+                        @click.stop="summarySource = 'Chinese'">
+                        中国語
+                    </button>
+                </div>
+                <p v-if="displayedSummary">{{displayedSummary}}</p>
                 <a :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
                     target="_blank" rel="noopener noreferrer" @click.stop>
                     Bangumi で見る
@@ -74,6 +88,7 @@ import Utils, { dayjs } from '@/utils';
 const props = defineProps<{
     seriesId: number;
     title: string;
+    description: string;
     bangumiSubjectId: number | null;
     bangumiSubjectName: string | null;
     bangumiSubjectNameCn: string | null;
@@ -97,7 +112,20 @@ interface IChannelRow {
 const programs = ref<IRecordedProgram[]>([]);
 const total_programs = ref(0);
 const is_loading = ref(true);
+const summarySource = ref<'Program' | 'Chinese'>('Program');
 const episode_number_collator = new Intl.Collator('ja', { numeric: true });
+
+const programSummary = computed(() => props.description.trim());
+const bangumiSummary = computed(() => props.bangumiSubjectSummary?.trim() ?? '');
+const hasMultipleSummaries = computed(() => {
+    return programSummary.value !== '' &&
+        bangumiSummary.value !== '' &&
+        programSummary.value !== bangumiSummary.value;
+});
+const displayedSummary = computed(() => {
+    if (summarySource.value === 'Chinese' && bangumiSummary.value !== '') return bangumiSummary.value;
+    return programSummary.value || bangumiSummary.value;
+});
 
 const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
     if (program.episode_number) {
@@ -264,6 +292,25 @@ onMounted(fetchPrograms);
             color: rgb(var(--v-theme-primary));
             font-size: 12px;
             text-decoration: none;
+        }
+    }
+
+    &__summary-tabs {
+        display: flex;
+        gap: 4px;
+        margin-top: 6px;
+        button {
+            padding: 2px 8px;
+            color: rgb(var(--v-theme-text-darken-1));
+            font-size: 11px;
+            background: transparent;
+            border: 0;
+            border-bottom: 2px solid transparent;
+            cursor: pointer;
+            &.is-active {
+                color: rgb(var(--v-theme-primary));
+                border-bottom-color: rgb(var(--v-theme-primary));
+            }
         }
     }
 

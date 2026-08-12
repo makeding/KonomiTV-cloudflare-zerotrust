@@ -193,12 +193,13 @@ class BangumiClient:
 
 
     @classmethod
-    async def _getEpisodes(cls, subject_id: int) -> list[dict[str, Any]]:
+    async def _getEpisodes(cls, subject_id: int, access_token: str) -> list[dict[str, Any]]:
         """
         照合済み Bangumi 条目の通常エピソードを全ページ取得する。
 
         Args:
             subject_id (int): Bangumi 条目 ID。
+            access_token (str): Bangumi 個人アクセストークン。
 
         Returns:
             list[dict[str, Any]]: 条目に属する通常エピソード。
@@ -213,7 +214,8 @@ class BangumiClient:
             while True:
                 response = await httpx_client.get(
                     url = f'{cls.API_BASE_URL}/episodes',
-                    headers = API_REQUEST_HEADERS,
+                    # NSFW 条目は匿名アクセスを 404 に偽装するため、收藏一覧と同じ認証を必ず引き継ぐ。
+                    headers = {**API_REQUEST_HEADERS, 'Authorization': f'Bearer {access_token}'},
                     params = {
                         'subject_id': subject_id,
                         'type': 0,
@@ -221,8 +223,7 @@ class BangumiClient:
                         'offset': offset,
                     },
                 )
-                # 收藏一覧には、Bangumi 側ですでに削除された条目が残る場合がある。
-                ## その条目だけ episode 未照合として扱い、残りの Series の同期は継続する。
+                # 認証後も閲覧できない条目、または削除済み条目だけ episode 未照合として扱う。
                 if response.status_code == 404:
                     logging.warning(
                         f'[BangumiClient][_getEpisodes] Bangumi subject was not found. '
@@ -263,6 +264,7 @@ class BangumiClient:
             return 0
 
         subjects = await cls._getCollectionSubjects(user)
+        access_token = user.decryptBangumiAccessToken()
         episodes_by_subject_id: dict[int, list[dict[str, Any]]] = {}
         matched_series_count = 0
 
@@ -302,7 +304,7 @@ class BangumiClient:
             ):
                 continue
             if subject_id not in episodes_by_subject_id:
-                episodes_by_subject_id[subject_id] = await cls._getEpisodes(subject_id)
+                episodes_by_subject_id[subject_id] = await cls._getEpisodes(subject_id, access_token)
             episodes = episodes_by_subject_id[subject_id]
 
             # 一覧取得時に確定した条目の中だけで、各録画の自然話数を対応する Bangumi episode ID へ結び付ける。

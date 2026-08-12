@@ -90,6 +90,7 @@
                                 class="series-grid__episodes"
                                 :seriesId="expandedSeriesInRow(series_row)!.id"
                                 :title="expandedSeriesInRow(series_row)!.title"
+                                :description="expandedSeriesInRow(series_row)!.description"
                                 :bangumiSubjectId="expandedSeriesInRow(series_row)!.bangumi_subject_id"
                                 :bangumiSubjectName="expandedSeriesInRow(series_row)!.bangumi_subject_name"
                                 :bangumiSubjectNameCn="expandedSeriesInRow(series_row)!.bangumi_subject_name_cn"

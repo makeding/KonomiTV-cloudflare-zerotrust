@@ -115,7 +115,14 @@ async def GetSeriesSummaries(
         SELECT
             s.id,
             s.title,
-            s.description,
+            COALESCE((
+                SELECT NULLIF(TRIM(rp_description.description), '')
+                FROM recorded_programs rp_description
+                WHERE rp_description.series_id = s.id
+                  AND TRIM(rp_description.description) != ''
+                ORDER BY rp_description.start_time DESC, rp_description.id DESC
+                LIMIT 1
+            ), s.description) AS description,
             s.genres,
             s.bangumi_subject_id,
             s.bangumi_subject_name,

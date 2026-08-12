@@ -99,8 +99,8 @@ class BangumiClientAsyncTest(unittest.IsolatedAsyncioTestCase):
         get_collection_subjects.assert_not_awaited()
 
 
-    async def test_deleted_collection_subject_does_not_abort_episode_sync(self) -> None:
-        """收藏一覧に残る削除済み条目は空の episode 一覧として扱う。"""
+    async def test_nsfw_episode_request_uses_bearer_token(self) -> None:
+        """NSFW 条目の episode 取得にも連携済みユーザーの Bearer token を渡す。"""
 
         response = MagicMock()
         response.status_code = 404
@@ -109,9 +109,13 @@ class BangumiClientAsyncTest(unittest.IsolatedAsyncioTestCase):
         httpx_client.__aenter__.return_value = httpx_client
         httpx_client.__aexit__.return_value = None
         with patch('app.utils.BangumiClient.HTTPX_CLIENT', return_value=httpx_client):
-            episodes = await BangumiClient._getEpisodes(295001)
+            episodes = await BangumiClient._getEpisodes(295001, 'test-token')  # pyright: ignore[reportPrivateUsage]
 
         self.assertEqual(episodes, [])
+        self.assertEqual(
+            httpx_client.get.await_args.kwargs['headers']['Authorization'],
+            'Bearer test-token',
+        )
         response.raise_for_status.assert_not_called()
 
 
