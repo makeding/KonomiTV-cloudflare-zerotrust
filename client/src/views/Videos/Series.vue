@@ -27,7 +27,7 @@
                                 <a v-if="official_website_url" :href="official_website_url"
                                     class="series-external-links__link" target="_blank" rel="noopener noreferrer">
                                     <Icon icon="fluent:globe-20-regular" width="18px" />
-                                    アニメ公式サイト
+                                    公式サイト
                                     <Icon icon="fluent:open-16-regular" width="14px" />
                                 </a>
                                 <a v-if="bangumi_subject_id" :href="`https://bgm.tv/subject/${bangumi_subject_id}`"

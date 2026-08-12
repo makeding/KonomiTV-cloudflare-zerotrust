@@ -83,6 +83,15 @@ def GenerateAccessToken(user_id: int) -> str:
 
 
 def HashDeviceCode(device_code: str) -> str:
+    """
+    端末だけが保持するデバイスコードを、DB 保存用の SHA-256 ハッシュへ変換する。
+
+    Args:
+        device_code (str): Komorebi に発行した十分に長いデバイスコード。
+
+    Returns:
+        str: デバイスコードの SHA-256 ハッシュ。
+    """
     return hashlib.sha256(device_code.encode()).hexdigest()
 
 
@@ -319,19 +328,24 @@ async def UserAccessTokenAPI(
 
 @router.post('/device-auth', response_model=schemas.DeviceAuthRequest, status_code=status.HTTP_201_CREATED)
 async def DeviceAuthCreateAPI(request: schemas.DeviceAuthCreateRequest):
+    """Komorebi 向けの一時的な端末ペアリング要求を作成する。"""
     now = datetime.now(JST)
     await DeviceAuth.filter(expires_at__lte=now).delete()
-    device_code = secrets.token_urlsafe(32)
+
+    # ユーザーコードの衝突は DB の一意制約を最終保証として、衝突時だけ新しいコードを再生成する
     while True:
+        device_code = secrets.token_urlsafe(32)
         user_code = ''.join(secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(8))
-        if await DeviceAuth.filter(user_code=user_code).exists() is False:
+        try:
+            await DeviceAuth.create(
+                device_code_hash=HashDeviceCode(device_code),
+                user_code=user_code,
+                device_name=request.device_name,
+                expires_at=now + timedelta(minutes=10),
+            )
             break
-    await DeviceAuth.create(
-        device_code_hash=HashDeviceCode(device_code),
-        user_code=user_code,
-        device_name=request.device_name,
-        expires_at=now + timedelta(minutes=10),
-    )
+        except IntegrityError:
+            continue
     return schemas.DeviceAuthRequest(
         device_code=device_code,
         user_code=user_code,
@@ -346,17 +360,19 @@ async def DeviceAuthApproveAPI(
     request: schemas.DeviceAuthApprovalRequest,
     current_user: Annotated[User, Depends(GetCurrentUser)],
 ):
+    """ログイン中のユーザーが、テレビに表示されたユーザーコードを承認する。"""
     pairing = await DeviceAuth.filter(user_code=request.user_code.upper(), expires_at__gt=datetime.now(JST)).get_or_none()
     if pairing is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Device authorization request was not found')
-    if pairing.user_id is not None:
+    # 同時承認時も最初のユーザーだけを受け付け、後続ユーザーによる上書きを防ぐ
+    updated_count = await DeviceAuth.filter(id=pairing.id, user_id=None).update(user_id=current_user.id)
+    if updated_count == 0:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Device authorization request was already approved')
-    pairing.user = current_user
-    await pairing.save(update_fields=['user_id'])
 
 
 @router.post('/device-auth/token', response_model=schemas.UserAccessToken)
 async def DeviceAuthTokenAPI(request: schemas.DeviceAuthTokenRequest):
+    """承認済みペアリング要求を、Komorebi が利用するアクセストークンへ交換する。"""
     pairing = await DeviceAuth.filter(
         device_code_hash=HashDeviceCode(request.device_code),
         expires_at__gt=datetime.now(JST),

@@ -1,4 +1,6 @@
 
+import asyncio
+import weakref
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -15,6 +17,28 @@ router = APIRouter(
     tags = ['Settings'],
     prefix = '/api/settings',
 )
+
+# client_settings は JSON カラムのため、同一ユーザーへの並行更新を直列化して read-modify-write の取りこぼしを防ぐ
+## WeakValueDictionary により、更新が終わって参照されなくなったユーザーのロックは自動的に解放される
+__client_settings_update_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
+
+
+def GetClientSettingsUpdateLock(user_id: int) -> asyncio.Lock:
+    """
+    ユーザー単位でクライアント設定更新を直列化するためのロックを取得する。
+
+    Args:
+        user_id (int): 更新対象ユーザーの ID 。
+
+    Returns:
+        asyncio.Lock: 指定ユーザーに対応する更新ロック。
+    """
+
+    lock = __client_settings_update_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        __client_settings_update_locks[user_id] = lock
+    return lock
 
 
 @router.get(
@@ -47,27 +71,32 @@ async def ClientSettingsUpdateAPI(
     JWT エンコードされたアクセストークンがリクエストの Authorization: Bearer に設定されていないとアクセスできない。
     """
 
-    # 現在サーバーに保存されているクライアント設定の最終同期時刻よりも古いクライアント設定が送られてきた場合、エラーを返す
-    current_client_settings = ClientSettings.model_validate(current_user.client_settings)
-    if client_settings.last_synced_at < current_client_settings.last_synced_at:
-        logging.error(f'[ClientSettingsUpdateAPI] Client settings are outdated! [{client_settings.last_synced_at} < {current_client_settings.last_synced_at}]')
-        raise HTTPException(
-            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail = 'The client settings are outdated. Please update the client settings from the server.',
+    # 視聴履歴専用 API と通常の設定同期が同時に走っても、どちらか一方の更新を失わないよう直列化する
+    lock = GetClientSettingsUpdateLock(current_user.id)
+    async with lock:
+        await current_user.refresh_from_db(fields=['client_settings'])
+
+        # 現在サーバーに保存されているクライアント設定の最終同期時刻よりも古いクライアント設定が送られてきた場合、エラーを返す
+        current_client_settings = ClientSettings.model_validate(current_user.client_settings)
+        if client_settings.last_synced_at < current_client_settings.last_synced_at:
+            logging.error(f'[ClientSettingsUpdateAPI] Client settings are outdated! [{client_settings.last_synced_at} < {current_client_settings.last_synced_at}]')
+            raise HTTPException(
+                status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail = 'The client settings are outdated. Please update the client settings from the server.',
+            )
+
+        # dict に変換してから入れる
+        ## Pydantic モデルのままだと JSON にシリアライズできないので怒られる
+        updated_settings = dict(client_settings)
+        updated_settings['watched_history'] = MergeWatchedHistory(
+            current_client_settings.watched_history,
+            client_settings.watched_history,
+            client_settings.video_watched_history_max_count,
         )
+        current_user.client_settings = updated_settings
 
-    # dict に変換してから入れる
-    ## Pydantic モデルのままだと JSON にシリアライズできないので怒られる
-    updated_settings = dict(client_settings)
-    updated_settings['watched_history'] = MergeWatchedHistory(
-        current_client_settings.watched_history,
-        client_settings.watched_history,
-        client_settings.video_watched_history_max_count,
-    )
-    current_user.client_settings = updated_settings
-
-    # レコードを保存する
-    await current_user.save()
+        # レコードを保存する
+        await current_user.save()
 
 
 @router.get(
@@ -91,16 +120,20 @@ async def WatchedHistoryUpdateAPI(
     watched_history: Annotated[schemas.WatchedHistory, Body(description='端末上で更新された視聴履歴。')],
     current_user: Annotated[User, Depends(GetCurrentUser)],
 ):
-    client_settings = ClientSettings.model_validate(current_user.client_settings)
-    merged_history = MergeWatchedHistory(
-        client_settings.watched_history,
-        [item.model_dump() for item in watched_history.items],
-        client_settings.video_watched_history_max_count,
-    )
-    updated_settings = dict(client_settings)
-    updated_settings['watched_history'] = merged_history
-    current_user.client_settings = updated_settings
-    await current_user.save()
+    # Web 側の設定同期と複数端末からの履歴更新を直列化し、JSON カラムの更新競合を防ぐ
+    lock = GetClientSettingsUpdateLock(current_user.id)
+    async with lock:
+        await current_user.refresh_from_db(fields=['client_settings'])
+        client_settings = ClientSettings.model_validate(current_user.client_settings)
+        merged_history = MergeWatchedHistory(
+            client_settings.watched_history,
+            [item.model_dump() for item in watched_history.items],
+            client_settings.video_watched_history_max_count,
+        )
+        updated_settings = dict(client_settings)
+        updated_settings['watched_history'] = merged_history
+        current_user.client_settings = updated_settings
+        await current_user.save()
     return schemas.WatchedHistory(items=merged_history)
 
 
