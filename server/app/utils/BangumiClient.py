@@ -115,7 +115,7 @@ class BangumiClient:
 
 
     @classmethod
-    def _findSubject(cls, series_title: str, subjects: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def findSubject(cls, series_title: str, subjects: list[dict[str, Any]]) -> dict[str, Any] | None:
         """
         用户の在看・看過收藏からローカル Series に対応する条目を一意に選ぶ。
 
@@ -259,7 +259,7 @@ class BangumiClient:
             subject = next(
                 (subject for subject in subjects if int(subject['id']) == series.bangumi_subject_id),
                 None,
-            ) if series.bangumi_subject_id is not None else cls._findSubject(series.title, subjects)
+            ) if series.bangumi_subject_id is not None else cls.findSubject(series.title, subjects)
             if subject is None:
                 continue
             subject_id = int(subject['id'])

@@ -33,7 +33,7 @@ class BangumiClientTest(unittest.TestCase):
             'name_cn': '绿林寮',
         }
 
-        matched_subject = BangumiClient._findSubject(
+        matched_subject = BangumiClient.findSubject(
             'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた。',
             [unrelated_subject, expected_subject],
         )
@@ -52,7 +52,7 @@ class BangumiClientTest(unittest.TestCase):
             'name': 'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた。',
             'name_cn': '',
         }
-        matched_subject = BangumiClient._findSubject(
+        matched_subject = BangumiClient.findSubject(
             'ここは俺に任せて先に行けと言ってから10年がたったら伝説になっていた',
             [subject],
         )
@@ -68,7 +68,7 @@ class BangumiClientTest(unittest.TestCase):
             {'id': 2, 'type': 2, 'name': '同名作品', 'name_cn': ''},
         ]
 
-        self.assertIsNone(BangumiClient._findSubject('同名作品', subjects))
+        self.assertIsNone(BangumiClient.findSubject('同名作品', subjects))
 
 
     def test_playback_completion_is_decided_at_ninety_percent(self) -> None:
