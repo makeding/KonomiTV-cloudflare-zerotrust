@@ -1,29 +1,18 @@
 <template>
     <div class="series-episode-list">
         <div class="series-episode-list__header">
-            <h3>{{title}}</h3>
+            <div class="series-episode-list__titles">
+                <h3>{{title}}</h3>
+                <small v-if="bangumiSubjectNameCn">{{bangumiSubjectNameCn}}</small>
+            </div>
             <span>{{total_programs}}話</span>
         </div>
         <div v-if="bangumiSubjectId" class="series-episode-list__bangumi">
             <img v-if="bangumiSubjectImageUrl" :src="bangumiSubjectImageUrl" alt="" loading="lazy" decoding="async">
             <div class="series-episode-list__bangumi-profile">
-                <strong v-if="bangumiSubjectNameCn">{{bangumiSubjectNameCn}}</strong>
-                <div v-if="hasMultipleSummaries" class="series-episode-list__summary-tabs" role="tablist">
-                    <button type="button" role="tab"
-                        :aria-selected="summarySource === 'Program'"
-                        :class="{'is-active': summarySource === 'Program'}"
-                        @click.stop="summarySource = 'Program'">
-                        番組情報
-                    </button>
-                    <button type="button" role="tab"
-                        :aria-selected="summarySource === 'Chinese'"
-                        :class="{'is-active': summarySource === 'Chinese'}"
-                        @click.stop="summarySource = 'Chinese'">
-                        中国語
-                    </button>
-                </div>
-                <p v-if="displayedSummary">{{displayedSummary}}</p>
-                <a v-if="isBangumiSummaryDisplayed" :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
+                <p v-if="programSummary">{{programSummary}}</p>
+                <p v-if="bangumiSummary" class="series-episode-list__chinese-summary">{{bangumiSummary}}</p>
+                <a :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
                     target="_blank" rel="noopener noreferrer" @click.stop>
                     Bangumi で見る
                     <Icon icon="fluent:open-16-regular" width="13px" />
@@ -42,19 +31,19 @@
                     {{slot.label}}
                 </div>
                 <template v-for="channel_row in episode_matrix.rows" :key="channel_row.id">
-                    <div class="series-episode-list__channel-header">
+                    <div class="series-episode-list__channel-logo-cell">
                         <div v-if="channel_row.channel_id" class="series-episode-list__channel-logo">
                             <div class="ch-sprite" :chid="channel_row.channel_id">
                                 <img loading="lazy"
                                     decoding="async"
                                     :src="`${Utils.api_base_url}/channels/${channel_row.channel_id}/logo`"
-                                    alt="">
+                                alt="">
                             </div>
                         </div>
-                        <div class="series-episode-list__channel-name">
-                            <span>{{channel_row.name}}</span>
-                            <small>{{channel_row.program_count}}話</small>
-                        </div>
+                    </div>
+                    <div class="series-episode-list__channel-name">
+                        <span>{{channel_row.name}}</span>
+                        <small>{{channel_row.program_count}}話</small>
                     </div>
                     <template v-for="(program, slot_index) in channel_row.programs"
                         :key="episode_matrix.slots[slot_index].key">
@@ -111,24 +100,10 @@ interface IChannelRow {
 const programs = ref<IRecordedProgram[]>([]);
 const total_programs = ref(0);
 const is_loading = ref(true);
-const summarySource = ref<'Program' | 'Chinese'>('Program');
 const episode_number_collator = new Intl.Collator('ja', { numeric: true });
 
 const programSummary = computed(() => props.description.trim());
 const bangumiSummary = computed(() => props.bangumiSubjectSummary?.trim() ?? '');
-const hasMultipleSummaries = computed(() => {
-    return programSummary.value !== '' &&
-        bangumiSummary.value !== '' &&
-        programSummary.value !== bangumiSummary.value;
-});
-const displayedSummary = computed(() => {
-    if (summarySource.value === 'Chinese' && bangumiSummary.value !== '') return bangumiSummary.value;
-    return programSummary.value || bangumiSummary.value;
-});
-const isBangumiSummaryDisplayed = computed(() => {
-    return bangumiSummary.value !== '' &&
-        (programSummary.value === '' || summarySource.value === 'Chinese');
-});
 
 const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
     if (program.episode_number) {
@@ -230,7 +205,7 @@ onMounted(fetchPrograms);
 
     &__header {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 12px;
         margin-bottom: 14px;
         h3 {
@@ -244,6 +219,25 @@ onMounted(fetchPrograms);
             flex: 0 0 auto;
             color: rgb(var(--v-theme-text-darken-1));
             font-size: 13px;
+        }
+    }
+
+    &__titles {
+        min-width: 0;
+        h3 {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        small {
+            display: block;
+            margin-top: 2px;
+            overflow: hidden;
+            color: rgb(var(--v-theme-text-darken-1));
+            font-family: 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+            font-size: 12px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
     }
 
@@ -262,29 +256,33 @@ onMounted(fetchPrograms);
         border-radius: 7px;
         > img {
             flex: 0 0 auto;
-            width: 64px;
-            height: 88px;
+            width: 112px;
+            height: 158px;
             object-fit: cover;
             border-radius: 5px;
+            @include smartphone-vertical {
+                width: 76px;
+                height: 108px;
+            }
         }
     }
 
     &__bangumi-profile {
         min-width: 0;
-        strong {
-            display: block;
-        }
+        max-width: 68ch;
         p {
             color: rgb(var(--v-theme-text-darken-1));
-        }
-        p {
             display: -webkit-box;
-            max-width: 920px;
             margin: 5px 0;
             overflow: hidden;
             font-size: 12px;
+            line-height: 1.65;
             -webkit-box-orient: vertical;
-            -webkit-line-clamp: 2;
+            -webkit-line-clamp: 3;
+        }
+        .series-episode-list__chinese-summary {
+            font-family: 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+            opacity: 0.82;
         }
         a {
             display: inline-flex;
@@ -296,25 +294,6 @@ onMounted(fetchPrograms);
         }
     }
 
-    &__summary-tabs {
-        display: flex;
-        gap: 4px;
-        margin-top: 6px;
-        button {
-            padding: 2px 8px;
-            color: rgb(var(--v-theme-text-darken-1));
-            font-size: 11px;
-            background: transparent;
-            border: 0;
-            border-bottom: 2px solid transparent;
-            cursor: pointer;
-            &.is-active {
-                color: rgb(var(--v-theme-primary));
-                border-bottom-color: rgb(var(--v-theme-primary));
-            }
-        }
-    }
-
     &__matrix-scroll {
         overflow-x: auto;
         overscroll-behavior-x: contain;
@@ -323,12 +302,12 @@ onMounted(fetchPrograms);
 
     &__matrix {
         display: grid;
-        grid-template-columns: 150px repeat(var(--episode-column-count), 170px);
+        grid-template-columns: 60px 82px repeat(var(--episode-column-count), 170px);
         gap: 8px;
         width: max-content;
         min-width: 100%;
         @include smartphone-vertical {
-            grid-template-columns: 116px repeat(var(--episode-column-count), 145px);
+            grid-template-columns: 52px 56px repeat(var(--episode-column-count), 145px);
         }
     }
 
@@ -345,21 +324,19 @@ onMounted(fetchPrograms);
     }
 
     &__corner {
-        left: 0;
-        z-index: 3;
+        grid-column: span 2;
         text-align: left;
     }
 
-    &__channel-header {
+    &__channel-logo-cell {
         position: sticky;
         left: 0;
-        z-index: 2;
+        z-index: 3;
         display: flex;
         align-items: center;
-        gap: 8px;
-        min-width: 0;
-        padding-right: 8px;
-        background: rgb(var(--v-theme-background-lighten-1));
+        justify-content: center;
+        pointer-events: none;
+        background: transparent;
     }
 
     &__channel-logo {
@@ -372,6 +349,7 @@ onMounted(fetchPrograms);
         overflow: hidden;
         background: linear-gradient(150deg, rgb(var(--v-theme-gray)), rgb(var(--v-theme-background-lighten-2)));
         border-radius: calc(var(--ch-sprite-border-radius) * 1px);
+        box-shadow: 0 2px 7px rgb(0 0 0 / 42%);
         @include smartphone-vertical {
             --ch-sprite-width: 44;
             --ch-sprite-height: 25;
@@ -379,6 +357,9 @@ onMounted(fetchPrograms);
     }
 
     &__channel-name {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
         min-width: 0;
         span,
         small {

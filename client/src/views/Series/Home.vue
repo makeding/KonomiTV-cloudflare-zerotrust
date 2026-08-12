@@ -33,7 +33,8 @@
                     </div>
 
                     <div v-if="is_loading" class="series-grid">
-                        <v-skeleton-loader v-for="index in 6" :key="index" type="article" class="series-card" />
+                        <v-skeleton-loader v-for="index in 12" :key="index"
+                            type="image" class="series-card series-card--skeleton" />
                     </div>
                     <div v-else-if="series_list.length > 0" ref="series_grid_element" class="series-grid">
                         <template v-for="series_row in series_rows" :key="series_row[0].id">
@@ -41,6 +42,7 @@
                                 <button v-for="series in series_row" :key="series.id" v-ripple
                                     class="series-card"
                                     type="button"
+                                    :data-series-id="series.id"
                                     :aria-expanded="expanded_series_id === series.id"
                                     @click="toggleSeries(series.id)">
                             <div class="series-card__thumbnails"
@@ -164,8 +166,18 @@ const updateGridColumnCount = () => {
     grid_column_count.value = Math.max(1, columns);
 };
 
-const toggleSeries = (seriesID: number) => {
+const toggleSeries = async (seriesID: number) => {
+    const targetCard = series_grid_element.value?.querySelector<HTMLElement>(`[data-series-id="${seriesID}"]`);
+    const targetTopBeforeUpdate = targetCard?.getBoundingClientRect().top;
+    const isClosingCurrentSeries = expanded_series_id.value === seriesID;
     expanded_series_id.value = expanded_series_id.value === seriesID ? null : seriesID;
+
+    // 既存の展開領域が消えると、下側のカードはその高さ分だけ上へ跳ねる。
+    // 切り替え先カードの画面内位置を基準にスクロール差分を相殺し、視線の位置を維持する。
+    if (isClosingCurrentSeries || targetCard == null || targetTopBeforeUpdate === undefined) return;
+    await nextTick();
+    const targetTopAfterUpdate = targetCard.getBoundingClientRect().top;
+    window.scrollBy(0, targetTopAfterUpdate - targetTopBeforeUpdate);
 };
 
 const syncStateFromRoute = () => {
@@ -360,6 +372,13 @@ onBeforeUnmount(() => {
     &:hover {
         box-shadow: 0 5px 14px rgb(0 0 0 / 28%);
         transform: translateY(-2px);
+    }
+
+    &--skeleton {
+        width: 100%;
+        :deep(.v-skeleton-loader__image) {
+            height: 100%;
+        }
     }
 
     &__thumbnails,
