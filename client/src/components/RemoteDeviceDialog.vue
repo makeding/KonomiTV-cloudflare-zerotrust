@@ -3,7 +3,7 @@
         :persistent="isPinned"
         :offset="8" transition="fade-transition" @update:model-value="handleMenuVisibility">
         <template #activator="{ props: activatorProps }">
-            <v-btn v-bind="activatorProps" icon variant="text"
+            <v-btn ref="activatorButton" v-bind="activatorProps" icon variant="text"
                 :color="selectedDeviceId === null ? undefined : 'primary'" aria-label="テレビを選択">
                 <Icon icon="material-symbols:cast-rounded" height="26px" />
                 <v-tooltip activator="parent" location="bottom">{{ selectedDeviceName ?? 'テレビを選択' }}</v-tooltip>
@@ -96,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import RemoteControl, { type IRemoteDevice, type RemoteCommand } from '@/services/RemoteControl';
 import useSettingsStore from '@/stores/SettingsStore';
@@ -112,6 +112,7 @@ interface IRemotePlaybackState {
 }
 
 const settingsStore = useSettingsStore();
+const activatorButton = ref<{ $el: HTMLElement } | null>(null);
 const isOpen = ref(false);
 const isLoading = ref(false);
 const devices = ref<IRemoteDevice[]>([]);
@@ -126,6 +127,21 @@ const selectedPlaybackState = computed<IRemotePlaybackState>(() => {
 let refreshInterval: number | null = null;
 let refreshInProgress = false;
 let devicesMissingSince: number | null = null;
+
+function isActivatorVisible(): boolean {
+    const element = activatorButton.value?.$el;
+    return element !== undefined && element.getClientRects().length > 0;
+}
+
+function syncPinnedMenuVisibility(): void {
+    // HeaderBar と SPHeaderBar は CSS で片方を隠しているだけで、どちらのコンポーネントもマウントされている。
+    // 固定状態を全インスタンスへそのまま適用すると、非表示側の v-menu まで Teleport されて二重表示になる。
+    if (isActivatorVisible() === false) {
+        isOpen.value = false;
+    } else if (isPinned.value === true) {
+        isOpen.value = true;
+    }
+}
 
 async function refreshDevices(): Promise<void> {
     if (refreshInProgress === true) return;
@@ -155,7 +171,7 @@ async function refreshDevices(): Promise<void> {
 }
 
 function handleMenuVisibility(visible: boolean): void {
-    if (visible === false && isPinned.value === true) {
+    if (visible === false && isPinned.value === true && isActivatorVisible()) {
         isOpen.value = true;
         return;
     }
@@ -188,12 +204,16 @@ function togglePinned(): void {
 }
 
 onBeforeUnmount(() => {
+    window.removeEventListener('resize', syncPinnedMenuVisibility);
     if (refreshInterval !== null) window.clearInterval(refreshInterval);
 });
 
-if (isPinned.value === true) {
-    isOpen.value = true;
-}
+onMounted(() => {
+    window.addEventListener('resize', syncPinnedMenuVisibility);
+    nextTick(syncPinnedMenuVisibility);
+});
+
+watch(isPinned, () => nextTick(syncPinnedMenuVisibility));
 </script>
 
 <style scoped lang="scss">
