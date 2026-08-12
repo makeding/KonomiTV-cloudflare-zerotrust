@@ -63,6 +63,7 @@ export interface ILocalClientSettings extends IClientSettings {
         updated_at: number;
     }[];
     selected_remote_device_id: string | null;
+    remote_control_menu_pinned: boolean;
     lshaped_screen_crop_enabled: boolean;
     lshaped_screen_crop_zoom_level: number;
     lshaped_screen_crop_x_position: number;
@@ -170,6 +171,8 @@ export const ILocalClientSettingsDefault: ILocalClientSettings = {
     watched_history: [],
     // 最後に選択した Komorebi テレビ。ブラウザ更新後も投げ先を維持する (同期無効)
     selected_remote_device_id: null,
+    // テレビ操作メニューを右上に開いたまま表示する (同期無効)
+    remote_control_menu_pinned: false,
 
     // ***** L字画面のクロップ設定 *****
 
@@ -378,6 +381,7 @@ export const SYNCABLE_SETTINGS_KEYS: (keyof IClientSettings)[] = [
     // twitter_reply_thread_states: 同期無効
     // bluesky_reply_thread_states: 同期無効
     // selected_remote_device_id: 同期無効
+    // remote_control_menu_pinned: 同期無効
     'saved_twitter_hashtags',
     'mylist',
     'watched_history',

@@ -2,7 +2,8 @@
 
 import { createRouter, createWebHistory } from 'vue-router';
 
-import RemoteControl, { type RemoteOpenCommand } from '@/services/RemoteControl';
+import Message from '@/message';
+import RemoteControl, { type RemoteCommand } from '@/services/RemoteControl';
 import useSettingsStore from '@/stores/SettingsStore';
 import Utils from '@/utils';
 
@@ -224,7 +225,7 @@ const router = createRouter({
 router.beforeResolve(async (to, from, next) => {
     // テレビが選択されている間は視聴ページをローカルで開かず、選択中の Komorebi へ再生対象だけを送る。
     const selectedDeviceId = useSettingsStore().settings.selected_remote_device_id;
-    let remoteCommand: RemoteOpenCommand | null = null;
+    let remoteCommand: Extract<RemoteCommand, {type: 'OpenLive' | 'OpenRecording'}> | null = null;
     if (selectedDeviceId !== null && to.name === 'TV Watch' && typeof to.params.display_channel_id === 'string') {
         remoteCommand = {type: 'OpenLive', display_channel_id: to.params.display_channel_id};
     } else if (selectedDeviceId !== null && to.name === 'Videos Watch' && typeof to.params.video_id === 'string') {
@@ -234,7 +235,10 @@ router.beforeResolve(async (to, from, next) => {
         }
     }
     if (selectedDeviceId !== null && remoteCommand !== null) {
-        await RemoteControl.sendOpenCommand(selectedDeviceId, remoteCommand);
+        const sent = await RemoteControl.sendOpenCommand(selectedDeviceId, remoteCommand);
+        if (sent === true) {
+            Message.success('テレビへ再生を送信しました。');
+        }
         next(false);
         return;
     }

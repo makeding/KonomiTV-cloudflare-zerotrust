@@ -406,8 +406,15 @@ class RemoteCommandOpenRecording(BaseModel):
     recorded_program_id: int
     position_seconds: Annotated[float, Field(ge=0)] = 0
 
+class RemoteCommandPlayback(BaseModel):
+    type: Literal['Play', 'Pause', 'Stop']
+
+class RemoteCommandSeekRelative(BaseModel):
+    type: Literal['SeekRelative']
+    delta_seconds: float
+
 RemoteCommand = Annotated[
-    RemoteCommandOpenLive | RemoteCommandOpenRecording,
+    RemoteCommandOpenLive | RemoteCommandOpenRecording | RemoteCommandPlayback | RemoteCommandSeekRelative,
     Field(discriminator='type'),
 ]
 

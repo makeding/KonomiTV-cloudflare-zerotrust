@@ -1,6 +1,7 @@
 <template>
     <v-menu v-if="isLoggedIn" v-model="isOpen" location="bottom end" :close-on-content-click="false"
-        :offset="8" transition="slide-y-transition" @update:model-value="handleMenuVisibility">
+        :persistent="isPinned"
+        :offset="8" transition="fade-transition" @update:model-value="handleMenuVisibility">
         <template #activator="{ props: activatorProps }">
             <v-btn v-bind="activatorProps" icon variant="text"
                 :color="selectedDeviceId === null ? undefined : 'primary'" aria-label="テレビを選択">
@@ -9,57 +10,89 @@
             </v-btn>
         </template>
 
-        <v-card class="remote-device-menu" elevation="12">
-            <div class="remote-device-menu__header">
-                <div>
-                    <div class="remote-device-menu__title">テレビで再生</div>
-                    <div class="remote-device-menu__caption">再生先を選択</div>
-                </div>
-                <v-btn icon size="small" variant="text" aria-label="テレビ一覧を更新" :loading="isLoading" @click="refreshDevices">
-                    <Icon icon="material-symbols:refresh-rounded" height="22px" />
-                </v-btn>
-            </div>
+        <v-list class="remote-device-menu" density="compact" elevation="8" bg-color="background-lighten-1">
+            <v-list-item class="remote-device-menu__header" title="テレビで再生">
+                <template #append>
+                    <v-btn icon size="small" variant="text" :color="isPinned ? 'primary' : undefined"
+                        :aria-label="isPinned ? 'テレビ操作メニューの固定を解除' : 'テレビ操作メニューを固定'" @click="togglePinned">
+                        <Icon :icon="isPinned ? 'fluent:pin-20-filled' : 'fluent:pin-20-regular'" width="20px" />
+                    </v-btn>
+                    <v-btn icon size="small" variant="text" aria-label="テレビ一覧を更新" :loading="isLoading" @click="refreshDevices">
+                        <Icon icon="fluent:arrow-clockwise-20-regular" width="21px" />
+                    </v-btn>
+                </template>
+            </v-list-item>
 
-            <v-divider />
             <v-progress-linear v-if="isLoading" color="primary" indeterminate />
-            <v-list v-else-if="devices.length > 0" class="remote-device-menu__list" bg-color="transparent" density="compact">
+            <template v-else-if="devices.length > 0">
                 <v-list-item v-for="device in devices" :key="device.device_id" :active="device.device_id === selectedDeviceId"
-                    color="primary" rounded="lg" @click="selectDevice(device)">
+                    color="primary" @click="selectDevice(device)">
                     <template #prepend>
-                        <div class="remote-device-menu__device-icon">
-                            <Icon icon="material-symbols:tv-rounded" height="24px" />
-                        </div>
+                        <Icon icon="fluent:tv-20-regular" width="23px" class="mr-3" />
                     </template>
                     <v-list-item-title>{{ device.device_name }}</v-list-item-title>
                     <v-list-item-subtitle>オンライン</v-list-item-subtitle>
                     <template #append>
-                        <Icon v-if="device.device_id === selectedDeviceId" icon="material-symbols:check-rounded" height="23px" />
+                        <Icon v-if="device.device_id === selectedDeviceId" icon="fluent:checkmark-20-filled" width="21px" />
                     </template>
                 </v-list-item>
-            </v-list>
-            <div v-else class="remote-device-menu__empty">
-                <Icon icon="material-symbols:tv-off-outline-rounded" height="32px" />
-                <span>オンラインのテレビがありません</span>
-                <small>Komorebi を起動して、HonomiTV とペアリングしてください。</small>
-            </div>
+            </template>
+            <v-list-item v-else lines="two">
+                <template #prepend>
+                    <Icon icon="fluent:tv-off-20-regular" width="23px" class="mr-3" />
+                </template>
+                <v-list-item-title>オンラインのテレビがありません</v-list-item-title>
+                <v-list-item-subtitle>Komorebi を起動してペアリングしてください</v-list-item-subtitle>
+            </v-list-item>
+
+            <template v-if="selectedDevice !== null && selectedPlaybackState.content_type !== 'Idle'">
+                <v-divider class="my-2" />
+                <div class="remote-device-menu__section-title">
+                    {{ selectedPlaybackState.content_type === 'Live' ? 'ライブ再生中' : '録画番組を再生中' }}
+                </div>
+                <div class="remote-device-menu__controls">
+                    <v-btn icon size="small" variant="text" :disabled="selectedPlaybackState.can_seek !== true" aria-label="10秒戻る"
+                        @click="sendControl({type: 'SeekRelative', delta_seconds: -10})">
+                        <Icon icon="fluent:arrow-counterclockwise-20-regular" width="22px" />
+                    </v-btn>
+                    <v-btn icon size="small" variant="text" :aria-label="selectedPlaybackState.is_playing ? '一時停止' : '再生'"
+                        @click="sendControl({type: selectedPlaybackState.is_playing ? 'Pause' : 'Play'})">
+                        <Icon :icon="selectedPlaybackState.is_playing ? 'fluent:pause-20-filled' : 'fluent:play-20-filled'" width="24px" />
+                    </v-btn>
+                    <v-btn icon size="small" variant="text" :disabled="selectedPlaybackState.can_seek !== true" aria-label="10秒進む"
+                        @click="sendControl({type: 'SeekRelative', delta_seconds: 10})">
+                        <Icon icon="fluent:arrow-clockwise-20-regular" width="22px" />
+                    </v-btn>
+                    <v-btn icon size="small" variant="text" aria-label="停止" @click="sendControl({type: 'Stop'})">
+                        <Icon icon="fluent:stop-20-filled" width="22px" />
+                    </v-btn>
+                </div>
+            </template>
 
             <template v-if="selectedDeviceId !== null">
-                <v-divider />
-                <button class="remote-device-menu__disconnect" type="button" @click="disconnect">
-                    <Icon icon="material-symbols:link-off-rounded" height="20px" />
-                    このテレビとの接続を解除
-                </button>
+                <v-divider class="my-2" />
+                <v-list-item title="接続を解除" @click="disconnect">
+                    <template #prepend>
+                        <Icon icon="fluent:link-dismiss-20-regular" width="22px" class="mr-3" />
+                    </template>
+                </v-list-item>
             </template>
-        </v-card>
+        </v-list>
     </v-menu>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 
-import RemoteControl, { type IRemoteDevice } from '@/services/RemoteControl';
+import RemoteControl, { type IRemoteDevice, type RemoteCommand } from '@/services/RemoteControl';
 import useSettingsStore from '@/stores/SettingsStore';
 import Utils from '@/utils';
+
+interface IRemotePlaybackState {
+    content_type: 'Idle' | 'Live' | 'Recorded';
+    is_playing?: boolean;
+    can_seek?: boolean;
+}
 
 const settingsStore = useSettingsStore();
 const isOpen = ref(false);
@@ -67,102 +100,82 @@ const isLoading = ref(false);
 const devices = ref<IRemoteDevice[]>([]);
 const isLoggedIn = computed(() => Utils.getAccessToken() !== null);
 const selectedDeviceId = computed(() => settingsStore.settings.selected_remote_device_id);
+const isPinned = computed(() => settingsStore.settings.remote_control_menu_pinned);
 const selectedDevice = computed(() => devices.value.find((device) => device.device_id === selectedDeviceId.value) ?? null);
 const selectedDeviceName = computed(() => selectedDevice.value?.device_name ?? null);
+const selectedPlaybackState = computed<IRemotePlaybackState>(() => {
+    return selectedDevice.value?.state as unknown as IRemotePlaybackState ?? {content_type: 'Idle'};
+});
+let refreshInterval: number | null = null;
 
 async function refreshDevices(): Promise<void> {
-    isLoading.value = true;
+    isLoading.value = devices.value.length === 0;
     devices.value = await RemoteControl.fetchDevices() ?? [];
     isLoading.value = false;
 }
 
 function handleMenuVisibility(visible: boolean): void {
+    if (visible === false && isPinned.value === true) {
+        isOpen.value = true;
+        return;
+    }
+    if (refreshInterval !== null) {
+        window.clearInterval(refreshInterval);
+        refreshInterval = null;
+    }
     if (visible) {
         refreshDevices();
+        refreshInterval = window.setInterval(refreshDevices, 1_000);
     }
 }
 
 function selectDevice(device: IRemoteDevice): void {
     settingsStore.settings.selected_remote_device_id = device.device_id;
-    isOpen.value = false;
+}
+
+async function sendControl(command: Exclude<RemoteCommand, {type: 'OpenLive' | 'OpenRecording'}>): Promise<void> {
+    if (selectedDeviceId.value === null) return;
+    await RemoteControl.sendCommand(selectedDeviceId.value, command);
 }
 
 function disconnect(): void {
     settingsStore.settings.selected_remote_device_id = null;
     isOpen.value = false;
 }
+
+function togglePinned(): void {
+    settingsStore.settings.remote_control_menu_pinned = !isPinned.value;
+}
+
+onBeforeUnmount(() => {
+    if (refreshInterval !== null) window.clearInterval(refreshInterval);
+});
+
+if (isPinned.value === true) {
+    isOpen.value = true;
+}
 </script>
 
 <style scoped lang="scss">
 .remote-device-menu {
-    width: min(340px, calc(100vw - 24px));
-    overflow: hidden;
-    border: 1px solid rgb(var(--v-theme-background-lighten-2));
-    border-radius: 10px;
-    background: rgb(var(--v-theme-background-lighten-1));
-    color: rgb(var(--v-theme-text));
+    width: min(320px, calc(100vw - 24px));
+    padding: 8px;
 
     &__header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        min-height: 64px;
-        padding: 10px 10px 10px 16px;
+        min-height: 46px;
     }
 
-    &__title {
-        font-size: 16px;
-        font-weight: 600;
-    }
-
-    &__caption,
-    &__empty small {
-        color: rgb(var(--v-theme-text-darken-2));
+    &__section-title {
+        padding: 4px 16px 8px;
+        color: rgb(var(--v-theme-text-darken-1));
         font-size: 12px;
     }
 
-    &__list {
-        max-height: 300px;
-        padding: 8px;
-        overflow-y: auto;
-    }
-
-    &__device-icon {
-        display: grid;
-        place-items: center;
-        width: 36px;
-        height: 36px;
-        margin-right: 12px;
-        border-radius: 50%;
-        background: rgb(var(--v-theme-background-lighten-2));
-    }
-
-    &__empty {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 7px;
-        padding: 26px 22px;
-        text-align: center;
-    }
-
-    &__empty small {
-        line-height: 1.55;
-    }
-
-    &__disconnect {
+    &__controls {
         display: flex;
         align-items: center;
-        gap: 10px;
-        width: 100%;
-        padding: 13px 16px;
-        color: rgb(var(--v-theme-text-darken-1));
-        font-size: 13px;
-        text-align: left;
-
-        &:hover {
-            background: rgb(var(--v-theme-background-lighten-2));
-        }
+        justify-content: space-evenly;
+        padding: 0 12px 6px;
     }
 }
 </style>

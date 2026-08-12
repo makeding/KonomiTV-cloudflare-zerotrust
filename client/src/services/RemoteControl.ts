@@ -8,9 +8,11 @@ export interface IRemoteDevice {
     state: Record<string, unknown> | null;
 }
 
-export type RemoteOpenCommand =
+export type RemoteCommand =
     | {type: 'OpenLive'; display_channel_id: string;}
-    | {type: 'OpenRecording'; recorded_program_id: number; position_seconds: number;};
+    | {type: 'OpenRecording'; recorded_program_id: number; position_seconds: number;}
+    | {type: 'Play' | 'Pause' | 'Stop';}
+    | {type: 'SeekRelative'; delta_seconds: number;};
 
 class RemoteControl {
     static async fetchDevices(): Promise<IRemoteDevice[] | null> {
@@ -22,7 +24,7 @@ class RemoteControl {
         return response.data.devices;
     }
 
-    static async sendOpenCommand(deviceId: string, command: RemoteOpenCommand): Promise<boolean> {
+    static async sendCommand(deviceId: string, command: RemoteCommand): Promise<boolean> {
         const response = await APIClient.post<{command_id: string;}>(
             `/remote/devices/${encodeURIComponent(deviceId)}/commands`,
             command,
@@ -36,6 +38,10 @@ class RemoteControl {
             return false;
         }
         return true;
+    }
+
+    static async sendOpenCommand(deviceId: string, command: Extract<RemoteCommand, {type: 'OpenLive' | 'OpenRecording'}>): Promise<boolean> {
+        return this.sendCommand(deviceId, command);
     }
 }
 
