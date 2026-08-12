@@ -35,9 +35,14 @@
                     <div v-if="is_loading" class="series-grid">
                         <v-skeleton-loader v-for="index in 6" :key="index" type="article" class="series-card" />
                     </div>
-                    <div v-else-if="series_list.length > 0" class="series-grid">
-                        <router-link v-for="series in series_list" :key="series.id" v-ripple
-                            class="series-card" :to="`/series/${series.id}`">
+                    <div v-else-if="series_list.length > 0" ref="series_grid_element" class="series-grid">
+                        <template v-for="series_row in series_rows" :key="series_row[0].id">
+                            <div class="series-grid__row">
+                                <button v-for="series in series_row" :key="series.id" v-ripple
+                                    class="series-card"
+                                    type="button"
+                                    :aria-expanded="expanded_series_id === series.id"
+                                    @click="toggleSeries(series.id)">
                             <div class="series-card__thumbnails"
                                 :class="`series-card__thumbnails--${series.thumbnail_recorded_program_ids.length}`"
                                 aria-hidden="true">
@@ -65,8 +70,19 @@
                                         alt="">
                                 </div>
                             </div>
-                            <Icon class="series-card__chevron" icon="fluent:chevron-right-12-regular" width="22px" />
-                        </router-link>
+                                    <Icon class="series-card__chevron"
+                                        :icon="expanded_series_id === series.id
+                                            ? 'fluent:chevron-up-12-regular'
+                                            : 'fluent:chevron-down-12-regular'"
+                                        width="22px" />
+                                </button>
+                            </div>
+                            <SeriesEpisodeList v-if="expandedSeriesInRow(series_row)"
+                                :key="`episodes-${expandedSeriesInRow(series_row)!.id}`"
+                                class="series-grid__episodes"
+                                :seriesId="expandedSeriesInRow(series_row)!.id"
+                                :title="expandedSeriesInRow(series_row)!.title" />
+                        </template>
                     </div>
                     <div v-else class="series-empty">
                         <Icon icon="fluent:video-clip-multiple-20-regular" width="56px" />
@@ -89,12 +105,13 @@
 </template>
 <script lang="ts" setup>
 
-import { onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import HeaderBar from '@/components/HeaderBar.vue';
 import Navigation from '@/components/Navigation.vue';
+import SeriesEpisodeList from '@/components/Series/SeriesEpisodeList.vue';
 import SPHeaderBar from '@/components/SPHeaderBar.vue';
 import Series, { ISeriesSummary } from '@/services/Series';
 import useUserStore from '@/stores/UserStore';
@@ -110,6 +127,32 @@ const sort_order = ref<'desc' | 'asc'>('desc');
 const search_query = ref('');
 const is_loading = ref(true);
 const is_mounted = ref(false);
+const expanded_series_id = ref<number | null>(null);
+const series_grid_element = ref<HTMLElement | null>(null);
+const grid_column_count = ref(1);
+let grid_resize_observer: ResizeObserver | null = null;
+
+const series_rows = computed(() => {
+    const rows: ISeriesSummary[][] = [];
+    for (let index = 0; index < series_list.value.length; index += grid_column_count.value) {
+        rows.push(series_list.value.slice(index, index + grid_column_count.value));
+    }
+    return rows;
+});
+
+const expandedSeriesInRow = (seriesRow: ISeriesSummary[]): ISeriesSummary | undefined => {
+    return seriesRow.find(series => series.id === expanded_series_id.value);
+};
+
+const updateGridColumnCount = () => {
+    if (!series_grid_element.value) return;
+    const columns = window.getComputedStyle(series_grid_element.value).gridTemplateColumns.split(' ').length;
+    grid_column_count.value = Math.max(1, columns);
+};
+
+const toggleSeries = (seriesID: number) => {
+    expanded_series_id.value = expanded_series_id.value === seriesID ? null : seriesID;
+};
 
 const syncStateFromRoute = () => {
     const parsed_page = Number.parseInt(route.query.page as string ?? '1', 10);
@@ -120,6 +163,7 @@ const syncStateFromRoute = () => {
 
 const fetchSeries = async () => {
     is_loading.value = true;
+    expanded_series_id.value = null;
     const result = search_query.value
         ? await Series.searchSeries(search_query.value, sort_order.value, current_page.value)
         : await Series.fetchSeriesList(sort_order.value, current_page.value);
@@ -128,6 +172,8 @@ const fetchSeries = async () => {
         total_series.value = result.total;
     }
     is_loading.value = false;
+    await nextTick();
+    updateGridColumnCount();
 };
 
 const replaceQuery = async (query: string, order: 'desc' | 'asc', page: number) => {
@@ -171,6 +217,14 @@ onMounted(async () => {
     syncStateFromRoute();
     is_mounted.value = true;
     await fetchSeries();
+    if (series_grid_element.value) {
+        grid_resize_observer = new ResizeObserver(updateGridColumnCount);
+        grid_resize_observer.observe(series_grid_element.value);
+    }
+});
+
+onBeforeUnmount(() => {
+    grid_resize_observer?.disconnect();
 });
 
 </script>
@@ -233,9 +287,22 @@ onMounted(async () => {
 
 .series-grid {
     display: grid;
-    // 最大 5 列を保ちつつ、サイドナビゲーション込みの実際の表示幅に応じて列数を自然に切り替える
-    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+    // デスクトップではカード幅を一定範囲に保ち、件数が少ないときも余白に合わせて不自然に引き延ばさない
+    grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 320px));
+    justify-content: start;
     gap: 12px;
+
+    &__row {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: subgrid;
+        gap: inherit;
+    }
+
+    &__episodes {
+        grid-column: 1 / -1;
+        margin: 2px 0 8px;
+    }
     @include tablet-horizontal {
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px;
@@ -259,6 +326,11 @@ onMounted(async () => {
     display: block;
     aspect-ratio: 16 / 9;
     min-width: 0;
+    padding: 0;
+    border: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
     overflow: hidden;
     color: rgb(var(--v-theme-text));
     text-decoration: none;
