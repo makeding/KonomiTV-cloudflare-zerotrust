@@ -7,6 +7,7 @@ import mpegts from 'mpegts.js';
 import { watch } from 'vue';
 
 import APIClient from '@/services/APIClient';
+import OfflineVideos from '@/services/OfflineVideos';
 import CustomBufferController from '@/services/player/CustomBufferController';
 import CaptureManager from '@/services/player/managers/CaptureManager';
 import DocumentPiPManager from '@/services/player/managers/DocumentPiPManager';
@@ -17,7 +18,7 @@ import LiveEventManager from '@/services/player/managers/LiveEventManager';
 import MediaSessionManager from '@/services/player/managers/MediaSessionManager';
 import TLVDataBroadcastingManager from '@/services/player/managers/TLVDataBroadcastingManager';
 import PlayerManager from '@/services/player/PlayerManager';
-import Videos from '@/services/Videos';
+import Videos, { type IJikkyoComments } from '@/services/Videos';
 import useChannelsStore from '@/stores/ChannelsStore';
 import usePlayerStore from '@/stores/PlayerStore';
 import useSettingsStore, { LiveStreamingQuality, LIVE_STREAMING_QUALITIES, VideoStreamingQuality, VIDEO_STREAMING_QUALITIES } from '@/stores/SettingsStore';
@@ -94,6 +95,9 @@ class PlayerController {
     // ビデオ視聴: ビデオストリームのアクティブ状態を維持するために Keep-Alive API にリクエストを送るインターバルのキャンセルする関数
     private video_keep_alive_interval_timer_cancel: (() => void) | null = null;
 
+    // ビデオ視聴: 通信失敗時の保存版への切り替えが重複して走っているか
+    private is_offline_fallback_in_progress = false;
+
     // setupPlayerContainerResizeHandler() で利用する ResizeObserver
     // 保持しておかないと disconnect() で ResizeObserver を止められない
     private player_container_resize_observer: ResizeObserver | null = null;
@@ -116,14 +120,6 @@ class PlayerController {
 
     // L字画面のクロップ設定で使うウォッチャーを保持する配列
     private lshaped_screen_crop_watchers: (() => void)[] = [];
-
-    // オフラインキャッシュが存在するかどうか
-    // オフラインキャッシュがある場合、画質切り替えやモバイル回線プロファイルの変更が無効化される
-    private is_offline_cached = false;
-
-    // オフラインキャッシュが HEVC 形式かどうか
-    // オフラインキャッシュが HEVC の場合、モバイル回線向け画質スイッチを ON 状態で表示する
-    private is_offline_hevc = false;
 
     // 録画ファイル自体が HEVC でエンコードされているかどうか
     // HEVC 録画ファイルの場合、再エンコードなしで配信するため、モバイル回線向け画質スイッチを ON 状態で表示する
@@ -298,6 +294,7 @@ class PlayerController {
         this.mmts_video_role = 'unknown';
         this.mmts_selected_audio_packet_id_override = null;
         this.mmts_secondary_auto_switch_buffering_timestamps_ms = [];
+        this.is_offline_fallback_in_progress = false;
 
         // PlayerStore にプレイヤーを初期化したことを通知する
         // 実際にはこの時点ではプレイヤーの初期化は完了していないが、PlayerController.init() を実行したことが通知されることが重要
@@ -305,61 +302,17 @@ class PlayerController {
         // KeyboardShortcutManager がこのタイミングで破棄される
         player_store.is_player_initialized = true;
 
-        // オフラインキャッシュの確認 (ビデオ視聴のみ)
-        // オフラインキャッシュが存在する場合、カスタム Loader がキャッシュから優先的に読み込む
-        let offline_thumbnail_url: string | null = null;
-        if (this.playback_mode === 'Video') {
-            const OfflineDownload = (await import('@/services/OfflineDownload')).default;
-            this.is_offline_cached = await OfflineDownload.isVideoCached(player_store.recorded_program.id, '1080p');
-
-            if (this.is_offline_cached) {
-                console.log('[PlayerController] Offline cache detected for 1080p, will use OfflineCacheLoader');
-
-                // playlist を確認して HEVC かどうかを判定
-                const hevc_playlist_url = `/api/streams/video/${player_store.recorded_program.id}/1080p-hevc/playlist`;
-                const h264_playlist_url = `/api/streams/video/${player_store.recorded_program.id}/1080p/playlist`;
-                const hevc_playlist = await OfflineDownload.getCachedResponse(player_store.recorded_program.id, '1080p', hevc_playlist_url);
-                const h264_playlist = await OfflineDownload.getCachedResponse(player_store.recorded_program.id, '1080p', h264_playlist_url);
-
-                if (hevc_playlist) {
-                    this.is_offline_hevc = true;
-                    console.log('[PlayerController] Offline cache is HEVC');
-                } else if (h264_playlist) {
-                    this.is_offline_hevc = false;
-                    console.log('[PlayerController] Offline cache is H.264');
-                }
-
-                // タイル状サムネイルも Blob URL を生成
-                const thumbnail_cache_url = `${Utils.api_base_url}/videos/${player_store.recorded_program.id}/thumbnail/tiled`;
-                const cached_thumbnail = await OfflineDownload.getCachedResponse(
-                    player_store.recorded_program.id,
-                    '1080p',
-                    thumbnail_cache_url
-                );
-                if (cached_thumbnail) {
-                    const blob = await cached_thumbnail.blob();
-                    offline_thumbnail_url = URL.createObjectURL(blob);
-                    console.log('[PlayerController] Using offline cached thumbnail');
-                }
-            }
-        }
-
         // ブラウザが H.265 / HEVC の再生に対応しているとき、以下の条件で H.265 / HEVC で再生する:
-        // 1. オフラインキャッシュがある場合は、キャッシュの編码形式を優先
-        // 2. 通信節約モードが有効な場合
-        // 3. 録画ファイル自体が HEVC でエンコードされている場合（再エンコードなしでの配信が可能なため）
+        // 1. 通信節約モードが有効な場合
+        // 2. 録画ファイル自体が HEVC でエンコードされている場合（再エンコードなしでの配信が可能なため）
         let is_hevc_playback = false;
         // 録画ファイルが HEVC でエンコードされているかどうかを判定してインスタンス変数に保存
         this.is_source_hevc = this.playback_mode === 'Video' &&
             player_store.recorded_program.recorded_video.video_codec === 'H.265';
-        if (this.is_offline_cached) {
-            // オフラインキャッシュがある場合、キャッシュの編码形式に従う
-            is_hevc_playback = this.is_offline_hevc;
-            console.log(`[PlayerController] Using offline cache codec: ${is_hevc_playback ? 'HEVC' : 'H.264'}`);
-        } else if (PlayerUtils.isHEVCVideoSupported() &&
+        if (PlayerUtils.isHEVCVideoSupported() &&
             ((this.playback_mode === 'Live' && this.quality_profile.tv_data_saver_mode === true) ||
              (this.playback_mode === 'Video' && (this.quality_profile.video_data_saver_mode === true || this.is_source_hevc)))) {
-            // オンライン再生の場合、通信節約モード設定または録画ファイルの編码形式に従う
+            // 通信節約モード設定または録画ファイルの编碼形式に従う
             is_hevc_playback = true;
             if (this.is_source_hevc) {
                 console.log('[PlayerController] Source video is HEVC encoded, using HEVC playback');
@@ -840,73 +793,75 @@ class PlayerController {
 
                     // ビデオ視聴: 録画番組情報がセットされているはず
                 } else {
+                    // オフライン保存では保存済みの1画質だけを hls.js へ渡し、通常の配信セッションを一切作らない
+                    if (player_store.is_offline_playback === true && player_store.offline_video !== null) {
+                        const offlineQualityName = `オフライン保存 (${OfflineVideos.formatQualityLabel(player_store.offline_video.quality)})`;
+                        const tileInfo = player_store.recorded_program.recorded_video.thumbnail_info?.tile ?? null;
+                        return {
+                            quality: [{
+                                name: offlineQualityName,
+                                type: 'hls',
+                                url: OfflineVideos.getPlaylistURL(player_store.offline_video),
+                            }],
+                            defaultQuality: offlineQualityName,
+                            thumbnails: tileInfo !== null ? {
+                                url: OfflineVideos.getAssetURL(player_store.offline_video, 'thumbnail-tiled.webp'),
+                                interval: tileInfo.interval_sec,
+                                width: tileInfo.tile_width,
+                                height: tileInfo.tile_height,
+                                columnCount: tileInfo.column_count,
+                            } : undefined,
+                        };
+                    }
+
                     // ビデオストリーミング API のベース URL
                     const streaming_api_base_url = `${Utils.api_base_url}/streams/video/${player_store.recorded_program.id}`;
                     // MMT/TLV 形式で保存された録画ファイルは、ライブの Raw MMTS と同じ demuxer で直接再生できる
                     const is_mmts_recorded_video = player_store.recorded_program.recorded_video.container_format === 'MMT/TLV';
 
-                    // オフラインキャッシュがある場合、1080p のみを画質リストに追加し、画質切り替えを無効化
-                    if (this.is_offline_cached) {
-                        const session_id = crypto.randomUUID().split('-')[0];
-                        // HEVC の場合は 1080p-hevc、H.264 の場合は 1080p
-                        const quality_path = this.is_offline_hevc ? '1080p-hevc' : '1080p';
-                        const playlist_url = `${streaming_api_base_url}/${quality_path}/playlist?session_id=${session_id}` +
-                            `${is_recording_chase_playback === true ? '&recording=1' : ''}`;
+                    // MMT/TLV 録画ファイルでは、FFmpeg / tsreadex を通さず元ファイルをそのまま mpegts.js に渡す画質を追加する
+                    if (is_mmts_recorded_video === true) {
                         qualities.push({
-                            name: '1080p',
+                            name: PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME,
+                            type: 'tlv',
+                            url: `${streaming_api_base_url}/raw-mmts/mpegts`,
+                            tlv: {
+                                fileSize: player_store.recorded_program.recorded_video.file_size,
+                            },
+                        });
+                    }
+
+                    // H.264 / H.265 へ変換済みの MPEG-TS は、FFmpeg で再エンコードせず HLS へ再多重化する
+                    if (is_mpegts_passthrough_available === true) {
+                        const session_id = crypto.randomUUID().split('-')[0];
+                        qualities.push({
+                            name: PlayerController.MPEGTS_PASSTHROUGH_QUALITY_NAME,
+                            type: 'hls',
+                            url: `${streaming_api_base_url}/copy/playlist?session_id=${session_id}`,
+                        });
+                    }
+
+                    // 画質リストを作成
+                    for (const quality_name of VIDEO_STREAMING_QUALITIES) {
+                        // 画質ごとに異なるセッション ID を生成 (セッション ID は UUID の - で区切って一番左側のみを使う)
+                        const session_id = crypto.randomUUID().split('-')[0];
+
+                        // playlist URL を構築
+                        const playlist_url = `${streaming_api_base_url}/${build_api_quality(quality_name)}/playlist?session_id=${session_id}` +
+                                `${is_recording_chase_playback === true ? '&recording=1' : ''}`;
+
+                        // 画質設定を追加
+                        qualities.push({
+                            // 1080p-60fps のみ、見栄えの観点から表示上 "1080p (60fps)" と表示する
+                            name: quality_name === '1080p-60fps' ? '1080p (60fps)' : quality_name,
                             type: 'hls',
                             url: playlist_url,
                         });
-                        console.log(`[PlayerController] Offline mode: Quality fixed to ${quality_path}`);
-                    } else {
-                        // MMT/TLV 録画ファイルでは、FFmpeg / tsreadex を通さず元ファイルをそのまま mpegts.js に渡す画質を追加する
-                        if (is_mmts_recorded_video === true) {
-                            qualities.push({
-                                name: PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME,
-                                type: 'tlv',
-                                url: `${streaming_api_base_url}/raw-mmts/mpegts`,
-                                tlv: {
-                                    fileSize: player_store.recorded_program.recorded_video.file_size,
-                                },
-                            });
-                        }
-
-                        // H.264 / H.265 へ変換済みの MPEG-TS は、FFmpeg で再エンコードせず HLS へ再多重化する
-                        if (is_mpegts_passthrough_available === true) {
-                            const session_id = crypto.randomUUID().split('-')[0];
-                            qualities.push({
-                                name: PlayerController.MPEGTS_PASSTHROUGH_QUALITY_NAME,
-                                type: 'hls',
-                                url: `${streaming_api_base_url}/copy/playlist?session_id=${session_id}`,
-                            });
-                        }
-
-                        // 画質リストを作成
-                        for (const quality_name of VIDEO_STREAMING_QUALITIES) {
-                            // 画質ごとに異なるセッション ID を生成 (セッション ID は UUID の - で区切って一番左側のみを使う)
-                            const session_id = crypto.randomUUID().split('-')[0];
-
-                            // playlist URL を構築
-                            const playlist_url = `${streaming_api_base_url}/${build_api_quality(quality_name)}/playlist?session_id=${session_id}` +
-                                `${is_recording_chase_playback === true ? '&recording=1' : ''}`;
-
-                            // 画質設定を追加
-                            qualities.push({
-                                // 1080p-60fps のみ、見栄えの観点から表示上 "1080p (60fps)" と表示する
-                                name: quality_name === '1080p-60fps' ? '1080p (60fps)' : quality_name,
-                                type: 'hls',
-                                url: playlist_url,
-                            });
-                        }
                     }
-
                     // デフォルトの画質
                     // ビデオ視聴時はラジオは考慮しない
                     let default_quality: string;
-                    if (this.is_offline_cached) {
-                        // オフラインキャッシュがある場合は、HEVC なら "1080p (HEVC)"、H.264 なら "1080p"
-                        default_quality = this.is_offline_hevc ? '1080p (HEVC)' : '1080p';
-                    } else if (options.default_quality !== null) {
+                    if (options.default_quality !== null) {
                         // PlayerController.init() のオプションでデフォルト画質が指定されている場合は
                         // 画質プロファイルに記載の画質ではなく、指定された（前回再生時の）画質を使ってレジュームする
                         default_quality = options.default_quality;
@@ -938,13 +893,13 @@ class PlayerController {
                             mmts: initializeMMTSPlayer,
                         },
                         thumbnails: tile_info !== null ? {
-                            url: offline_thumbnail_url || `${Utils.api_base_url}/videos/${player_store.recorded_program.id}/thumbnail/tiled`,
+                            url: `${Utils.api_base_url}/videos/${player_store.recorded_program.id}/thumbnail/tiled`,
                             interval: tile_info.interval_sec,
                             width: tile_info.tile_width,
                             height: tile_info.tile_height,
                             columnCount: tile_info.column_count,
                         } : {
-                            url: offline_thumbnail_url || `${Utils.api_base_url}/videos/${player_store.recorded_program.id}/thumbnail/tiled`,
+                            url: `${Utils.api_base_url}/videos/${player_store.recorded_program.id}/thumbnail/tiled`,
                             interval: (() => {
                                 // 以下のロジックは server/app/metadata/ThumbnailGenerator.py の旧仕様と同一
                                 // 録画番組の長さ (分単位で切り捨て)
@@ -998,7 +953,39 @@ class PlayerController {
                         options.success([]);
                     } else {
                         // ビデオ視聴: 過去ログコメントを取得して返す
-                        const jikkyo_comments = await Videos.fetchVideoJikkyoComments(player_store.recorded_program.id);
+                        // オフライン保存では保存時点の実況コメントを読み、通常再生では従来の API を利用する
+                        let jikkyo_comments: IJikkyoComments;
+                        if (player_store.is_offline_playback === true && player_store.offline_video !== null) {
+                            const empty_jikkyo_comments: IJikkyoComments = {
+                                is_success: true,
+                                comments: [],
+                                detail: '保存時点の過去ログコメントはありません。',
+                            };
+                            try {
+                                const response = await fetch(OfflineVideos.getAssetURL(player_store.offline_video, 'jikkyo.json'));
+                                const saved_jikkyo_comments = response.ok === true ? await response.json() as unknown : null;
+
+                                // 保存データが破損していても後続のコメント変換で例外を起こさず、コメントなしで再生を続ける
+                                if (saved_jikkyo_comments !== null && typeof saved_jikkyo_comments === 'object' &&
+                                    'is_success' in saved_jikkyo_comments && typeof saved_jikkyo_comments.is_success === 'boolean' &&
+                                    'detail' in saved_jikkyo_comments && typeof saved_jikkyo_comments.detail === 'string' &&
+                                    'comments' in saved_jikkyo_comments && Array.isArray(saved_jikkyo_comments.comments) &&
+                                    saved_jikkyo_comments.comments.every(comment => comment !== null && typeof comment === 'object' &&
+                                        typeof comment.time === 'number' && ['top', 'right', 'bottom'].includes(comment.type) &&
+                                        ['big', 'medium', 'small'].includes(comment.size) && typeof comment.color === 'string' &&
+                                        typeof comment.author === 'string' && typeof comment.text === 'string')) {
+                                    jikkyo_comments = saved_jikkyo_comments as IJikkyoComments;
+                                } else {
+                                    jikkyo_comments = empty_jikkyo_comments;
+                                }
+                            } catch (error) {
+                                // 付随データの欠損でプレイヤー初期化を止めず、コメントなしの保存映像として再生を続ける
+                                console.warn('\u001b[31m[PlayerController] Failed to read the saved jikkyo comments:', error);
+                                jikkyo_comments = empty_jikkyo_comments;
+                            }
+                        } else {
+                            jikkyo_comments = await Videos.fetchVideoJikkyoComments(player_store.recorded_program.id);
+                        }
                         if (jikkyo_comments.is_success === false) {
                             // 取得に失敗した場合はコメントリストにエラーメッセージを表示する
                             // ただし「この録画番組の過去ログコメントは存在しないか、現在取得中です。」の場合はエラー扱いしない
@@ -1117,12 +1104,10 @@ class PlayerController {
                         Number.POSITIVE_INFINITY : Hls.DefaultConfig.liveMaxLatencyDurationCount,
                     maxLiveSyncPlaybackRate: is_recording_chase_playback === true ?
                         1 : Hls.DefaultConfig.maxLiveSyncPlaybackRate,
-                    // カスタムバッファコントローラーを設定
+                    // 通常再生ではサーバー側のエンコード済み範囲と連携し、保存再生では完結した HLS を標準実装で扱う
+                    // 保存版には buffer.m3u8 の SSE がないため、CustomBufferController を使うとシーク時に存在しない URL へ接続してしまう
                     // @ts-ignore
-                    bufferController: CustomBufferController,
-                    // 通常の loader を使用
-                    // オフラインキャッシュは service worker の fetch イベントで処理
-                    loader: Hls.DefaultConfig.loader,
+                    bufferController: player_store.is_offline_playback === true ? Hls.DefaultConfig.bufferController : CustomBufferController,
                     // プレイリスト / セグメントのリクエスト時のタイムアウトを回避する
                     manifestLoadPolicy: {
                         default: {
@@ -1676,9 +1661,8 @@ class PlayerController {
         // HLS プレイリストやセグメントのリクエストが行われたタイミングでも Keep-Alive が行われるが、
         // それだけではタイミング次第では十分ではないため、定期的に Keep-Alive を行う
         // Keep-Alive が行われなくなったタイミングで、サーバー側で自動的にビデオストリームの終了処理 (エンコードタスクの停止) が行われる
-        // ただし、オフラインキャッシュから再生する場合は Keep-Alive は不要（サーバー側のストリームセッションが存在しないため）
-        // TLV パススルーも元ファイルの直接配信で HLS ストリームセッションを作成しないため、選択中は Keep-Alive を送信しない
-        if (this.playback_mode === 'Video' && !this.is_offline_cached) {
+        // オフライン再生にはサーバー側セッションがなく、TLV パススルーもループ内で除外する
+        if (this.playback_mode === 'Video' && player_store.is_offline_playback === false) {
             this.video_keep_alive_interval_timer_cancel = Utils.setIntervalInWorker(async () => {
                 // 画質切り替えでベース URL が変わることも想定し、あえて毎回 API URL を取得している
                 if (this.player === null) return;
@@ -2013,13 +1997,37 @@ class PlayerController {
                             }
                         };
                         hls_plugin.on(Hls.Events.FRAG_BUFFERED, resetStartPosition);
-                    } else {
-                        // Safari では hls.js を使えない場合でも Native HLS で再生できるため、警告を出しつつ再生を継続する。
-                        // DPlayer 側の機能により、Native HLS 再生であっても字幕は表示される。
-                        console.warn('\u001b[31m[PlayerController] hls.js plugin not found. (Native HLS playback may be supported on Safari.)');
-                        this.player.notice('お使いの iOS / iPadOS Safari は hls.js での再生に対応していません。代わりに Native HLS での再生を試みますが、正常に再生できない可能性があります。',
-                            undefined, undefined, '#FFA86A');
+
+                        // 通常の HLS 配信が通信エラーで復旧不能になった場合だけ、同じ録画の保存版へ現在位置を保って切り替える
+                        hls_plugin.on(Hls.Events.ERROR, async (_event, data) => {
+                            if (data.fatal !== true || data.type !== Hls.ErrorTypes.NETWORK_ERROR ||
+                                player_store.is_offline_playback === true || this.is_offline_fallback_in_progress === true) {
+                                return;
+                            }
+                            this.is_offline_fallback_in_progress = true;
+                            const offlineVideo = await OfflineVideos.getVideo(player_store.recorded_program.id);
+                            if (this.destroyed === true || this.player === null || offlineVideo === null) {
+                                this.is_offline_fallback_in_progress = false;
+                                return;
+                            }
+
+                            // 保存時点の番組情報と保存世代を同時に切り替え、オンライン側の別ファイル情報を保存映像へ混在させない
+                            player_store.recorded_program = offlineVideo.program;
+                            player_store.is_offline_playback = true;
+                            player_store.offline_video = offlineVideo;
+                            player_store.event_emitter.emit('PlayerRestartRequired', {
+                                message: '通信できないため、オフライン保存した映像へ切り替えました。',
+                                should_resume_quality: false,
+                                is_error_message: false,
+                            });
+                        });
                     }
+                } else {
+                    // 実はなぜか hls.js を使わずとも Safari では普通に Native HLS 再生できてしまうようなので、警告を出しつつ何もしない
+                    // DPlayer 側の機能により、Native HLS 再生であっても字幕は表示される
+                    console.warn('\u001b[31m[PlayerController] hls.js plugin not found. (Native HLS playback may be supported on Safari.)');
+                    this.player.notice('お使いの iOS / iPadOS Safari は hls.js での再生に対応していません。代わりに Native HLS での再生を試みますが、正常に再生できない可能性があります。',
+                        undefined, undefined, '#FFA86A');
                 }
 
                 // 必ず最初はローディング状態で、背景写真を表示する
@@ -2276,38 +2284,25 @@ class PlayerController {
             player_store.is_player_setting_panel_open = true;
         };
 
-        // モバイル回線プロファイルに切り替えるボタンを動的に追加する
-        this.player.template.audio.insertAdjacentHTML('afterend', `
-            <div class="dplayer-setting-item dplayer-setting-mobile-profile">
-                <span class="dplayer-label">モバイル回線向け画質</span>
-                <div class="dplayer-toggle">
-                    <input class="dplayer-mobile-profile-setting-input" type="checkbox" name="dplayer-toggle-mobile-profile">
-                    <label for="dplayer-toggle-mobile-profile" style="--theme-color:#E64F97"></label>
+        const is_offline_playback = this.playback_mode === 'Video' && player_store.is_offline_playback === true;
+
+        // オフライン再生では通信節約モードや画質プロファイル切り替えは無関係なので、該当スイッチを設定パネルへ追加しない
+        if (is_offline_playback === false) {
+            // モバイル回線プロファイルに切り替えるボタンを動的に追加する
+            this.player.template.audio.insertAdjacentHTML('afterend', `
+                <div class="dplayer-setting-item dplayer-setting-mobile-profile">
+                    <span class="dplayer-label">モバイル回線向け画質</span>
+                    <div class="dplayer-toggle">
+                        <input class="dplayer-mobile-profile-setting-input" type="checkbox" name="dplayer-toggle-mobile-profile">
+                        <label for="dplayer-toggle-mobile-profile" style="--theme-color:#E64F97"></label>
+                    </div>
                 </div>
-            </div>
-        `);
+            `);
 
-        // デフォルトのチェック状態を画質プロファイルタイプに合わせる
-        const toggle_mobile_profile_input = this.player.container.querySelector<HTMLInputElement>('.dplayer-mobile-profile-setting-input')!;
-        const toggle_mobile_profile_button = this.player.container.querySelector<HTMLDivElement>('.dplayer-setting-mobile-profile')!;
+            const toggle_mobile_profile_input = this.player.container.querySelector<HTMLInputElement>('.dplayer-mobile-profile-setting-input')!;
+            const toggle_mobile_profile_button = this.player.container.querySelector<HTMLDivElement>('.dplayer-setting-mobile-profile')!;
 
-        // オフラインキャッシュがある場合、キャッシュの編码形式に応じて表示を設定し、切り替えを無効化
-        if (this.is_offline_cached) {
-            // HEVC キャッシュの場合は ON、H.264 キャッシュの場合は OFF で表示
-            toggle_mobile_profile_input.checked = this.is_offline_hevc;
-            // ボタンとチェックボックスを無効化
-            toggle_mobile_profile_input.disabled = true;
-            toggle_mobile_profile_button.style.pointerEvents = 'none';
-            toggle_mobile_profile_button.style.opacity = '0.5';
-        } else if (this.is_source_hevc) {
-            // 録画ファイル自体が HEVC の場合、常に ON 状態で表示し、切り替えを無効化
-            // HEVC 録画ファイルを H.264 に変換して配信する意味がないため
-            toggle_mobile_profile_input.checked = true;
-            toggle_mobile_profile_input.disabled = true;
-            toggle_mobile_profile_button.style.pointerEvents = 'none';
-            toggle_mobile_profile_button.style.opacity = '0.5';
-        } else {
-            // オンライン再生の場合、画質プロファイルタイプに合わせる
+            // デフォルトのチェック状態を画質プロファイルタイプに合わせる
             toggle_mobile_profile_input.checked = this.quality_profile_type === 'Cellular';
             // モバイル回線プロファイルに切り替えるボタンがクリックされた時のイベントハンドラーを登録
             toggle_mobile_profile_button.addEventListener('click', () => {

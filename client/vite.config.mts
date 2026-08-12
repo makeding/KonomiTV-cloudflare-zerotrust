@@ -119,7 +119,9 @@ export default defineConfig({
         // ref: https://vite-pwa-org.netlify.app/guide/
         VitePWA({
             // Service Worker の登録方法
-            strategies: 'generateSW',
+            strategies: 'injectManifest',
+            srcDir: 'src',
+            filename: 'sw.ts',
             registerType: 'prompt',  // PWA の更新前にユーザーに確認する
             injectRegister: 'auto',
             useCredentials: true,
@@ -161,22 +163,10 @@ export default defineConfig({
                     }
                 ]
             },
-            // Workbox の設定
-            workbox: {
-                // 古いキャッシュを自動削除する
-                cleanupOutdatedCaches: true,
-                // /data-broadcast/ 以下は ARIB データ放送用 VFS Worker が所有する。
-                // PWA Worker が index.html へ fallback すると、VFS 未命中時に KonomiTV 本体の
-                // SPA が iframe 内で起動してしまうため、他の API 系パスと同様に対象外にする。
-                navigateFallbackDenylist: [
-                    /^\/api/,
-                    /^\/cdn-cgi/,
-                    /^\/data-broadcast(?:\/|$)/,
-                    /[?&]pwa=false/,
-                ],
-                // キャッシュするファイルの最大サイズ
+            // 独自 Service Worker へ注入する事前キャッシュの設定
+            injectManifest: {
                 maximumFileSizeToCacheInBytes: 1024 * 1024 * 15,  // 15MB
-            }
+            },
         }),
     ],
     // Web Worker 上のプラグインの設定
