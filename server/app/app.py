@@ -20,9 +20,11 @@ from app.constants import (
     VERSION,
 )
 from app.metadata.RecordedScanTask import RecordedScanTask
+from app.metadata.SeriesIndexer import SeriesIndexer
 from app.models.Channel import Channel
 from app.models.Program import Program
 from app.routers import (
+    BangumiRouter,
     BlueskyRouter,
     CapturesRouter,
     ChannelsRouter,
@@ -79,6 +81,7 @@ app.include_router(RecordingPresetsRouter.router)
 app.include_router(CapturesRouter.router)
 app.include_router(DataBroadcastingRouter.router)
 app.include_router(NiconicoRouter.router)
+app.include_router(BangumiRouter.router)
 app.include_router(TwitterRouter.router)
 app.include_router(BlueskyRouter.router)
 app.include_router(UsersRouter.router)
@@ -234,6 +237,10 @@ async def Startup():
 
     # 番組情報を更新
     await Program.update()
+
+    # 既存録画も含めて確定的に解析できる作品を Series へ関連付ける
+    ## EDCB / EPGStation 構成では RecordedScanTask の起動時一括スキャンが動かないため、バックエンドに依存せずここで実行する。
+    await SeriesIndexer.rebuild()
 
     # 全てのチャンネル&品質のライブストリームを初期化する
     for channel in await Channel.filter(is_watchable=True).order_by('channel_number'):

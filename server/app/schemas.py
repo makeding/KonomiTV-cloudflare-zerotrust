@@ -302,6 +302,10 @@ class User(PydanticModel):
     niconico_user_id: int | None
     niconico_user_name: str | None
     niconico_user_premium: bool | None
+    bangumi_user_id: int | None
+    bangumi_user_name: str | None
+    bangumi_user_nickname: str | None
+    bangumi_user_avatar_url: str | None
     twitter_accounts: list[TwitterAccount]  # 追加カラム
     bluesky_accounts: list[BlueskyAccount]  # 追加カラム
     account_links: list[AccountLink]  # 追加カラム
@@ -726,6 +730,11 @@ class JikkyoComments(BaseModel):
 
 class ThirdpartyAuthURL(BaseModel):
     authorization_url: str
+
+# ***** Bangumi 連携 *****
+
+class BangumiAuthRequest(BaseModel):
+    access_token: Annotated[str, Field(min_length=1, max_length=512)]
 
 # ***** Twitter 連携 *****
 

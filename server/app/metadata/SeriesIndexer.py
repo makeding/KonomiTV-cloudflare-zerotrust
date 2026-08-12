@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import re
+import unicodedata
+from dataclasses import dataclass
+from datetime import datetime
+
+from app import logging
+from app.constants import JST
+from app.models.RecordedProgram import RecordedProgram
+from app.models.Series import Series
+from app.models.SeriesBroadcastPeriod import SeriesBroadcastPeriod
+from app.schemas import Genre
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedSeriesTitle:
+    """番組タイトルから確定的に抽出したシリーズ識別情報を保持する。"""
+
+    # 利用者へ表示する作品名。Series.title と RecordedProgram.series_title に保存する。
+    display_title: str
+    # 表記揺れだけを吸収した完全一致用キー。異なる作品を fuzzy に統合する用途には使わない。
+    normalized_title: str
+    # 番組タイトルから明示的に抽出できた話数。整数に限らない特別編へ備えて文字列で保持する。
+    episode_number: str
+    # 話数表記の後ろにある副題。取得できない場合は None。
+    subtitle: str | None
+
+
+# 放送状態や短い汎用枠は、同名でも一つの作品を表さないため Series を自動生成しない。
+GENERIC_SERIES_TITLES = {
+    'bテレ',
+    'musicアラカルト',
+    'weatherreport',
+    'ニュース',
+    '放送休止',
+    '天気予報',
+}
+
+# EPG タイトルの先頭に付与される放送枠名。作品名そのものではないため除外する。
+PROGRAM_SLOT_PREFIX_PATTERN = re.compile(r'^(?:<[^<>]+>|＜[^＜＞]+＞)\s*')
+PROGRAM_TYPE_PREFIX_PATTERN = re.compile(r'^(?:(?:TV|テレビ)?アニメ)\s+', flags=re.IGNORECASE)
+
+# KonomiTV が既に番組記号として扱っている角括弧表記だけを除去する。
+PROGRAM_MARK_PATTERN = re.compile(
+    r'\[(?:新|終|再|交|映|手|声|多|副|字|文|CC|OP|二|S|B|SS|無|無料|C|S1|S2|S3|MV|双|デ|D|N|W|P|H|HV|SD|天|解|料|前|後|初|生|販|吹|PPV|演|移|他|収|英|韓|中|字/日|字/日英|3D|2ndScr|2K|4K|8K|5\.1|7\.1|22\.2|60P|120P|d|HC|HDR|Hi-Res|Lossless|SHV|UHD|VOD|配)\]',
+    flags=re.IGNORECASE,
+)
+
+# 話数を明示する表記だけを Series の自動生成根拠として採用する。
+EPISODE_PATTERN = re.compile(
+    r'(?:'
+    r'#\s*(?P<hash>[0-9]+(?:\.[0-9]+)?(?:\s*[・&／/]\s*#?\s*[0-9]+(?:\.[0-9]+)?)*)|'
+    r'第\s*(?P<japanese>[0-9一二三四五六七八九十百千〇零壱弐参拾]+)\s*(?:話|回)|'
+    r'\b(?:Chapter|CH)\s*(?P<chapter>[0-9]+(?:\.[0-9]+)?)|'
+    r'\(\s*第?\s*(?P<parenthesized>[0-9]+(?:\.[0-9]+)?)\s*(?:話|回)?\s*\)'
+    r')',
+    flags=re.IGNORECASE,
+)
+TRAILING_EPISODE_PATTERN = re.compile(r'\s+(?P<episode>[0-9]+(?:\.[0-9]+)?)\s*$')
+QUOTED_SUBTITLE_PATTERN = re.compile(r'[「『](?P<subtitle>.*?)[」』]')
+JAPANESE_DIGITS = {
+    '〇': 0,
+    '零': 0,
+    '一': 1,
+    '壱': 1,
+    '二': 2,
+    '弐': 2,
+    '三': 3,
+    '参': 3,
+    '四': 4,
+    '五': 5,
+    '六': 6,
+    '七': 7,
+    '八': 8,
+    '九': 9,
+}
+JAPANESE_UNITS = {'十': 10, '拾': 10, '百': 100, '千': 1000}
+
+
+def ParseJapaneseNumber(value: str) -> int | None:
+    """
+    EPG の話数に使われる漢数字を整数へ変換する。
+
+    Args:
+        value (str): 漢数字の話数。
+
+    Returns:
+        int | None: 変換できた整数。漢数字以外を含む場合は None。
+    """
+
+    if all(character in JAPANESE_DIGITS for character in value):
+        return int(''.join(str(JAPANESE_DIGITS[character]) for character in value))
+
+    total = 0
+    current_digit = 0
+    for character in value:
+        if character in JAPANESE_DIGITS:
+            current_digit = JAPANESE_DIGITS[character]
+            continue
+        unit = JAPANESE_UNITS.get(character)
+        if unit is None:
+            return None
+        total += (current_digit or 1) * unit
+        current_digit = 0
+    return total + current_digit
+
+
+def NormalizeEpisodeNumber(episode_number: str) -> str:
+    """
+    話数の数値表記を表示・比較しやすい形へ揃える。
+
+    Args:
+        episode_number (str): EPG タイトルから抽出した話数。
+
+    Returns:
+        str: 先頭ゼロと多話区切りの表記を正規化した話数。
+    """
+
+    # 漢数字は意味を変えず保持し、ASCII 数字だけ先頭ゼロを取り除く。
+    parts = re.split(r'\s*[・&／/]\s*#?\s*', episode_number)
+    normalized_parts: list[str] = []
+    for part in parts:
+        japanese_number = ParseJapaneseNumber(part)
+        if part.isdigit():
+            normalized_parts.append(str(int(part)))
+        elif re.fullmatch(r'\d+\.\d+', part):
+            normalized_parts.append(str(float(part)).rstrip('0').rstrip('.'))
+        elif japanese_number is not None:
+            normalized_parts.append(str(japanese_number))
+        else:
+            normalized_parts.append(part)
+    return '・'.join(normalized_parts)
+
+
+def NormalizeSeriesTitle(title: str) -> str:
+    """
+    シリーズ同一性の完全一致判定に使うタイトルを生成する。
+
+    Args:
+        title (str): 表示用に整形済みの作品名。
+
+    Returns:
+        str: Unicode・英字大小・空白だけを正規化した比較キー。
+    """
+
+    # NFKC で全角英数字や互換文字を揃え、空白差を作品同一性へ影響させない。
+    return re.sub(r'\s+', '', unicodedata.normalize('NFKC', title)).casefold()
+
+
+def ParseSeriesTitle(title: str, genres: list[Genre]) -> ParsedSeriesTitle | None:
+    """
+    EPG タイトルから誤統合しにくい確定的なシリーズ情報を抽出する。
+
+    Args:
+        title (str): EPG 由来の番組タイトル。
+        genres (list[Genre]): 末尾数字を話数として扱える番組ジャンル。
+
+    Returns:
+        ParsedSeriesTitle | None: 明示的な話数と十分な作品名を抽出できた場合のみ結果を返す。
+    """
+
+    # 全角英数字などを先に揃え、放送枠・番組種別・技術マークを作品名から分離する。
+    normalized_source = unicodedata.normalize('NFKC', title).strip()
+    normalized_source = PROGRAM_MARK_PATTERN.sub('', normalized_source)
+    normalized_source = re.sub(r'\((?:二|字|再)\)', '', normalized_source)
+    normalized_source = PROGRAM_SLOT_PREFIX_PATTERN.sub('', normalized_source)
+    normalized_source = PROGRAM_TYPE_PREFIX_PATTERN.sub('', normalized_source)
+    normalized_source = normalized_source.strip()
+
+    # 「…」内は各話副題として先に保持し、作品名の比較キーからは除外する。
+    subtitle_match = QUOTED_SUBTITLE_PATTERN.search(normalized_source)
+    subtitle = subtitle_match.group('subtitle').strip() if subtitle_match is not None else None
+    title_without_quoted_subtitle = QUOTED_SUBTITLE_PATTERN.sub('', normalized_source).strip()
+
+    # #6 / 第6話 / Chapter 6 など、話数だと断定できる位置より前を作品名として採用する。
+    episode_match = EPISODE_PATTERN.search(title_without_quoted_subtitle)
+    if episode_match is None:
+        # アニメ EPG では末尾の単独数字が話数として使われるため、このジャンルに限り追加で認識する。
+        is_anime = any(genre['major'] == 'アニメ・特撮' for genre in genres)
+        episode_match = TRAILING_EPISODE_PATTERN.search(title_without_quoted_subtitle) if is_anime else None
+    if episode_match is None:
+        return None
+
+    # 正規表現のうち一致した表記から話数文字列を取り出す。
+    episode_number = NormalizeEpisodeNumber(next(
+        value
+        for value in episode_match.groupdict().values()
+        if value is not None
+    ))
+    display_title = title_without_quoted_subtitle[:episode_match.start()].strip(' 　・:-')
+
+    # 話数の後ろに残る語句は放送枠名を除き、副題が別途なければ副題として保存する。
+    trailing_text = title_without_quoted_subtitle[episode_match.end():].strip()
+    trailing_text = re.sub(r'^\s*[◆◇].*$', '', trailing_text).strip()
+    if subtitle is None and trailing_text:
+        subtitle = trailing_text
+
+    normalized_title = NormalizeSeriesTitle(display_title)
+    if len(normalized_title) < 6 or normalized_title in GENERIC_SERIES_TITLES:
+        return None
+
+    return ParsedSeriesTitle(
+        display_title = display_title,
+        normalized_title = normalized_title,
+        episode_number = episode_number,
+        subtitle = subtitle,
+    )
+
+
+class SeriesIndexer:
+    """録画番組を確定的な作品タイトル単位で Series へ関連付ける。"""
+
+    @classmethod
+    async def linkRecordedProgram(cls, recorded_program: RecordedProgram) -> bool:
+        """
+        1 件の録画番組を Series と放送期間へ関連付ける。
+
+        Args:
+            recorded_program (RecordedProgram): DB 保存済みの録画番組。
+
+        Returns:
+            bool: Series へ関連付けられた場合は True。
+        """
+
+        parsed_title = ParseSeriesTitle(recorded_program.title, recorded_program.genres)
+        if parsed_title is None:
+            return False
+
+        # normalized_title の完全一致だけで Series を再利用し、fuzzy 類似度による誤統合を防ぐ。
+        series, is_series_created = await Series.get_or_create(
+            normalized_title = parsed_title.normalized_title,
+            defaults = {
+                'title': parsed_title.display_title,
+                'description': '',
+                'genres': recorded_program.genres,
+            },
+        )
+
+        series_broadcast_period: SeriesBroadcastPeriod | None = None
+        is_period_changed = False
+        if recorded_program.channel_id is not None:
+            broadcast_date = recorded_program.start_time.date()
+            series_broadcast_period, is_period_created = await SeriesBroadcastPeriod.get_or_create(
+                series_id = series.id,
+                channel_id = recorded_program.channel_id,
+                defaults = {
+                    'start_date': broadcast_date,
+                    'end_date': broadcast_date,
+                },
+            )
+
+            # 同じ作品・チャンネルの放送日範囲を、実際に保存された録画に合わせて外側へ広げる。
+            update_fields: list[str] = []
+            if broadcast_date < series_broadcast_period.start_date:
+                series_broadcast_period.start_date = broadcast_date
+                update_fields.append('start_date')
+            if broadcast_date > series_broadcast_period.end_date:
+                series_broadcast_period.end_date = broadcast_date
+                update_fields.append('end_date')
+            if update_fields:
+                await series_broadcast_period.save(update_fields=update_fields)
+            is_period_changed = is_period_created or len(update_fields) > 0
+
+        # 解析結果と FK を同時に保存し、Series ページと録画詳細で同じ情報を参照できるようにする。
+        is_recorded_program_changed = (
+            recorded_program.series_id != series.id or
+            recorded_program.series_broadcast_period_id != (
+                series_broadcast_period.id if series_broadcast_period is not None else None
+            ) or
+            recorded_program.series_title != parsed_title.display_title or
+            recorded_program.episode_number != parsed_title.episode_number or
+            recorded_program.subtitle != parsed_title.subtitle
+        )
+        recorded_program.series_id = series.id
+        recorded_program.series_broadcast_period_id = (
+            series_broadcast_period.id if series_broadcast_period is not None else None
+        )
+        recorded_program.series_title = parsed_title.display_title
+        recorded_program.episode_number = parsed_title.episode_number
+        recorded_program.subtitle = parsed_title.subtitle
+        if is_recorded_program_changed:
+            await recorded_program.save(update_fields=[
+                'series_id',
+                'series_broadcast_period_id',
+                'series_title',
+                'episode_number',
+                'subtitle',
+            ])
+
+        # 新しい録画や放送期間が加わったときだけ更新日時を進め、一覧の「更新が新しい順」へ反映する。
+        if is_series_created or is_period_changed or is_recorded_program_changed:
+            series.updated_at = datetime.now(tz=JST)
+            await series.save(update_fields=['updated_at'])
+        return True
+
+    @classmethod
+    async def rebuild(cls) -> None:
+        """
+        既存の全録画番組へ現在の確定的な Series 解析規則を適用する。
+
+        Returns:
+            None
+        """
+
+        logging.info('Series index rebuild has started.')
+        linked_count = 0
+        last_seen_id = 0
+
+        # 大量の録画を一括ロードせず、ID 順に小さなバッチで処理する。
+        while True:
+            recorded_programs = await RecordedProgram.filter(id__gt=last_seen_id).order_by('id').limit(100)
+            if len(recorded_programs) == 0:
+                break
+            for recorded_program in recorded_programs:
+                if await cls.linkRecordedProgram(recorded_program):
+                    linked_count += 1
+                last_seen_id = recorded_program.id
+
+        logging.info(f'Series index rebuild has completed. linked_recorded_programs: {linked_count}')

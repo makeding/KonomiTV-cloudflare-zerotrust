@@ -430,6 +430,15 @@ BLUESKY_ACCOUNT_SESSION_FERNET_KEY = base64.urlsafe_b64encode(
 # Bluesky セッション文字列の暗号化に使う Fernet のインスタンス
 BLUESKY_ACCOUNT_SESSION_FERNET = Fernet(BLUESKY_ACCOUNT_SESSION_FERNET_KEY)
 
+# 暗号化された Bangumi 個人アクセストークンの接頭辞
+BANGUMI_ACCESS_TOKEN_ENCRYPTION_PREFIX = 'enc:'
+# Bangumi 個人アクセストークンの暗号化に使う Fernet の暗号化キー
+BANGUMI_ACCESS_TOKEN_FERNET_KEY = base64.urlsafe_b64encode(
+    hashlib.sha256(f'bangumi:{JWT_SECRET_KEY}'.encode()).digest(),
+)
+# Bangumi 個人アクセストークンの暗号化に使う Fernet のインスタンス
+BANGUMI_ACCESS_TOKEN_FERNET = Fernet(BANGUMI_ACCESS_TOKEN_FERNET_KEY)
+
 # パスワードハッシュ化のための設定
 PASSWORD_CONTEXT = CryptContext(
     schemes = ['bcrypt'],

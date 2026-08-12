@@ -1,5 +1,6 @@
 
 import asyncio
+import difflib
 import json
 import pathlib
 import re
@@ -30,6 +31,7 @@ from app.metadata.RecordedScanTask import (
     RecordedFileMetadataRefreshError,
     RecordedScanTask,
 )
+from app.metadata.SeriesIndexer import NormalizeSeriesTitle, ParseSeriesTitle
 from app.metadata.ThumbnailGenerator import ThumbnailGenerator
 from app.metadata.TSInfoAnalyzer import TSInfoAnalyzer
 from app.models.RecordedProgram import RecordedProgram
@@ -61,38 +63,12 @@ def NormalizeSeriesSearchTitle(title: str) -> str:
         str: シリーズ検索用の基準タイトル。
     """
 
-    # ARIB 外字記号として入る番組記号を取り除く。
-    ## client/src/utils/ProgramUtils.ts の getEnclosedCharactersRemovalPatterns() と同じ意図の前処理。
-    mark = (
-        '新|終|再|交|映|手|声|多|副|字|文|CC|OP|二|S|B|SS|無|無料|'
-        'C|S1|S2|S3|MV|双|デ|D|N|W|P|H|HV|SD|天|解|料|前|後|初|生|販|吹|PPV|'
-        '演|移|他|収|・|英|韓|中|字/日|字/日英|3D|2ndScr|2K|4K|8K|5.1|7.1|22.2|'
-        '60P|120P|d|HC|HDR|Hi-Res|Lossless|SHV|UHD|VOD|配|初'
-    )
-    normalized_title = re.sub(r'\((二|字|再)\)', '', title)
-    normalized_title = re.sub(rf'\[({mark})\]', '', normalized_title)
+    parsed_title = ParseSeriesTitle(title, [])
+    if parsed_title is not None:
+        return parsed_title.normalized_title
 
-    # 番組名に続く副題は単発回ごとに変わりやすいため、シリーズ判定では取り除く。
-    normalized_title = re.sub(r'[「『].*?[」』]', '', normalized_title).strip()
-
-    # タイトル末尾やタイトル直後の話数表記を取り除く。
-    ## フロントエンド側で行っていた最低限の正規化を API 側に寄せ、
-    ## 全録画番組をブラウザへ渡してからフィルタする必要をなくす。
-    episode_patterns = [
-        r'\(\d+\)',
-        r'#\d+',
-        r'第\d+話',
-        r'第\d+回',
-        r'【\d+】',
-        r'\s+\d+\s*$',
-    ]
-    for pattern in episode_patterns:
-        match = re.search(pattern, normalized_title)
-        if match is not None:
-            normalized_title = normalized_title[:match.start()].strip()
-            break
-
-    return normalized_title
+    # 話数を抽出できない番組も候補検索には残すが、Unicode と空白だけを揃える。
+    return NormalizeSeriesTitle(title)
 
 
 def CalculateStringSimilarity(str1: str, str2: str) -> float:
@@ -112,18 +88,8 @@ def CalculateStringSimilarity(str1: str, str2: str) -> float:
     if len(str1) == 0 or len(str2) == 0:
         return 0.0
 
-    # フロントエンドの簡易類似度計算と同じく、包含関係があれば短い方 / 長い方の長さを返す。
-    longer = str1 if len(str1) > len(str2) else str2
-    shorter = str2 if len(str1) > len(str2) else str1
-    if shorter in longer:
-        return len(shorter) / len(longer)
-
-    # 共通文字数 / ユニーク文字数が多い方のサイズで類似度を計算する。
-    chars1 = set(str1)
-    chars2 = set(str2)
-    common = len(chars1.intersection(chars2))
-    total = max(len(chars1), len(chars2))
-    return common / total
+    # 文字の順序と重複を保持する比較へ切り替え、共通文字が多いだけの別作品が高得点になるのを防ぐ。
+    return difflib.SequenceMatcher(None, str1, str2, autojunk=False).ratio()
 
 
 def CalculateSeriesTitleScore(current_title: str, target_title: str) -> int:
@@ -1113,23 +1079,37 @@ async def VideosRelatedAPI(
                 detail = 'Specified video_id was not found',
             )
 
-        # Series.vue の score_threshold と同じ値を使う。
-        score_threshold = 70 if mode == 'strict' else 50
-
-        # Series.vue の filtered_series と同じ順序でフィルターを適用する。
-        related_programs = [
-            program
-            for program in all_programs
-            if CalculateSeriesMatchScore(current_program, program) >= score_threshold
-            if (
-                include_other_channels is True or
-                (
-                    program.channel is not None and
-                    current_program.channel is not None and
-                    program.channel.id == current_program.channel.id
+        # 永続化済みの Series は fuzzy スコアより信頼できるため、同じ作品 ID の録画だけを返す。
+        if current_program.series_id is not None:
+            related_programs = [
+                program
+                for program in all_programs
+                if program.series_id == current_program.series_id
+                if (
+                    include_other_channels is True or
+                    (
+                        program.channel is not None and
+                        current_program.channel is not None and
+                        program.channel.id == current_program.channel.id
+                    )
                 )
-            )
-        ]
+            ]
+        else:
+            # 話数を確定できない番組だけは従来の関連候補検索を残すが、文字順序を保持する類似度で評価する。
+            score_threshold = 70 if mode == 'strict' else 50
+            related_programs = [
+                program
+                for program in all_programs
+                if CalculateSeriesMatchScore(current_program, program) >= score_threshold
+                if (
+                    include_other_channels is True or
+                    (
+                        program.channel is not None and
+                        current_program.channel is not None and
+                        program.channel.id == current_program.channel.id
+                    )
+                )
+            ]
 
         total = len(related_programs)
         offset = (page - 1) * PAGE_SIZE

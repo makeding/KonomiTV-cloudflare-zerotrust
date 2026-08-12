@@ -11,7 +11,13 @@ from tortoise import fields
 from tortoise.fields import Field as TortoiseField
 from tortoise.models import Model as TortoiseModel
 
-from app.constants import API_REQUEST_HEADERS, HTTPX_CLIENT, NICONICO_OAUTH_CLIENT_ID
+from app.constants import (
+    API_REQUEST_HEADERS,
+    BANGUMI_ACCESS_TOKEN_ENCRYPTION_PREFIX,
+    BANGUMI_ACCESS_TOKEN_FERNET,
+    HTTPX_CLIENT,
+    NICONICO_OAUTH_CLIENT_ID,
+)
 from app.utils import Interlaced
 
 
@@ -37,11 +43,35 @@ class User(TortoiseModel):
     niconico_user_premium = cast(TortoiseField[bool | None], fields.BooleanField(null=True))
     niconico_access_token = cast(TortoiseField[str | None], fields.TextField(null=True))
     niconico_refresh_token = cast(TortoiseField[str | None], fields.TextField(null=True))
+    # Bangumi アカウント連携で表示する公開プロフィール情報
+    # BangumiRouter で個人アクセストークンを検証したときに更新され、User API からクライアントへ返される
+    bangumi_user_id = cast(TortoiseField[int | None], fields.IntField(null=True))
+    bangumi_user_name = cast(TortoiseField[str | None], fields.TextField(null=True))
+    bangumi_user_nickname = cast(TortoiseField[str | None], fields.TextField(null=True))
+    bangumi_user_avatar_url = cast(TortoiseField[str | None], fields.TextField(null=True))
+    # 個人アクセストークンは将来の視聴状態同期 API から参照する認証情報で、暗号化した値だけを保持する
+    bangumi_access_token = cast(TortoiseField[str | None], fields.TextField(null=True))
     twitter_accounts: fields.ReverseRelation[TwitterAccount]
     bluesky_accounts: fields.ReverseRelation[BlueskyAccount]
     account_links: fields.ReverseRelation[AccountLink]
     created_at = fields.DatetimeField(auto_now_add=True)
     updated_at = fields.DatetimeField(auto_now=True)
+
+
+    def encryptBangumiAccessToken(self, plain_text: str) -> str:
+        """
+        Bangumi 個人アクセストークンを暗号化する。
+
+        Args:
+            plain_text (str): 暗号化前の個人アクセストークン。
+
+        Returns:
+            str: 暗号化済みの個人アクセストークン。
+        """
+
+        # Fernet で暗号化し、接頭辞を付けて暗号化済みであることを明示する
+        encrypted_text = BANGUMI_ACCESS_TOKEN_FERNET.encrypt(plain_text.encode('utf-8')).decode('utf-8')
+        return f'{BANGUMI_ACCESS_TOKEN_ENCRYPTION_PREFIX}{encrypted_text}'
 
 
     async def refreshNiconicoAccessToken(self) -> None:

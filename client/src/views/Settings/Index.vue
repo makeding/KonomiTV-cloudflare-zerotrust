@@ -42,6 +42,10 @@
                         <Icon icon="bi:chat-left-text-fill" width="26px" style="padding: 0 2px;" />
                         <span class="ml-4">ニコニコ実況</span>
                     </v-btn>
+                    <v-btn variant="flat" class="settings-navigation__button" to="/settings/bangumi">
+                        <Icon icon="fluent:movies-and-tv-20-filled" width="26px" />
+                        <span class="ml-4">Bangumi 連携</span>
+                    </v-btn>
                     <v-btn variant="flat" class="settings-navigation__button" to="/settings/twitter">
                         <Icon icon="fa-brands:twitter" width="26px" style="padding: 0 1px;" />
                         <span class="ml-4">Twitter / Bluesky 連携</span>

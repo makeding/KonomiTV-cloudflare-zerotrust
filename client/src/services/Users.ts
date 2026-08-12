@@ -11,6 +11,10 @@ export interface IUser {
     niconico_user_id: number | null;
     niconico_user_name: string | null;
     niconico_user_premium: boolean | null;
+    bangumi_user_id: number | null;
+    bangumi_user_name: string | null;
+    bangumi_user_nickname: string | null;
+    bangumi_user_avatar_url: string | null;
     twitter_accounts: ITwitterAccount[];
     bluesky_accounts: IBlueskyAccount[];
     account_links: IAccountLink[];

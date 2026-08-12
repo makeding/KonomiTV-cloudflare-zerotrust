@@ -20,6 +20,7 @@ from app.config import Config
 from app.constants import JST, THUMBNAILS_DIR
 from app.metadata.CMSectionsDetector import CMSectionsDetector
 from app.metadata.MetadataAnalyzer import MetadataAnalyzer
+from app.metadata.SeriesIndexer import SeriesIndexer
 from app.metadata.ThumbnailGenerator import ThumbnailGenerator
 from app.models.Channel import Channel
 from app.models.RecordedProgram import RecordedProgram
@@ -539,6 +540,9 @@ class RecordedScanTask:
                 f'count: {analysis_failed_count}. '
                 f'Re-run metadata analysis after checking source files.',
             )
+
+        # 変更のない既存録画も含め、確定的に解析できる番組を Series ページへ反映する
+        await SeriesIndexer.rebuild()
         logging.info('Batch scan of recording folders has been completed.')
         self._is_batch_scan_running = False
         # 初回バッチスキャン完了後は通知を有効にする
@@ -1349,6 +1353,10 @@ class RecordedScanTask:
                 db_recorded_program.secondary_audio_type = recorded_program.secondary_audio_type
                 db_recorded_program.secondary_audio_language = recorded_program.secondary_audio_language
             await db_recorded_program.save()
+
+            # 通常解析で得た番組タイトルから Series を確定できる場合は、録画保存と同じ処理内で関連付ける
+            if preserve_program_metadata is False and is_transcoded_update is False:
+                await SeriesIndexer.linkRecordedProgram(db_recorded_program)
 
             # RecordedVideo の保存または更新
             if existing_db_recorded_video is not None:

@@ -24,6 +24,7 @@ class Series(TortoiseModel):
         table: str = 'series'
 
     id = fields.IntField(pk=True)
+    normalized_title = fields.CharField(512, unique=True)
     title = fields.TextField()
     description = fields.TextField()
     genres = cast(TortoiseField[list[Genre]], fields.JSONField(default=[], encoder=lambda x: json.dumps(x, ensure_ascii=False)))  # type: ignore
