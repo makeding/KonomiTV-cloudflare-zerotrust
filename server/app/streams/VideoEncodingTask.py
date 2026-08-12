@@ -210,34 +210,56 @@ class VideoEncodingTask:
         return result
 
 
-    def buildFFmpegCopyOptions(self, output_ts_offset: float) -> list[str]:
+    def buildFFmpegCopyOptions(
+        self,
+        output_ts_offset: float,
+        mmt_seek_seconds: float | None = None,
+    ) -> list[str]:
         """
         再エンコードせず MPEG-TS を再多重化する FFmpeg オプションを組み立てる
 
         Args:
             output_ts_offset (float): 出力 TS のタイムスタンプオフセット (秒)
+            mmt_seek_seconds (float | None): MMT/TLV 入力のシーク位置 (秒)。MPEG-TS 入力では None
 
         Returns:
             list[str]: FFmpeg に渡すオプションが連なる配列
         """
 
-        # tsreadex で単一サービス化・音声正規化・字幕 ID3 化した全ストリームをそのまま再多重化する
-        ## 映像だけでなく音声とデータも copy することで、既に変換済みの録画へ再び非可逆変換を加えない
-        options = [
-            '-f', 'mpegts',
-            '-analyzeduration', '1500000',
-            '-i', 'pipe:0',
-            '-map', '0:v:0',
-            '-map', '0:a:0',
-            '-map', '0:a:1',
-            '-map', '0:d?',
-            '-ignore_unknown',
-            '-codec', 'copy',
-            '-output_ts_offset', str(output_ts_offset),
-            '-y',
-            '-f', 'mpegts',
-            'pipe:1',
-        ]
+        # MMT/TLV は元ファイルを libaribtlv で直接開き、映像・音声を再エンコードせず MPEG-TS へ再多重化する
+        if mmt_seek_seconds is not None:
+            options = [
+                '-f', 'libaribtlv',
+                '-i', self.video_stream.recorded_program.recorded_video.file_path,
+                # stream copy では input seek 後の RAP から要求時刻までをデコードして破棄できないため、output seek で時刻以前のパケットを除外する
+                '-ss', str(mmt_seek_seconds),
+                '-map', '0:v:0',
+                '-map', '0:a:0',
+                '-map', '0:a:1?',
+                '-ignore_unknown',
+                '-codec', 'copy',
+                '-output_ts_offset', str(output_ts_offset),
+                '-y',
+                '-f', 'mpegts',
+                'pipe:1',
+            ]
+        else:
+            # tsreadex で単一サービス化・音声正規化・字幕 ID3 化した全ストリームをそのまま再多重化する
+            options = [
+                '-f', 'mpegts',
+                '-analyzeduration', '1500000',
+                '-i', 'pipe:0',
+                '-map', '0:v:0',
+                '-map', '0:a:0',
+                '-map', '0:a:1',
+                '-map', '0:d?',
+                '-ignore_unknown',
+                '-codec', 'copy',
+                '-output_ts_offset', str(output_ts_offset),
+                '-y',
+                '-f', 'mpegts',
+                'pipe:1',
+            ]
         return options
 
 
@@ -1063,7 +1085,14 @@ class VideoEncodingTask:
                 if ENCODER_TYPE == 'FFmpeg':
                     # オプションを取得
                     if self.video_stream.quality == 'copy':
-                        encoder_options = self.buildFFmpegCopyOptions(output_ts_offset)
+                        encoder_options = self.buildFFmpegCopyOptions(
+                            output_ts_offset,
+                            mmt_seek_seconds = (
+                                current_segment.playlist_start_seconds
+                                if recorded_video.container_format == 'MMT/TLV'
+                                else None
+                            ),
+                        )
                     elif recorded_video.container_format == 'MMT/TLV':
                         encoder_options = self.buildFFmpegOptions(
                             self.video_stream.quality,
@@ -1243,7 +1272,7 @@ class VideoEncodingTask:
                                         # H.265 映像 PES を解析できるようパーサーを差し替える
                                         video_parser = PESParser(H265PES)
                                         logging.debug(f'{self.video_stream.log_prefix} H.265 PID: 0x{elementary_pid:04x}')
-                                elif stream_type == 0x0F:  # AAC
+                                elif stream_type in (0x0F, 0x11):  # AAC (ADTS / LATM)
                                     if audio_pid is None:
                                         audio_pid = elementary_pid
                                         logging.debug(f'{self.video_stream.log_prefix} AAC PID: 0x{elementary_pid:04x}')

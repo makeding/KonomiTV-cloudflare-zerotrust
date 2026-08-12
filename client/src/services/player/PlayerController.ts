@@ -63,6 +63,7 @@ class PlayerController {
     // 元ストリームを再エンコードせずに再生する特殊な画質の表示名
     private static readonly PASSTHROUGH_PRIMARY_QUALITY_NAME = 'TLV パススルー';
     private static readonly PASSTHROUGH_SECONDARY_QUALITY_NAME = 'TLV パススルー（降雨放送）';
+    private static readonly MMT_HLS_QUALITY_NAME = 'HLS (オリジナル)';
     private static readonly MPEGTS_PASSTHROUGH_QUALITY_NAME = 'MPEG-TS パススルー';
     private static readonly PASSTHROUGH_LEGACY_QUALITY_NAMES = ['Raw MMTS', 'TLV パススルー'];
     private static readonly PASSTHROUGH_LEGACY_SECONDARY_QUALITY_NAMES = ['TLV パススルー（降雨対応）'];
@@ -828,6 +829,12 @@ class PlayerController {
                             tlv: {
                                 fileSize: player_store.recorded_program.recorded_video.file_size,
                             },
+                        });
+                        const session_id = crypto.randomUUID().split('-')[0];
+                        qualities.push({
+                            name: PlayerController.MMT_HLS_QUALITY_NAME,
+                            type: 'hls',
+                            url: `${streaming_api_base_url}/copy/playlist?session_id=${session_id}`,
                         });
                     }
 

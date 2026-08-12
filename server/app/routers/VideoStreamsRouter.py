@@ -107,7 +107,7 @@ async def ValidateQuality(quality: Annotated[str, Path(description='映像の品
 
 def ValidateVideoCopyQuality(recorded_program: RecordedProgram, stream_quality: StreamQualityWithOptions) -> None:
     """
-    MPEG-TS パススルー品質を利用できる録画か検証する
+    再エンコードなしの HLS 再多重化を利用できる録画か検証する
 
     Args:
         recorded_program (RecordedProgram): 配信対象の録画番組
@@ -122,12 +122,13 @@ def ValidateVideoCopyQuality(recorded_program: RecordedProgram, stream_quality: 
         return
 
     recorded_video = recorded_program.recorded_video
-    is_copy_compatible = (
-        recorded_video.status == 'Recorded' and
-        recorded_video.container_format == 'MPEG-TS' and
-        recorded_video.video_codec in ['H.264', 'H.265'] and
-        recorded_video.video_scan_type == 'Progressive' and
-        recorded_video.has_video_stream_changes is False
+    is_copy_compatible = recorded_video.status == 'Recorded' and (
+        recorded_video.container_format == 'MMT/TLV' or (
+            recorded_video.container_format == 'MPEG-TS' and
+            recorded_video.video_codec in ['H.264', 'H.265'] and
+            recorded_video.video_scan_type == 'Progressive' and
+            recorded_video.has_video_stream_changes is False
+        )
     )
     if is_copy_compatible is False:
         logging.error(
