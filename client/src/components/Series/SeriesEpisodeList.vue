@@ -7,8 +7,7 @@
         <div v-if="bangumiSubjectId" class="series-episode-list__bangumi">
             <img v-if="bangumiSubjectImageUrl" :src="bangumiSubjectImageUrl" alt="" loading="lazy" decoding="async">
             <div class="series-episode-list__bangumi-profile">
-                <strong>{{bangumiSubjectNameCn || bangumiSubjectName || title}}</strong>
-                <small v-if="bangumiSubjectName && bangumiSubjectName !== title">{{bangumiSubjectName}}</small>
+                <strong v-if="bangumiSubjectNameCn">{{bangumiSubjectNameCn}}</strong>
                 <div v-if="hasMultipleSummaries" class="series-episode-list__summary-tabs" role="tablist">
                     <button type="button" role="tab"
                         :aria-selected="summarySource === 'Program'"
@@ -24,7 +23,7 @@
                     </button>
                 </div>
                 <p v-if="displayedSummary">{{displayedSummary}}</p>
-                <a :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
+                <a v-if="isBangumiSummaryDisplayed" :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
                     target="_blank" rel="noopener noreferrer" @click.stop>
                     Bangumi で見る
                     <Icon icon="fluent:open-16-regular" width="13px" />
@@ -125,6 +124,10 @@ const hasMultipleSummaries = computed(() => {
 const displayedSummary = computed(() => {
     if (summarySource.value === 'Chinese' && bangumiSummary.value !== '') return bangumiSummary.value;
     return programSummary.value || bangumiSummary.value;
+});
+const isBangumiSummaryDisplayed = computed(() => {
+    return bangumiSummary.value !== '' &&
+        (programSummary.value === '' || summarySource.value === 'Chinese');
 });
 
 const getEpisodeSlots = (program: IRecordedProgram): IEpisodeSlot[] => {
@@ -268,11 +271,9 @@ onMounted(fetchPrograms);
 
     &__bangumi-profile {
         min-width: 0;
-        strong,
-        small {
+        strong {
             display: block;
         }
-        small,
         p {
             color: rgb(var(--v-theme-text-darken-1));
         }
