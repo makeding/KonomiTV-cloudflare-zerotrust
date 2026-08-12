@@ -66,19 +66,28 @@
                             </div>
                         </section>
                     </div>
-                    <SeriesEpisodeList v-if="expandedSeriesSummary"
-                        class="on-air-episodes"
-                        :seriesId="expandedSeriesSummary.id"
-                        :title="expandedSeriesSummary.title"
-                        :description="expandedSeriesSummary.description"
-                        :bangumiSubjectId="expandedSeriesSummary.bangumi_subject_id"
-                        :bangumiSubjectName="expandedSeriesSummary.bangumi_subject_name"
-                        :bangumiSubjectNameCn="expandedSeriesSummary.bangumi_subject_name_cn"
-                        :bangumiSubjectSummary="expandedSeriesSummary.bangumi_subject_summary"
-                        :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
                 </div>
             </div>
         </main>
+        <v-dialog :model-value="expandedSeriesID !== null" class="on-air-dialog"
+            :fullscreen="Utils.isSmartphoneVertical()" scrollable @update:model-value="closeSeries">
+            <v-card class="on-air-dialog__card">
+                <v-btn class="on-air-dialog__close" icon="mdi-close" variant="text"
+                    aria-label="閉じる" @click="closeSeries()" />
+                <div v-if="isSummaryLoading" class="on-air-dialog__loading">
+                    <v-skeleton-loader type="heading, image, paragraph, paragraph" />
+                </div>
+                <SeriesEpisodeList v-else-if="expandedSeriesSummary"
+                    :seriesId="expandedSeriesSummary.id"
+                    :title="expandedSeriesSummary.title"
+                    :description="expandedSeriesSummary.description"
+                    :bangumiSubjectId="expandedSeriesSummary.bangumi_subject_id"
+                    :bangumiSubjectName="expandedSeriesSummary.bangumi_subject_name"
+                    :bangumiSubjectNameCn="expandedSeriesSummary.bangumi_subject_name_cn"
+                    :bangumiSubjectSummary="expandedSeriesSummary.bangumi_subject_summary"
+                    :bangumiSubjectImageUrl="expandedSeriesSummary.bangumi_subject_image_url" />
+            </v-card>
+        </v-dialog>
     </div>
 </template>
 <script lang="ts" setup>
@@ -105,6 +114,7 @@ const route = useRoute();
 const router = useRouter();
 const expandedSeriesID = ref<number | null>(null);
 const expandedSeriesSummary = ref<ISeriesSummary | null>(null);
+const isSummaryLoading = ref(false);
 const seriesByWeekday = computed(() => weekdays.map(day =>
     seriesList.value.filter(series => series.weekday === day.index),
 ));
@@ -117,6 +127,7 @@ const syncExpandedSeriesFromRoute = async () => {
     if (!Number.isFinite(parsedSeriesID) || parsedSeriesID <= 0) {
         expandedSeriesID.value = null;
         expandedSeriesSummary.value = null;
+        isSummaryLoading.value = false;
         return;
     }
     if (!seriesList.value.some(series => series.id === parsedSeriesID)) {
@@ -124,7 +135,10 @@ const syncExpandedSeriesFromRoute = async () => {
         return;
     }
     expandedSeriesID.value = parsedSeriesID;
+    expandedSeriesSummary.value = null;
+    isSummaryLoading.value = true;
     expandedSeriesSummary.value = await Series.fetchSeriesSummary(parsedSeriesID);
+    isSummaryLoading.value = false;
 };
 
 const toggleSeries = async (seriesID: number) => {
@@ -132,11 +146,21 @@ const toggleSeries = async (seriesID: number) => {
     await router.push(isClosing ? '/series/on-air' : `/series/on-air/${seriesID}`);
 };
 
-onMounted(async () => {
+const closeSeries = async (isOpen = false) => {
+    if (isOpen || expandedSeriesID.value === null) return;
+    await router.push('/series/on-air');
+};
+
+const loadOnAirSeries = async () => {
+    isLoading.value = true;
     const result = await Series.fetchOnAirSeriesList();
     if (result) seriesList.value = result.series_list;
     isLoading.value = false;
     await syncExpandedSeriesFromRoute();
+};
+
+onMounted(async () => {
+    await loadOnAirSeries();
 });
 
 watch(() => route.params.series_id, async () => {
@@ -186,13 +210,23 @@ watch(() => route.params.series_id, async () => {
     &__logos { display: flex; gap: 3px; }
     &__logo { --ch-sprite-width: 34; --ch-sprite-height: 20; --ch-sprite-border-radius: 3; overflow: hidden; border-radius: 3px; }
 }
-.on-air-episodes { margin-top: 12px; }
+.on-air-dialog {
+    :deep(.v-overlay__content) { width: min(1800px, calc(100vw - 48px)); max-width: none; max-height: 92vh; }
+    &__card { position: relative; overflow-y: auto; padding: 18px; background: rgb(var(--v-theme-background)); }
+    &__close { position: sticky; top: 0; z-index: 20; align-self: flex-end; margin-bottom: -48px; }
+    &__loading { min-height: 60vh; padding: 44px 12px 12px; }
+    &__loading :deep(.v-skeleton-loader) { min-height: 52vh; }
+}
 @include smartphone-vertical {
     .on-air-container { padding: 8px; }
     .on-air-header { align-items: flex-start; padding: 0 8px; }
     .on-air-header p { max-width: 230px; }
     .on-air-week, .on-air-loading { grid-template-columns: repeat(7, 74vw); scroll-snap-type: x proximity; }
     .on-air-day { min-width: 74vw; scroll-snap-align: start; }
+    .on-air-dialog {
+        :deep(.v-overlay__content) { width: 100%; max-height: none; }
+        &__card { padding: 8px; }
+    }
 }
 
 </style>
