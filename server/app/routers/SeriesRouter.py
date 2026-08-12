@@ -169,13 +169,16 @@ async def GetSeriesSummaries(
                 HAVING COUNT(DISTINCT rp_bangumi.bangumi_subject_id) = 1
             ) AS bangumi_subject_id,
             COUNT(rp.id) AS recorded_programs_count,
+            MAX(rv.file_created_at) AS latest_video_file_created_at,
             s.created_at,
             s.updated_at
         FROM series s
         LEFT JOIN recorded_programs rp ON rp.series_id = s.id
+        LEFT JOIN recorded_videos rv ON rv.recorded_program_id = rp.id
         {where_clause}
         GROUP BY s.id
-        ORDER BY s.updated_at {'DESC' if order == 'desc' else 'ASC'}, s.id {'DESC' if order == 'desc' else 'ASC'}
+        ORDER BY latest_video_file_created_at {'DESC' if order == 'desc' else 'ASC'},
+                 s.id {'DESC' if order == 'desc' else 'ASC'}
         LIMIT ? OFFSET ?
     """
     total_query = f'SELECT COUNT(*) AS count FROM series s {where_clause}'
