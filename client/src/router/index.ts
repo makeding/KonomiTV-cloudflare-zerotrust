@@ -231,7 +231,17 @@ router.beforeResolve(async (to, from, next) => {
     } else if (selectedDeviceId !== null && to.name === 'Videos Watch' && typeof to.params.video_id === 'string') {
         const recordedProgramId = Number(to.params.video_id);
         if (Number.isInteger(recordedProgramId)) {
-            remoteCommand = {type: 'OpenRecording', recorded_program_id: recordedProgramId, position_seconds: 0};
+            const seekQuery = Array.isArray(to.query.t) ? to.query.t[0] : to.query.t;
+            const requestedSeekSeconds = typeof seekQuery === 'string' ? Number(seekQuery) : null;
+            const positionSeconds = requestedSeekSeconds !== null && Number.isFinite(requestedSeekSeconds) &&
+                requestedSeekSeconds >= 0
+                ? requestedSeekSeconds
+                : 0;
+            remoteCommand = {
+                type: 'OpenRecording',
+                recorded_program_id: recordedProgramId,
+                position_seconds: positionSeconds,
+            };
         }
     }
     if (selectedDeviceId !== null && remoteCommand !== null) {
