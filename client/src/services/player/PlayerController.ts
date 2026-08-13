@@ -2972,9 +2972,10 @@ class PlayerController {
      * MMTS 音声トラックがブラウザの MSE で再生できるかを判定する
      */
     private isMMTSAudioTrackBrowserCompatible(track: any): boolean {
-        // 8K の 22.2ch (channel_configuration=14) は fMP4 で 13 channels の AAC となり、
-        // Chromium の MSE decoder が MediaSource ごと閉じてしまうため、併送の 5.1ch/2ch だけを表示する。
-        return track?.audio?.channelLayout !== 14;
+        // 8K の 22.2ch は 24 channels の AAC として送出されるが、Chromium の MSE decoder は
+        // この構成を受け付けない。tlvdemux が復元した実声道数で判定し、5.1ch までを表示する。
+        const channels = track?.audio?.channels;
+        return typeof channels !== 'number' || channels === 0 || channels <= 6;
     }
 
 
@@ -3005,13 +3006,36 @@ class PlayerController {
      * MMTS 音声トラックの表示名を生成する
      */
     private formatMMTSAudioTrackLabel(track: any): string {
-        const layout = track.audio?.channelLayout ?? track.channelLayout ??
-            (typeof track.channelCount === 'number' ? `${track.channelCount}ch` : 'unknown');
+        const channel_layout = track.audio?.channelLayout ?? track.channelLayout;
+        // channelLayout は声道数ではなく、ARIB STD-B60 の audio_component_descriptor にある
+        // component_type 下位 5bit の音声モード。数値をそのまま表示せず、人が識別できる表記に変換する。
+        const channel_layout_labels: Record<number, string> = {
+            0x01: 'モノラル',
+            0x02: 'デュアルモノ',
+            0x03: 'ステレオ',
+            0x04: '3ch',
+            0x05: '3ch',
+            0x06: '4ch',
+            0x07: '4ch',
+            0x08: '5ch',
+            0x09: '5.1ch',
+            0x0a: '6.1ch',
+            0x0b: '6.1ch',
+            0x0c: '7.1ch',
+            0x0d: '7.1ch',
+            0x0e: '7.1ch',
+            0x0f: '7.1ch',
+            0x10: '10.2ch',
+            0x11: '22.2ch',
+        };
+        const channels = track.audio?.channels ?? track.channelCount;
+        const layout = typeof channel_layout === 'number' ? channel_layout_labels[channel_layout] : undefined;
+        const channel_label = layout ?? (typeof channels === 'number' && channels > 0 ? `${channels}ch` : '声道不明');
         const language = track.language ?? 'und';
         const resolved_sample_rate = track.audio?.sampleRate ?? track.audioSampleRate;
         const sample_rate = typeof resolved_sample_rate === 'number' ? ` ${resolved_sample_rate}Hz` : '';
         const packet_id = typeof track.packetId === 'number' ? ` ${this.formatHex(track.packetId, 4)}` : '';
-        return `${layout}${sample_rate} / ${language}${packet_id}`;
+        return `${channel_label}${sample_rate} / ${language}${packet_id}`;
     }
 
 
