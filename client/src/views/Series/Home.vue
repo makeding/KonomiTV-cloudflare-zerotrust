@@ -104,9 +104,6 @@
                                 :bangumiSubjectNameCn="expandedSeriesInRow(series_row)!.bangumi_subject_name_cn"
                                 :bangumiSubjectSummary="expandedSeriesInRow(series_row)!.bangumi_subject_summary"
                                 :bangumiSubjectImageUrl="expandedSeriesInRow(series_row)!.bangumi_subject_image_url"
-                                :style="remembered_details_height > 0
-                                    ? {minHeight: `${remembered_details_height}px`}
-                                    : undefined"
                                 @heightChanged="rememberDetailsHeight" />
                         </template>
                     </div>
@@ -125,11 +122,12 @@
                         :total-visible="Utils.isSmartphoneVertical() ? 5 : 7"
                         @update:model-value="updatePage" />
 
-                    <!-- 分页器はカード直下に保ちつつ、展開前から詳細相当のページ高を確保する。 -->
-                    <div v-if="expanded_series_id === null && series_list.length > 0"
-                        class="series-details-reserve"
-                        :style="remembered_details_height > 0
-                            ? {height: `${remembered_details_height}px`}
+                    <!-- 詳細自体は自然な高さで表示し、過去に開いた最も高い詳細との差分だけを末尾で補う。 -->
+                    <!-- 短い詳細を開いたときもカード内に空白を作らず、ページ全体の高さだけを安定させる。 -->
+                    <div v-if="series_list.length > 0"
+                        class="series-details-footer"
+                        :style="details_footer_height !== null
+                            ? {height: `${details_footer_height}px`}
                             : undefined"
                         aria-hidden="true"></div>
                 </div>
@@ -165,6 +163,7 @@ const expanded_series_id = ref<number | null>(null);
 const series_grid_element = ref<HTMLElement | null>(null);
 const grid_column_count = ref(1);
 const remembered_details_height = ref(0);
+const current_details_height = ref(0);
 let grid_resize_observer: ResizeObserver | null = null;
 
 const series_rows = computed(() => {
@@ -179,10 +178,20 @@ const expandedSeriesInRow = (seriesRow: ISeriesSummary[]): ISeriesSummary | unde
     return seriesRow.find(series => series.id === expanded_series_id.value);
 };
 
-// ページ内で一度表示した最も高い詳細を下限として保持し、次に短い Series を開いてもページ高を縮めない。
+// ページ内で一度表示した最も高い詳細を保持し、次に短い Series を開いたときは末尾の余白で差分を補う。
 const rememberDetailsHeight = (height: number) => {
+    current_details_height.value = height;
     remembered_details_height.value = Math.max(remembered_details_height.value, height);
 };
+
+// 未展開時は詳細全体、展開時は過去最高との差分だけを末尾に確保する。
+// まだ実測値がない未展開時だけ CSS の初期高さを使い、最初の展開によるページ伸長も抑える。
+const details_footer_height = computed<number | null>(() => {
+    if (expanded_series_id.value === null) {
+        return remembered_details_height.value > 0 ? remembered_details_height.value : null;
+    }
+    return Math.max(0, remembered_details_height.value - current_details_height.value);
+});
 
 const updateGridColumnCount = () => {
     if (!series_grid_element.value) return;
@@ -411,11 +420,7 @@ onBeforeUnmount(() => {
 
     &__episodes {
         grid-column: 1 / -1;
-        min-height: clamp(440px, 52vh, 620px);
         margin: 2px 0 8px;
-        @include smartphone-vertical {
-            min-height: 70vh;
-        }
     }
     @include tablet-horizontal {
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -648,7 +653,7 @@ onBeforeUnmount(() => {
     }
 }
 
-.series-details-reserve {
+.series-details-footer {
     height: clamp(440px, 52vh, 620px);
     pointer-events: none;
     @include smartphone-vertical {
