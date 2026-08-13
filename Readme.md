@@ -5,12 +5,70 @@
 <video controls src="https://github.com/user-attachments/assets/ee0b6df0-3bb0-40da-99f4-798437aa2f9c"></video>
 
 ## 本 Fork の特徴（追加機能）
-- Cloudflare　Zerotrust 環境の自動判別
-- ログインページの自動リダイレクト
-- 「CFからログアウト」ボタンをサイドバーに実装
-- 放送局ロゴのスプライト化
-- **オフライン視聴機能（BETA）**: 録画番組をブラウザストレージにダウンロードして、ネットワークが不安定な環境でも再生可能
-- **メタデータ再解析機能**: 録画番組のファイル情報を再解析し、変換（トランスコード）されたファイルの検出や情報更新に対応
+
+本 Fork では、オリジナル版 KonomiTV の機能に加えて、BS4K 放送・録画ライブラリ・テレビ端末との連携を中心に、以下の機能を追加しています。
+
+### 4K / MMT/TLV を支える関連プロジェクト
+
+BS4K / BS8K 対応は HonomiTV 単体の機能ではありません。受信・復号・配信、サーバー側解析、Web 再生、テレビ端末までを、用途ごとに分割した以下のプロジェクトと連携して実現しています。
+
+**受信・復号・配信**
+
+- **[tbs6812_drv](https://github.com/otya128/tbs6812_drv)**: TBS6812（PT4K）で ISDB-S3 の MMT/TLV を受信するための Linux DVB ドライバー
+- **[recdvb4k](https://github.com/makeding/recdvb4k)**: PT4K から MMT/TLV を取得し、ARIB STD-B61 / ACAS で復号した Raw MMT/TLV を録画・配信パイプラインへ渡す recdvb Fork
+- **[px4_drv](https://github.com/makeding/px4_drv/tree/linux-with-card-reader)**: PLEX チューナー向けドライバー Fork。4K チューナーとしてではなく、現在の Linux 構成では内蔵カードリーダーを PC/SC から利用するためにも使用
+- **[casproxyserver](https://github.com/makeding/casproxyserver)**: ACAS / B-CAS カードを別ホストから PC/SC 互換で利用するためのスマートカードプロキシ。recdvb4k と dantto4k から利用可能
+- **[Hiraku](https://github.com/makeding/Hiraku)**: チューナーホスト上の許可済み受信パイプラインを Mirakurun から遠隔実行し、BS4K の Raw MMT/TLV を TCP 経由で中継
+- **[dantto4k](https://github.com/nekohkr/dantto4k)**: MMT/TLV の復号と MPEG-2 TS への再多重化を行う変換系。Mirakurun の `mmtsDecoder` として利用でき、Raw 配信時は `decode=0` によりバイパス
+- **[Mirakurun（huggy/4.0）](https://github.com/makeding/Mirakurun/tree/huggy/4.0)**: BS4K チャンネル、`commandBS4K`、MMTS デコーダーの管理、`decode=0` による Raw MMT/TLV パススルーに対応した Mirakurun Fork
+- **[EPGStation](https://github.com/makeding/EPGStation)**: `recordedBS4KFormat: mmts` で Mirakurun の Raw MMT/TLV をそのまま録画できる EPGStation Fork。生成した録画は HonomiTV の録画同期・追いかけ再生から利用可能
+
+**解析・変換の共通基盤**
+
+- **[libaribtlv](https://github.com/makeding/libaribtlv)**: TLV・圧縮 IP・MMTP、MMT-SI、映像・音声・字幕・データ放送リソース、録画インデックスと実時間を扱うネイティブコア
+- **[ffmpeg-libaribtlv](https://github.com/makeding/ffmpeg-libaribtlv)**: libaribtlv を FFmpeg から利用するためのパッチ群。サーバー側のメタデータ解析、サムネイル生成、CM 解析、録画シーク、MPEG-TS への再多重化に利用
+
+**Web ブラウザでの再生・データ放送**
+
+- **[tlvdemux](https://github.com/makeding/tlvdemux)**: libaribtlv の機能をブラウザ向け WASM として提供し、Raw MMT/TLV のライブ・録画再生、解多重化、MSE 向け fMP4 生成、録画時間取得と Range シークを担当
+- **[aribb62.js](https://github.com/makeding/aribb62.js)**: MMT/TLV から取り出した ARIB STD-B62 / TTML 字幕をブラウザ上に描画
+- **[DPlayer](https://github.com/makeding/DPlayer)**: tlvdemux・aribb62.js を統合した本 Fork 向けプレイヤー。Raw MMT/TLV のライブ・録画・追いかけ再生とプレイヤー UI を担当
+- **[libaribhtml5](https://github.com/makeding/libaribhtml5)**: ARIB HTML5 受信機 API、放送リソース用 VFS、MMT/TLV データ放送画面の実行環境を提供
+
+**Android TV 端末**
+
+- **[Honorebi](https://github.com/makeding/Honorebi)**: Android TV 向け [Komorebi](https://github.com/BeerEgg2001/Komorebi) Fork。HonomiTV から Raw MMT/TLV を直接再生し、データ放送・字幕・録画シークに加えて、ペアリング、視聴履歴同期、テレビで再生、リモート操作に対応
+- **[libaribcaption（b62）](https://github.com/makeding/libaribcaption/tree/b62)**: Honorebi に組み込み、ARIB STD-B62 字幕を Android TV 上でネイティブ描画するために拡張した libaribcaption Fork
+
+HonomiTV はこれらをまとめ、チャンネル・録画・ユーザー・配信 URL・再生状態・字幕・データ放送のライフサイクルを管理します。すべてが必須ではなく、チューナーの接続方式、Raw MMT/TLV と MPEG-2 TS のどちらを扱うか、Web と Android TV のどちらで再生するかに応じて必要な構成が異なります。
+
+### BS4K / BS8K・再生
+
+- **BS4K / BS8K の Raw MMT/TLV 再生**: 本 Fork 向けに拡張した Mirakurun から `decode=0` で受信した MMT/TLV を、変換せずにブラウザへ配信し、ライブ視聴・録画再生・追いかけ再生に対応
+- **MMT/TLV 録画のメタデータ解析とシーク**: MMT-SI と libaribtlv を利用し、番組情報・実時間・音声トラックを解析して録画内をシーク可能
+- **ARIB HTML5 データ放送**: MMT/TLV に含まれるデータ放送をライブ視聴・録画再生で表示し、リモコンキー操作や外部コンテンツ取得に対応
+- **録画中番組の追いかけ再生**: 録画中の番組を専用一覧から開き、伸び続ける録画ファイルを先頭から再生可能
+
+### 録画ライブラリ
+
+- **シリーズ管理**: 録画番組を作品・エピソード単位で自動整理し、検索・並び替え・詳細表示・関連エピソードの連続再生に対応
+- **放送中シリーズ一覧**: 現在放送中のシリーズを曜日別に表示し、録画済み話数や漏録・部分録画を確認可能
+- **Bangumi 連携**: KonomiTV アカウントごとに Bangumi の個人アクセストークンを登録し、作品・エピソード情報と視聴済み状態を同期
+- **CM 解析・自動スキップ**: 録画ファイルの CM 区間を解析し、対応環境では録画プレイヤーから自動スキップ可能
+- **オフライン保存・視聴（BETA）**: 録画番組をブラウザストレージへ保存し、ネットワークが不安定な環境やサーバーへ接続できない状態でも再生可能
+- **メタデータ再解析**: 録画番組のファイル情報を手動で再解析し、サービス選択、変換（トランスコード）済みファイルの検出、サムネイルなどの再生成に対応
+- **EDCB / EPGStation 録画同期**: 録画中・録画済みファイルを各バックエンドから同期し、ローカルフォルダの全件走査に依存せず追いかけ再生へ反映
+
+### テレビ端末・外部サービス連携
+
+- **Honorebi（Komorebi Fork）とのペアリング**: テレビ端末を KonomiTV アカウントへ安全に登録し、視聴履歴を端末間で共有
+- **テレビで再生・リモート操作**: Web UI からオンラインの Honorebi を選び、ライブ放送や録画番組をテレビで開いて、再生・一時停止・シーク・停止を操作可能
+- **Cloudflare Zero Trust 対応**: Cloudflare Access 環境を自動判別し、ログインページの自動遷移と Cloudflare からのログアウト導線を提供
+- **放送局ロゴのスプライト化**: チャンネル一覧で多数の局ロゴを個別取得せず、スプライト画像から効率よく表示
+
+> [!NOTE]
+> Raw MMT/TLV のライブ視聴には [makeding/Mirakurun の `huggy/4.0` ブランチ](https://github.com/makeding/Mirakurun/tree/huggy/4.0) が必要です。公式版 Mirakurun や mirakc をそのまま導入しただけでは、この Raw MMT/TLV ライブ再生経路は利用できません。テレビ端末連携には [Honorebi](https://github.com/makeding/Honorebi) が必要です。CM 解析は同梱ランタイムに対応する環境で利用できます。
+
 ## Fork デプロイ方法
 本 Fork はクライアントサイドとサーバーサイドの両方に変更を含むため、以下の手順でデプロイしてください：
 
@@ -20,7 +78,7 @@ git remote add honomi https://github.com/makeding/HonomiTV.git
 
 # 2. ブランチをフェッチしてチェックアウト
 git fetch honomi
-git checkout honomi/offline-download  # または適切なブランチ名
+git checkout -b recording-chase-playback honomi/recording-chase-playback
 
 # 3. クライアントをビルド
 cd client
@@ -54,6 +112,10 @@ cd ..
 
 ## 目次 <!-- omit in toc -->
 - [本 Fork の特徴（追加機能）](#本-fork-の特徴追加機能)
+  - [4K / MMT/TLV を支える関連プロジェクト](#4k--mmttlv-を支える関連プロジェクト)
+  - [BS4K / BS8K・再生](#bs4k--bs8k再生)
+  - [録画ライブラリ](#録画ライブラリ)
+  - [テレビ端末・外部サービス連携](#テレビ端末外部サービス連携)
 - [Fork デプロイ方法](#fork-デプロイ方法)
 - [設計思想](#設計思想)
 - [動作環境](#動作環境)
