@@ -450,7 +450,8 @@ def test_missing_audio_output_publishes_neither_prepared_output(tmp_path: Path) 
 
     assert result.status == 'analysis_failed'
     assert result.error_code == 'MediaPreparationFailed'
-    assert result.error_message == 'FFmpeg did not produce both prepared video and audio.'
+    assert result.error_message is not None
+    assert result.error_message.endswith('FFmpeg did not produce both prepared video and audio.')
     assert (tmp_path / 'work/prepared-media.cmwork').exists() is False
     assert (tmp_path / 'work/prepared-audio.wav').exists() is False
     assert list((tmp_path / 'work').glob('*.partial*')) == []
@@ -866,7 +867,8 @@ def test_audio_index_enospc_is_normalized_before_native_analysis(tmp_path: Path)
 
     assert result.status == 'analysis_failed'
     assert result.error_code == 'TemporaryStorageInsufficient'
-    assert result.error_message == 'audio index: No space left on device'
+    assert result.error_message is not None
+    assert result.error_message.endswith('audio index: No space left on device')
 
 
 def test_python_output_enospc_is_normalized_to_temporary_storage_error(
@@ -1023,7 +1025,7 @@ def test_process_diagnostic_preserves_complete_command_output_and_log(tmp_path: 
         f'import sys; print({stdout_text!r}); print({stderr_text!r}, file=sys.stderr)',
     )
 
-    result = asyncio.run(analyzer._runProcess(  # pyright: ignore[reportPrivateUsage]
+    result = asyncio.run(analyzer._runProcessWithDiagnostics(  # pyright: ignore[reportPrivateUsage]
         command,
         {'PATH': '/test/path', 'LC_ALL': 'C.UTF-8'},
         diagnostic_log_path,

@@ -672,7 +672,7 @@ class GenericCMAnalyzer:
             ),
             encoding='utf-8',
         )
-        chapter_process = await self._runProcess((
+        chapter_process = await self._runProcessWithDiagnostics((
             str(self.chapter_executable_path),
             '-v', str(chapter_script),
             '-o', str(chapter_output),
@@ -775,7 +775,7 @@ class GenericCMAnalyzer:
             'SERVICE_ID': str(descriptor.program_id or request.service_id or 0),
             'CLI_OUT_PATH': str(work_directory / 'result'),
         })
-        jls_process = await self._runProcess(
+        jls_process = await self._runProcessWithDiagnostics(
             tuple(command),
             jls_environment,
             request.work_directory / 'processes.log',
@@ -845,7 +845,7 @@ class GenericCMAnalyzer:
         ]
         for index, logo_path in enumerate(logo_paths, start=1):
             command.extend((f'-logo{index}', str(logo_path)))
-        process = await self._runProcess(tuple(command), environment, diagnostic_log_path)
+        process = await self._runProcessWithDiagnostics(tuple(command), environment, diagnostic_log_path)
         if process.return_code != 0:
             return process, _LogoFrameOutput(None, None, None)
         list_path = analysis_output.with_name(f'{analysis_output.stem}_list.ini')
@@ -1009,7 +1009,7 @@ class GenericCMAnalyzer:
         )
         published_paths: list[Path] = []
         try:
-            process = await self._runProcess((
+            process = await self._runProcessWithDiagnostics((
                 str(self.ffmpeg_path),
                 '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
                 '-fflags', '+genpts+discardcorrupt',
@@ -1078,7 +1078,7 @@ class GenericCMAnalyzer:
         """全trackを一度だけindexし、完成後に原子的に公開する。"""
 
         partial_path = index_path.with_name(f'{index_path.name}.partial')
-        process = await self._runProcess((
+        process = await self._runProcessWithDiagnostics((
             str(self.ffmsindex_path),
             '-f', '-t', '-1',
             str(media_path), str(partial_path),
@@ -1096,7 +1096,7 @@ class GenericCMAnalyzer:
         media_path: Path,
         track_type: Literal['video', 'audio'],
     ) -> int:
-        process = await self._runProcess((
+        process = await self._runProcessWithDiagnostics((
             str(self.ffprobe_path),
             '-v', 'error', '-show_streams', '-of', 'json', str(media_path),
         ), self._buildMediaEnvironment(request), request.work_directory / 'processes.log')
@@ -1198,18 +1198,16 @@ class GenericCMAnalyzer:
         self,
         command: tuple[str, ...],
         environment: Mapping[str, str],
-        diagnostic_log_path: Path | None = None,
     ) -> _ProcessResult:
         """
-        外部プロセスを実行し、完全な標準出力・標準エラーと再現条件を記録する。
+        外部プロセスを実行し、省略していない標準出力と標準エラーを返す。
 
         Args:
             command (tuple[str, ...]): 実行するコマンドと引数。
             environment (Mapping[str, str]): プロセスへ渡す環境変数。
-            diagnostic_log_path (Path | None): 全工程の診断ログを追記するファイル。
 
         Returns:
-            _ProcessResult: 終了コードと省略していない標準出力・標準エラー。
+            _ProcessResult: 終了コードと標準出力・標準エラー。
         """
 
         started_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
@@ -1231,7 +1229,6 @@ class GenericCMAnalyzer:
                 started_at,
                 time.monotonic() - started_monotonic,
             )
-            await self._appendProcessDiagnostic(diagnostic_log_path, result, environment)
             return result
         try:
             stdout, stderr = await process.communicate()
@@ -1257,12 +1254,45 @@ class GenericCMAnalyzer:
             started_at,
             time.monotonic() - started_monotonic,
         )
+        return result
+
+    async def _runProcessWithDiagnostics(
+        self,
+        command: tuple[str, ...],
+        environment: Mapping[str, str],
+        diagnostic_log_path: Path,
+    ) -> _ProcessResult:
+        """
+        共通実行境界の結果へ再現条件を補い、完全な診断ログを保存する。
+
+        Args:
+            command (tuple[str, ...]): 実行するコマンドと引数。
+            environment (Mapping[str, str]): プロセスへ渡す環境変数。
+            diagnostic_log_path (Path): 全工程の診断ログを追記するファイル。
+
+        Returns:
+            _ProcessResult: 終了コードと省略していない標準出力・標準エラー。
+        """
+
+        started_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
+        started_monotonic = time.monotonic()
+        process_result = await self._runProcess(command, environment)
+        result = replace(
+            process_result,
+            command=command,
+            started_at=process_result.started_at or started_at,
+            elapsed_seconds=(
+                process_result.elapsed_seconds
+                if process_result.elapsed_seconds is not None
+                else time.monotonic() - started_monotonic
+            ),
+        )
         await self._appendProcessDiagnostic(diagnostic_log_path, result, environment)
         return result
 
     @staticmethod
     async def _appendProcessDiagnostic(
-        diagnostic_log_path: Path | None,
+        diagnostic_log_path: Path,
         result: _ProcessResult,
         environment: Mapping[str, str],
     ) -> None:
@@ -1270,16 +1300,13 @@ class GenericCMAnalyzer:
         一つの外部プロセスの再現条件と完全な出力を job 共通ログへ追記する。
 
         Args:
-            diagnostic_log_path (Path | None): 追記先。None の場合は保存しない。
+            diagnostic_log_path (Path): 追記先。
             result (_ProcessResult): 保存するプロセス実行結果。
             environment (Mapping[str, str]): 実行時の環境変数。
 
         Returns:
             None
         """
-
-        if diagnostic_log_path is None:
-            return
 
         # native library・VAAPI・一時領域の差を比較できる値だけを残す。
         ## token や credential を含み得る環境変数は値を出力しない。
