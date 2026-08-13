@@ -2,7 +2,8 @@
     <div class="route-container">
         <HeaderBar />
         <main>
-            <Navigation />
+            <!-- 横幅のある放送中グリッドを番組表と同じ幅で表示するため、サイドバーはアイコン表示へ縮める。 -->
+            <Navigation :icon-only="true" />
             <div class="on-air-wrapper">
                 <SPHeaderBar />
                 <div class="on-air-container">
