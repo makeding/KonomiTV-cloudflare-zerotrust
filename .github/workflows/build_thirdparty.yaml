@@ -10,6 +10,9 @@ on:
     paths:
       - '.github/workflows/build_thirdparty.yaml'
       - '.github/workflows/scripts/build_intel_media_stack_standalone.sh'
+      - 'docker/thirdparty/build-cm-analysis.sh'
+      - 'docker/thirdparty/manifest.env'
+      - 'docker/thirdparty/patches/**'
   workflow_call:
   workflow_dispatch:
 
@@ -586,6 +589,26 @@ jobs:
           # poetry のインストール
           cd thirdparty/Python/
           docker run --rm -i -v $(pwd):/work -w /work ubuntu:20.04-custom bash -c './bin/python -m pip install poetry==${{ env.POETRY_VERSION }}'
+
+      # chapter_exe / logoframe / join_logo_scp と専用 FFMS2 ランタイムを構築する (x64 のみ)
+      ## 実行時依存は thirdparty/CMAnalysis 内へまとめるため、導入先で追加パッケージを要求しない。
+      ## FFMS2 は VAAPI を優先し、利用できない環境ではサーバー側が CPU デコードへフォールバックする。
+      - name: Build CM Analysis Runtime (for x64)
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf automake ccache cmake git libbz2-dev libdrm-dev liblzma-dev libtool libva-dev \
+            meson nasm ninja-build patch patchelf pkg-config yasm zlib1g-dev
+          SOURCE_ROOT="${RUNNER_TEMP}/konomitv-cm-analysis-sources" \
+          OUTPUT_ROOT="${GITHUB_WORKSPACE}/thirdparty" \
+            bash docker/thirdparty/build-cm-analysis.sh
+          test -x thirdparty/CMAnalysis/chapter_exe
+          test -x thirdparty/CMAnalysis/ffmsindex
+          test -x thirdparty/CMAnalysis/logoframe
+          test -x thirdparty/CMAnalysis/join_logo_scp
+          test -s thirdparty/CMAnalysis/libffms2.so.3
+          python3 -m json.tool thirdparty/CMAnalysis/Runtime-Manifest.json > /dev/null
 
       # サードパーティーライブラリを tar.xz で圧縮
       # ファイルサイズ縮減のため、圧縮をかなり強めに掛けている

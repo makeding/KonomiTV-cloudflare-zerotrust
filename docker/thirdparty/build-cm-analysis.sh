@@ -5,7 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="${SOURCE_ROOT:-/build/sources}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/opt/thirdparty}"
 CM_ROOT="${OUTPUT_ROOT}/CMAnalysis"
-FFMPEG_SDK_ROOT="/opt/ffmpeg8-sdk"
 
 set -a
 source "${SCRIPT_DIR}/manifest.env"
@@ -58,9 +57,6 @@ clone-commit \
 echo "${FFMPEG8_LICENSE_SHA256}  ${analysis_ffmpeg_source}/LICENSE.md" | sha256sum --check --strict
 echo "${FFMPEG8_LGPLV21_SHA256}  ${analysis_ffmpeg_source}/COPYING.LGPLv2.1" | \
     sha256sum --check --strict
-test -s "${FFMPEG_SDK_ROOT}/lib/pkgconfig/ffnvcodec.pc"
-test -s "${FFMPEG_SDK_ROOT}/include/AMF/core/Platform.h"
-
 analysis_ffmpeg_configure=(
     "--prefix=${analysis_ffmpeg_install}"
     "--cc=ccache gcc"
@@ -80,27 +76,16 @@ analysis_ffmpeg_configure=(
     --enable-bzlib
     --enable-lzma
     --enable-zlib
-    --enable-libaom
     --enable-libdrm
-    --enable-libvpl
     --enable-vaapi
-    --enable-amf
-    --enable-ffnvcodec
-    --enable-cuvid
-    --enable-nvdec
     --enable-hwaccel=h264_vaapi
     --enable-hwaccel=hevc_vaapi
     --enable-hwaccel=av1_vaapi
-    --enable-hwaccel=h264_nvdec
-    --enable-hwaccel=hevc_nvdec
-    --enable-hwaccel=av1_nvdec
-    "--extra-cflags=-I${FFMPEG_SDK_ROOT}/include"
     '--extra-ldflags=-Wl,-rpath,$ORIGIN'
 )
 analysis_ffmpeg_configure_sha256="$(printf '%s\n' "${analysis_ffmpeg_configure[@]}" | sha256sum | cut -d' ' -f1)"
 pushd "${analysis_ffmpeg_source}"
-PKG_CONFIG_PATH="${FFMPEG_SDK_ROOT}/lib/pkgconfig" CFLAGS="-I${FFMPEG_SDK_ROOT}/include" \
-    ./configure "${analysis_ffmpeg_configure[@]}"
+./configure "${analysis_ffmpeg_configure[@]}"
 grep -Fqx '#define CONFIG_GPL 0' config.h
 grep -Fqx '#define CONFIG_VERSION3 0' config.h
 grep -Fqx '#define CONFIG_NONFREE 0' config.h
@@ -108,14 +93,10 @@ for component in \
     AVCODEC AVFORMAT AVUTIL SWRESAMPLE SWSCALE \
     FILE_PROTOCOL MPEGTS_DEMUXER MOV_DEMUXER MATROSKA_DEMUXER OGG_DEMUXER WAV_DEMUXER \
     MPEG1VIDEO_DECODER MPEG2VIDEO_DECODER MPEG4_DECODER H264_DECODER HEVC_DECODER \
-    AV1_DECODER LIBAOM_AV1_DECODER VP8_DECODER VP9_DECODER THEORA_DECODER PRORES_DECODER FFV1_DECODER \
+    AV1_DECODER VP8_DECODER VP9_DECODER THEORA_DECODER PRORES_DECODER FFV1_DECODER \
     DNXHD_DECODER MJPEG_DECODER VC1_DECODER \
     PCM_S16LE_DECODER \
-    H264_QSV_DECODER HEVC_QSV_DECODER AV1_QSV_DECODER \
-    H264_CUVID_DECODER HEVC_CUVID_DECODER AV1_CUVID_DECODER \
-    H264_AMF_DECODER HEVC_AMF_DECODER AV1_AMF_DECODER \
-    H264_VAAPI_HWACCEL HEVC_VAAPI_HWACCEL AV1_VAAPI_HWACCEL \
-    H264_NVDEC_HWACCEL HEVC_NVDEC_HWACCEL AV1_NVDEC_HWACCEL; do
+    H264_VAAPI_HWACCEL HEVC_VAAPI_HWACCEL AV1_VAAPI_HWACCEL; do
     verify-ffmpeg-component config.h "${component}"
 done
 make -j"$(nproc)"
