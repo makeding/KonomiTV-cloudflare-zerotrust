@@ -212,7 +212,7 @@ class SeriesIndexerTest(unittest.TestCase):
                     self.assertEqual(parsed.subtitle, '笑顔は最高のインテリア')
 
     def test_historical_numerals_and_episode_units_are_supported(self) -> None:
-        """EPG に現れる大字の漢数字と「講」「輪」を話数として読む。"""
+        """EPG に現れる漢数字と作品固有の一文字助数詞を話数として読む。"""
 
         cases = [
             ('春夏秋冬代行者 春の舞 第弐話「名残雪」', '2'),
@@ -220,6 +220,7 @@ class SeriesIndexerTest(unittest.TestCase):
             ('春夏秋冬代行者 春の舞 第拾参話「奪還」', '13'),
             ('3年Z組銀八先生 第10講[字]', '10'),
             ('アニメ リィンカーネーションの花弁 第十輪 顔の無い男', '10'),
+            ('アニメ 令和のダラさん 第七怪 在りし日の紙芝居', '7'),
         ]
         for title, expected_episode in cases:
             with self.subTest(title=title):
@@ -227,6 +228,24 @@ class SeriesIndexerTest(unittest.TestCase):
                 self.assertIsNotNone(parsed)
                 assert parsed is not None
                 self.assertEqual(parsed.episode_number, expected_episode)
+
+        darasan = ParseSeriesTitle('アニメ 令和のダラさん 第七怪 在りし日の紙芝居', ANIME_GENRES)
+        numbered = ParseSeriesTitle('令和のダラさん #7', ANIME_GENRES)
+        self.assertIsNotNone(darasan)
+        self.assertIsNotNone(numbered)
+        assert darasan is not None and numbered is not None
+        self.assertEqual(darasan.normalized_title, numbered.normalized_title)
+        self.assertEqual(darasan.subtitle, '在りし日の紙芝居')
+
+    def test_series_part_number_is_not_treated_as_episode(self) -> None:
+        """作品名に含まれる期・部・章の番号より後ろにある自然話数を採用する。"""
+
+        parsed = ParseSeriesTitle('架空作品 第2期 第3怪 旅立ち', ANIME_GENRES)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.display_title, '架空作品 第2期')
+        self.assertEqual(parsed.episode_number, '3')
+        self.assertEqual(parsed.subtitle, '旅立ち')
 
     def test_episode_at_description_line_start_is_used_conservatively(self) -> None:
         """title が固定の放送局では description の独立行先頭から話数を読む。"""

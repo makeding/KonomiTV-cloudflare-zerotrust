@@ -17,7 +17,7 @@
                 <p v-if="chineseSummary" class="series-episode-list__chinese-summary">{{chineseSummary}}</p>
                 <a :href="`https://bgm.tv/subject/${bangumiSubjectId}`"
                     target="_blank" rel="noopener noreferrer" @click.stop>
-                    Bangumi で見る
+                    Bangumi で作品情報を見る
                     <Icon icon="fluent:open-16-regular" width="13px" />
                 </a>
             </div>
