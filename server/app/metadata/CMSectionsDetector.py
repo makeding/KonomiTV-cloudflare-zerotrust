@@ -18,6 +18,7 @@ from app.metadata.CMAnalyzer import (
     GenericCMAnalyzer,
 )
 from app.models.RecordedVideo import RecordedVideo
+from app.utils.HardwareDevice import GetVAAPIHardwareDevices
 
 
 class CMSectionsDetector:
@@ -119,7 +120,7 @@ class CMSectionsDetector:
                 recorded_file_path=pathlib.Path(str(self.file_path)),
                 work_directory=work_directory,
                 service_id=self.service_id,
-                hardware_device=self.__resolveHardwareDecodeDevice(),
+                hardware_devices=GetVAAPIHardwareDevices(),
                 duration_seconds=self.duration_sec,
                 container_format=self.container_format,
             ))
@@ -136,22 +137,6 @@ class CMSectionsDetector:
             ) for section in result.sections if section['start_time'] < float(self.duration_sec)]
         finally:
             await asyncio.to_thread(shutil.rmtree, work_directory, ignore_errors=True)
-
-
-    @staticmethod
-    def __resolveHardwareDecodeDevice() -> str | None:
-        """CM 解析で優先する Linux VAAPI render device を返す。"""
-
-        # コンテナ環境では公開された render node だけが見えるため、番号を固定せず列挙する。
-        # FFMS2 側で初期化に失敗した場合は GenericCMAnalyzer が CPU で一度だけ再試行する。
-        dri_directory = pathlib.Path('/dev/dri')
-        if dri_directory.is_dir() is False:
-            return None
-        render_devices = sorted(dri_directory.glob('renderD*'))
-        if len(render_devices) == 0:
-            return None
-        return f'vaapi:{render_devices[0]}'
-
 
     async def __detectFromChapterFile(self) -> list[schemas.CMSection] | None:
         """

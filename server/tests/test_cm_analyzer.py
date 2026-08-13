@@ -57,7 +57,7 @@ def CreateRequest(
         work_directory=tmp_path / 'work',
         service_id=service_id,
         logo_paths=logo_paths,
-        hardware_device=hardware_device,
+        hardware_devices=(hardware_device,) if hardware_device is not None else (),
         duration_seconds=60.0,
     )
 
@@ -543,8 +543,8 @@ def test_parallel_logo_decode_stays_on_cpu_when_chapter_uses_hardware(tmp_path: 
 
     assert result.status == 'completed'
     assert result.decode_mode == 'Hardware'
-    chapter_script = (tmp_path / 'work/hardware/chapter.avs').read_text(encoding='utf-8')
-    logo_script = (tmp_path / 'work/hardware/logo.avs').read_text(encoding='utf-8')
+    chapter_script = (tmp_path / 'work/hardware-1/chapter.avs').read_text(encoding='utf-8')
+    logo_script = (tmp_path / 'work/hardware-1/logo.avs').read_text(encoding='utf-8')
     assert 'hwdevice="vaapi:/dev/dri/renderD128"' in chapter_script
     assert 'hwdevice=' not in logo_script
 
@@ -670,8 +670,38 @@ def test_hardware_initialization_failure_falls_back_to_cpu_once(tmp_path: Path) 
     assert chapter_attempts == 2
     assert prepare_attempts == 1
     assert index_attempts == 2
-    assert 'hwdevice=' in (tmp_path / 'work/hardware/chapter.avs').read_text(encoding='utf-8')
+    assert 'hwdevice=' in (tmp_path / 'work/hardware-1/chapter.avs').read_text(encoding='utf-8')
     assert 'hwdevice=' not in (tmp_path / 'work/cpu/chapter.avs').read_text(encoding='utf-8')
+
+
+def test_chapter_exe_failure_tries_next_hardware_device(tmp_path: Path) -> None:
+    """最初の render node で chapter_exe が失敗した場合、次の検出済みデバイスを試す。"""
+
+    analyzer = CreateRuntime(tmp_path)
+    payload = ProbePayload()
+    commands: list[tuple[str, ...]] = []
+    InstallSuccessfulProcesses(analyzer, payload, commands)
+    original_run = analyzer._runProcess
+
+    async def RunProcess(command: tuple[str, ...], environment: Mapping[str, str]) -> _ProcessResult:
+        if command[0] == str(analyzer.chapter_executable_path):
+            script = Path(command[command.index('-v') + 1]).read_text(encoding='utf-8')
+            if 'renderD128' in script:
+                return _ProcessResult(134, '', "basic_string::_M_construct null not valid")
+        return await original_run(command, environment)
+
+    analyzer._runProcess = RunProcess  # type: ignore[method-assign]
+    request = replace(
+        CreateRequest(tmp_path),
+        hardware_devices=('vaapi:/dev/dri/renderD128', 'vaapi:/dev/dri/renderD129'),
+    )
+    result = asyncio.run(analyzer.analyze(request))
+
+    assert result.status == 'completed'
+    assert result.decode_mode == 'Hardware'
+    assert result.warnings[0] == 'HardwareDecodeFallback'
+    assert 'renderD128' in (tmp_path / 'work/hardware-1/chapter.avs').read_text(encoding='utf-8')
+    assert 'renderD129' in (tmp_path / 'work/hardware-2/chapter.avs').read_text(encoding='utf-8')
 
 
 def test_stage_callback_reports_shared_pipeline_and_hardware_fallback(tmp_path: Path) -> None:
@@ -712,7 +742,7 @@ def test_stage_callback_reports_shared_pipeline_and_hardware_fallback(tmp_path: 
     assert numeric_progress == sorted(numeric_progress)
 
 
-def test_non_hardware_analysis_failure_is_not_retried_on_cpu(tmp_path: Path) -> None:
+def test_hardware_chapter_exe_failure_is_retried_on_cpu(tmp_path: Path) -> None:
     analyzer = CreateRuntime(tmp_path)
     chapter_attempts = 0
 
@@ -732,15 +762,22 @@ def test_non_hardware_analysis_failure_is_not_retried_on_cpu(tmp_path: Path) -> 
         if command[0] == str(analyzer.ffmsindex_path):
             Path(command[-1]).write_bytes(b'ffindex')
             return _ProcessResult(0, '')
-        chapter_attempts += 1
-        return _ProcessResult(1, '', 'chapter algorithm rejected the input')
+        if command[0] == str(analyzer.chapter_executable_path):
+            chapter_attempts += 1
+            script = Path(command[command.index('-v') + 1]).read_text(encoding='utf-8')
+            if 'hwdevice=' in script:
+                return _ProcessResult(1, '', 'chapter algorithm rejected the input')
+            Path(command[command.index('-o') + 1]).write_text('# SCPos: 1799 0\n', encoding='utf-8')
+            return _ProcessResult(0, 'Video Frames: 1800')
+        Path(command[command.index('-o') + 1]).write_text('Trim(0,1799)\n', encoding='utf-8')
+        return _ProcessResult(0, '')
 
     analyzer._runProcess = RunProcess  # type: ignore[method-assign]
     result = asyncio.run(analyzer.analyze(CreateRequest(tmp_path, hardware_device='cuda:0')))
 
-    assert result.status == 'analysis_failed'
-    assert result.error_code == 'ChapterExeFailed'
-    assert chapter_attempts == 1
+    assert result.status == 'completed'
+    assert result.decode_mode == 'CPU'
+    assert chapter_attempts == 2
 
 
 def test_cpu_decoder_unavailable_is_stably_unsupported(tmp_path: Path) -> None:

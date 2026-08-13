@@ -49,6 +49,7 @@ from app.streams.LiveStream import LiveStream
 from app.utils.BangumiClient import BangumiClient
 from app.utils.edcb.EDCBTuner import EDCBTuner
 from app.utils.FastAPITaskUtil import repeat_every
+from app.utils.HardwareDevice import InitializeVAAPIHardwareDevices
 
 
 # もし Config() の実行時に AssertionError が発生した場合は、LoadConfig() を実行してサーバー設定データをロードする
@@ -231,6 +232,9 @@ recorded_scan_task: RecordedScanTask | None = None
 @app.on_event('startup')
 async def Startup():
     global recorded_scan_task
+
+    # Linux の DRI render node を起動時に一度だけ検証し、CM 解析で共有する。
+    await InitializeVAAPIHardwareDevices()
 
     # チャンネル情報を更新
     await Channel.update()

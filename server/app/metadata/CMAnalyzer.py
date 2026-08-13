@@ -102,7 +102,7 @@ class CMAnalyzerRequest:
     work_directory: Path
     service_id: int | None = None
     logo_paths: tuple[Path, ...] = ()
-    hardware_device: str | None = None
+    hardware_devices: tuple[str, ...] = ()
     hardware_environment: Mapping[str, str] | None = None
     duration_seconds: float = 0.0
     has_variable_video_format: bool = False
@@ -457,13 +457,18 @@ class GenericCMAnalyzer:
             audio_stream_index=prepared_audio_index,
         )
 
-        attempts: list[tuple[CMDecodeMode, str | None]] = []
-        if request.hardware_device is not None:
-            attempts.append(('Hardware', request.hardware_device))
+        attempts: list[tuple[CMDecodeMode, str | None]] = [
+            ('Hardware', hardware_device) for hardware_device in request.hardware_devices
+        ]
         attempts.append(('CPU', None))
         hardware_failure: CMAnalyzerResult | None = None
+        hardware_attempt_index = 0
         for decode_mode, hardware_device in attempts:
-            attempt_directory = request.work_directory / decode_mode.lower()
+            if decode_mode == 'Hardware':
+                hardware_attempt_index += 1
+                attempt_directory = request.work_directory / f'hardware-{hardware_attempt_index}'
+            else:
+                attempt_directory = request.work_directory / 'cpu'
             try:
                 result = await self._analyzeOnce(
                     request,
@@ -1369,6 +1374,10 @@ class GenericCMAnalyzer:
     def _isHardwareDecodeFailure(cls, result: CMAnalyzerResult) -> bool:
         if result.status != 'analysis_failed':
             return False
+        # FFMS2 の VAAPI 経路で chapter_exe 自体が abort した場合、FFMS2-HW の識別文字列が stderr に残らない。
+        ## 同じ入力が別の render node や CPU では正常に解析できるため、ハードウェア実行時の ChapterExeFailed も再試行する。
+        if result.error_code == 'ChapterExeFailed':
+            return True
         text = ' '.join(filter(None, (result.error_code, result.error_message))).lower()
         return cls._HARDWARE_FAILURE_MARKER in text
 

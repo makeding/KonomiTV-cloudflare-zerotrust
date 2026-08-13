@@ -55,7 +55,7 @@ async def RunAnalysis(
         recorded_file_path = file_path,
         work_directory = work_directory,
         service_id = service_id,
-        hardware_device = hardware_device,
+        hardware_devices = (hardware_device,) if hardware_device is not None else (),
         container_format = container_format,
         stage_callback = ReportStage,
     ))
