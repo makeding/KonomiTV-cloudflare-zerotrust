@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, patch
 
 from app.constants import JST
 from app.routers.SeriesRouter import (
-    GetSeriesSummaries,
     ON_AIR_SERIES_GENRES,
     ExtractOfficialWebsiteURL,
+    GetSeriesSummaries,
     OnAirSeriesListAPI,
     SeriesListPositionAPI,
 )
