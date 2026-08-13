@@ -17,6 +17,7 @@ from typing import Literal, Protocol, TypeAlias, cast
 
 from typing_extensions import TypedDict
 
+from app import logging
 from app.constants import LIBRARY_PATH
 
 
@@ -469,6 +470,10 @@ class GenericCMAnalyzer:
                 attempt_directory = request.work_directory / f'hardware-{hardware_attempt_index}'
             else:
                 attempt_directory = request.work_directory / 'cpu'
+            logging.info(
+                f'{request.recorded_file_path}: Starting CM decode attempt. '
+                f'[decode_mode: {decode_mode}] [hardware_device: {hardware_device or "None"}]'
+            )
             try:
                 result = await self._analyzeOnce(
                     request,
@@ -490,9 +495,18 @@ class GenericCMAnalyzer:
                 )
             if decode_mode == 'Hardware' and self._isHardwareDecodeFailure(result):
                 hardware_failure = result
+                logging.warning(
+                    f'{request.recorded_file_path}: CM hardware decode attempt failed. Trying next decoder. '
+                    f'[hardware_device: {hardware_device}] [error_code: {result.error_code}] '
+                    f'[error_message: {result.error_message}]'
+                )
                 await self._emitStage(request, 'HardwareFallback', None)
                 continue
             if hardware_failure is not None and result.status == 'completed':
+                logging.info(
+                    f'{request.recorded_file_path}: CM decode fallback completed. '
+                    f'[decode_mode: {decode_mode}] [hardware_device: {hardware_device or "None"}]'
+                )
                 return replace(result, warnings=('HardwareDecodeFallback', *result.warnings))
             if (
                 decode_mode == 'CPU'

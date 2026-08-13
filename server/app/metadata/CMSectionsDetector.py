@@ -115,12 +115,13 @@ class CMSectionsDetector:
         work_directory = pathlib.Path(tempfile.mkdtemp(
             prefix=f'.{self.file_path.stem}.konomitv-cm-',
         ))
+        hardware_devices = GetVAAPIHardwareDevices()
         try:
             result = await GenericCMAnalyzer().analyze(CMAnalyzerRequest(
                 recorded_file_path=pathlib.Path(str(self.file_path)),
                 work_directory=work_directory,
                 service_id=self.service_id,
-                hardware_devices=GetVAAPIHardwareDevices(),
+                hardware_devices=hardware_devices,
                 duration_seconds=self.duration_sec,
                 container_format=self.container_format,
             ))
@@ -128,6 +129,7 @@ class CMSectionsDetector:
                 logging.warning(
                     f'{self.file_path}: CM analysis failed. '
                     f'[status: {result.status}] [error_code: {result.error_code}] '
+                    f'[decode_mode: {result.decode_mode}] [hardware_devices: {hardware_devices}] '
                     f'[error_message: {result.error_message}]'
                 )
                 return None
