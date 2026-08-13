@@ -201,8 +201,8 @@ const getRouteSeriesID = (): number | null => {
 
 const buildSeriesQuery = (query: string, order: 'desc' | 'asc', page: number) => ({
     ...(query ? { query } : {}),
-    order,
-    page: page.toString(),
+    ...(order === 'asc' ? { order } : {}),
+    ...(page > 1 ? { page: page.toString() } : {}),
 });
 
 const toggleSeries = async (seriesID: number) => {
@@ -300,7 +300,11 @@ const getMajorGenres = (series: ISeriesSummary): string[] => {
         .slice(0, 2);
 };
 
-watch(() => [route.query.page, route.query.order, route.query.query], async () => {
+watch([
+    () => route.query.page,
+    () => route.query.order,
+    () => route.query.query,
+], async () => {
     if (!is_mounted.value) return;
     syncStateFromRoute();
     await fetchSeries();

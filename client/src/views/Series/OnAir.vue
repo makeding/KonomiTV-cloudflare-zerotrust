@@ -80,8 +80,7 @@
                                 </button>
                                 <div v-else class="on-air-cell__placeholder"></div>
                             </div>
-                            <div v-if="expandedSeriesInRow(seriesRow)" class="on-air-week__episodes"
-                                :style="getExpandedDetailsStyle(seriesRow)">
+                            <div v-if="expandedSeriesInRow(seriesRow)" class="on-air-week__episodes">
                                 <div v-if="isSummaryLoading" class="on-air-week__loading">
                                     <v-skeleton-loader type="heading, image, paragraph, paragraph" />
                                 </div>
@@ -207,16 +206,6 @@ const hasAttentionSeries = (weekday: number): boolean => {
 
 const expandedSeriesInRow = (seriesRow: Array<IOnAirSeries | null>): IOnAirSeries | undefined => {
     return seriesRow.find(series => series?.id === expandedSeriesID.value) ?? undefined;
-};
-
-const getExpandedDetailsStyle = (seriesRow: Array<IOnAirSeries | null>): Record<string, string> => {
-    const expandedWeekday = seriesRow.findIndex(series => series?.id === expandedSeriesID.value);
-    return {
-        '--expanded-weekday-column': String(Math.max(0, expandedWeekday) + 1),
-        ...(rememberedDetailsHeight.value > 0
-            ? {minHeight: `${rememberedDetailsHeight.value}px`}
-            : {}),
-    };
 };
 
 const syncExpandedSeriesFromRoute = async () => {
@@ -416,8 +405,10 @@ watch(() => route.params.series_id, async () => {
         &__logo { --ch-sprite-width: 30; --ch-sprite-height: 18; --ch-sprite-border-radius: 3; }
     }
     .on-air-week__episodes {
-        // 選択した曜日のカード直下から、外側の週間スクロールの右方向へ適度な幅で展開する。
-        grid-column: var(--expanded-weekday-column);
+        // 週間グリッド全体の行を使い、現在の横スクロール位置に関係なく可視領域の左端から展開する。
+        position: sticky;
+        left: 0;
+        grid-column: 1 / -1;
         width: calc(100vw - 16px);
         max-width: 480px;
         min-width: 0;

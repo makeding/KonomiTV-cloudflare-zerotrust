@@ -3,11 +3,13 @@
         <router-view v-slot="{ Component }">
             <component :is="Component" />
         </router-view>
+        <RemoteDeviceDialog />
         <Snackbars />
     </v-app>
 </template>
 <script lang="ts" setup>
 
+import RemoteDeviceDialog from '@/components/RemoteDeviceDialog.vue';
 import Snackbars from '@/components/Snackbars.vue';
 
 </script>

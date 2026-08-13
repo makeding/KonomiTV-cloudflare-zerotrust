@@ -1,15 +1,8 @@
 <template>
-    <v-menu v-if="isLoggedIn" v-model="isOpen" location="bottom end" :close-on-content-click="false"
-        :persistent="isPinned"
+    <v-menu v-if="isLoggedIn" v-model="isOpen"
+        :target="remoteDeviceActivatorElement ?? undefined" location="bottom end" :close-on-content-click="false"
+        :persistent="isPinned" no-click-animation
         :offset="8" transition="fade-transition" @update:model-value="handleMenuVisibility">
-        <template #activator="{ props: activatorProps }">
-            <v-btn ref="activatorButton" v-bind="activatorProps" icon variant="text"
-                :color="selectedDeviceId === null ? undefined : 'primary'" aria-label="テレビを選択">
-                <Icon icon="material-symbols:cast-rounded" height="26px" />
-                <v-tooltip activator="parent" location="bottom">{{ selectedDeviceName ?? 'テレビを選択' }}</v-tooltip>
-            </v-btn>
-        </template>
-
         <v-list class="remote-device-menu" density="compact" elevation="8" bg-color="background-lighten-1">
             <v-list-item class="remote-device-menu__header" title="テレビで再生">
                 <template #append>
@@ -96,9 +89,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import RemoteControl, { type IRemoteDevice, type RemoteCommand } from '@/services/RemoteControl';
+import {
+    remoteDeviceActivatorElement,
+    remoteDeviceMenuOpenRequest,
+    selectedRemoteDeviceName,
+} from '@/services/RemoteControlUI';
 import useSettingsStore from '@/stores/SettingsStore';
 import Utils from '@/utils';
 
@@ -112,7 +110,6 @@ interface IRemotePlaybackState {
 }
 
 const settingsStore = useSettingsStore();
-const activatorButton = ref<{ $el: HTMLElement } | null>(null);
 const isOpen = ref(false);
 const isLoading = ref(false);
 const devices = ref<IRemoteDevice[]>([]);
@@ -127,11 +124,6 @@ const selectedPlaybackState = computed<IRemotePlaybackState>(() => {
 let unsubscribeDevices: (() => void) | null = null;
 let reconnectTimer: number | null = null;
 let refreshInProgress = false;
-
-function isActivatorVisible(): boolean {
-    const element = activatorButton.value?.$el;
-    return element !== undefined && element.getClientRects().length > 0;
-}
 
 async function refreshDevices(): Promise<void> {
     if (refreshInProgress === true) return;
@@ -167,7 +159,7 @@ function connectDeviceSubscription(): void {
         unsubscribeDevices = null;
         isLoading.value = false;
         // 一時的な切断時だけ3秒後に同じユーザーの部屋へ入り直す。
-        if (isOpen.value === true && isActivatorVisible()) {
+        if (isOpen.value === true && remoteDeviceActivatorElement.value !== null) {
             reconnectTimer = window.setTimeout(connectDeviceSubscription, 3_000);
         }
     });
@@ -200,6 +192,14 @@ function togglePinned(): void {
 
 onBeforeUnmount(() => {
     disconnectDeviceSubscription();
+});
+
+watch(selectedDeviceName, (deviceName) => {
+    selectedRemoteDeviceName.value = deviceName;
+}, {immediate: true});
+
+watch(remoteDeviceMenuOpenRequest, () => {
+    if (remoteDeviceActivatorElement.value !== null) isOpen.value = true;
 });
 </script>
 

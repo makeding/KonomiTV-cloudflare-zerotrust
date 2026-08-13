@@ -863,6 +863,7 @@ onBeforeUnmount(() => {
         margin: 0 auto;
         perspective: 700px;
         @include tablet-vertical { display: none; }
+        @include smartphone-horizontal { display: none; }
         @include smartphone-vertical { display: none; }
     }
 

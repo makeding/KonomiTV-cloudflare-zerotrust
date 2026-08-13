@@ -11,7 +11,7 @@
                 v-model="searchQuery" @keydown="handleKeyDown">
             <Icon class="search-input__icon" icon="fluent:search-20-filled" height="24px" @click="doSearch" />
         </div>
-        <RemoteDeviceDialog class="ml-2" />
+        <RemoteDeviceActivator class="ml-2" />
         <v-btn v-show="isButtonDisplay && !isTimeTablePage" variant="flat" class="pwa-install-button"
             @click="pwaInstallHandler.install()">
             <Icon icon="material-symbols:install-desktop-rounded" height="20px" class="mr-1" />
@@ -26,7 +26,7 @@ import { pwaInstallHandler } from 'pwa-install-handler';
 import { onMounted, ref, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 
-import RemoteDeviceDialog from '@/components/RemoteDeviceDialog.vue';
+import RemoteDeviceActivator from '@/components/RemoteDeviceActivator.vue';
 
 const props = defineProps<{
     searchQuery?: string;
