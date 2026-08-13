@@ -2,7 +2,7 @@
     <v-menu v-if="isLoggedIn" v-model="isOpen"
         :target="remoteDeviceActivatorElement ?? undefined" location="bottom end" :close-on-content-click="false"
         :persistent="isPinned" no-click-animation
-        :offset="8" transition="fade-transition" @update:model-value="handleMenuVisibility">
+        :offset="8" transition="fade-transition">
         <v-list class="remote-device-menu" density="compact" elevation="8" bg-color="background-lighten-1">
             <v-list-item class="remote-device-menu__header" title="テレビで再生">
                 <template #append>
@@ -124,6 +124,7 @@ const selectedPlaybackState = computed<IRemotePlaybackState>(() => {
 let unsubscribeDevices: (() => void) | null = null;
 let reconnectTimer: number | null = null;
 let refreshInProgress = false;
+let isAwaitingDeviceSnapshot = false;
 
 async function refreshDevices(): Promise<void> {
     if (refreshInProgress === true) return;
@@ -134,8 +135,9 @@ async function refreshDevices(): Promise<void> {
         // 通信失敗時は直前の成功結果を維持し、一瞬だけ「オフライン」に切り替わるのを防ぐ。
         if (fetchedDevices === null) return;
         devices.value = fetchedDevices;
+        isAwaitingDeviceSnapshot = false;
     } finally {
-        isLoading.value = false;
+        isLoading.value = isAwaitingDeviceSnapshot && devices.value.length === 0;
         refreshInProgress = false;
     }
 }
@@ -147,29 +149,29 @@ function disconnectDeviceSubscription(): void {
     }
     unsubscribeDevices?.();
     unsubscribeDevices = null;
+    isAwaitingDeviceSnapshot = false;
+    isLoading.value = false;
 }
 
 function connectDeviceSubscription(): void {
     disconnectDeviceSubscription();
+    isAwaitingDeviceSnapshot = devices.value.length === 0;
     isLoading.value = devices.value.length === 0;
     unsubscribeDevices = RemoteControl.subscribeDevices((fetchedDevices) => {
         devices.value = fetchedDevices;
+        isAwaitingDeviceSnapshot = false;
         isLoading.value = false;
     }, () => {
         unsubscribeDevices = null;
-        isLoading.value = false;
         // 一時的な切断時だけ3秒後に同じユーザーの部屋へ入り直す。
         if (isOpen.value === true && remoteDeviceActivatorElement.value !== null) {
+            isLoading.value = isAwaitingDeviceSnapshot && devices.value.length === 0;
             reconnectTimer = window.setTimeout(connectDeviceSubscription, 3_000);
+        } else {
+            isAwaitingDeviceSnapshot = false;
+            isLoading.value = false;
         }
     });
-}
-
-function handleMenuVisibility(visible: boolean): void {
-    disconnectDeviceSubscription();
-    if (visible) {
-        connectDeviceSubscription();
-    }
 }
 
 function selectDevice(device: IRemoteDevice): void {
@@ -197,6 +199,17 @@ onBeforeUnmount(() => {
 watch(selectedDeviceName, (deviceName) => {
     selectedRemoteDeviceName.value = deviceName;
 }, {immediate: true});
+
+// 投影ボタンから isOpen を直接変更した場合も含め、メニューの実際の開閉状態へ購読寿命を一致させる。
+watch(isOpen, (visible) => {
+    if (visible) {
+        connectDeviceSubscription();
+        // 初回表示では WebSocket の参加と同時に現在のスナップショットも取得し、手動更新を不要にする。
+        void refreshDevices();
+    } else {
+        disconnectDeviceSubscription();
+    }
+});
 
 watch(remoteDeviceMenuOpenRequest, () => {
     if (remoteDeviceActivatorElement.value !== null) isOpen.value = true;
