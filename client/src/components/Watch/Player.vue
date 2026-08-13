@@ -551,6 +551,7 @@ _::-webkit-full-page-media, _:future, :root .dplayer-subtitle-icon[aria-label='�
         left: 0;
         width: 100%;
         height: 100%;
+        pointer-events: none;
 
         .watch-player__background {
             position: relative;
@@ -636,10 +637,15 @@ _::-webkit-full-page-media, _:future, :root .dplayer-subtitle-icon[aria-label='�
         z-index: 1;
     }
 
-    // データ放送パネルを折り畳んだ後も再表示できるよう、パネル切替ボタンだけは放送画面より前に置く。
-    // 切局ボタンはデータ放送アプリケーションの操作を妨げないよう従来どおり背面に残す。
-    &.watch-player--data-broadcasting .switch-button-panel {
-        position: relative;
+    // データ放送 iframe はリモコンキー入力専用で pointer-events: none のため、切局・パネル操作を含む
+    // プレイヤー側の操作ボタンは application canvas より前に置く。
+    &.watch-player--data-broadcasting .watch-player__button {
+        z-index: 2;
+    }
+
+    // TLV の調谐中は application canvas が先に生成されるため、通常の GR / BS / CS と同じ
+    // ローディング背景を一時的にその手前へ表示する。再生準備完了後は従来の背面へ戻る。
+    &.watch-player--loading.watch-player--data-broadcasting .watch-player__background-wrapper {
         z-index: 2;
     }
 
