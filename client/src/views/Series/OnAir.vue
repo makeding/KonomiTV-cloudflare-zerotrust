@@ -255,6 +255,12 @@ const toggleSeries = async (seriesID: number) => {
     window.scrollBy(0, targetCard.getBoundingClientRect().top - targetTopBeforeUpdate);
 };
 
+// Series の詳細を開いているときだけ、Escape キーで放送中一覧へ戻してカードを収める。
+const handleEscapeKey = async (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || expandedSeriesID.value === null) return;
+    await router.push('/series/on-air');
+};
+
 const loadOnAirSeries = async () => {
     isLoading.value = true;
     const result = await Series.fetchOnAirSeriesList();
@@ -264,6 +270,7 @@ const loadOnAirSeries = async () => {
 };
 
 onMounted(async () => {
+    window.addEventListener('keydown', handleEscapeKey);
     currentTimeUpdateTimer = window.setInterval(() => {
         currentJST.value = dayjsOriginal().tz('Asia/Tokyo');
     }, 60_000);
@@ -271,6 +278,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+    window.removeEventListener('keydown', handleEscapeKey);
     if (currentTimeUpdateTimer !== null) window.clearInterval(currentTimeUpdateTimer);
 });
 

@@ -231,6 +231,15 @@ const toggleSeries = async (seriesID: number) => {
     window.scrollBy(0, targetTopAfterUpdate - targetTopBeforeUpdate);
 };
 
+// Series の詳細を開いているときだけ、Escape キーで一覧へ戻してカードを収める。
+const handleEscapeKey = async (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || expanded_series_id.value === null) return;
+    await router.push({
+        path: '/series/',
+        query: buildSeriesQuery(search_query.value, sort_order.value, current_page.value),
+    });
+};
+
 const syncStateFromRoute = () => {
     const parsed_page = Number.parseInt(route.query.page as string ?? '1', 10);
     current_page.value = Number.isFinite(parsed_page) && parsed_page > 0 ? parsed_page : 1;
@@ -325,6 +334,7 @@ watch(() => route.params.series_id, async () => {
 });
 
 onMounted(async () => {
+    window.addEventListener('keydown', handleEscapeKey);
     const userStore = useUserStore();
     await userStore.fetchUser();
     syncStateFromRoute();
@@ -337,6 +347,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+    window.removeEventListener('keydown', handleEscapeKey);
     grid_resize_observer?.disconnect();
 });
 
