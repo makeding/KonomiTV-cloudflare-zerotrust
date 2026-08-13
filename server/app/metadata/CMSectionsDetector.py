@@ -106,12 +106,13 @@ class CMSectionsDetector:
             list[schemas.CMSection] | None: 解析に成功した場合は CM 区間のリストを返す
         """
 
-        # 4K upstream の GenericCMAnalyzer を、録画ファイルと同じファイルシステム上の一時領域で実行する。
+        # 4K upstream の GenericCMAnalyzer を、OS の一時領域で実行する。
+        ## 録画フォルダは読み取り専用でマウントされる構成も正式にサポートするため、
+        ## 録画ファイルの隣には一時ディレクトリも解析結果も作成しない。
         ## 映像は FFmpeg で Matroska へ stream-copy し、音声だけ固定 PCM へ正規化してから
         ## chapter_exe / logoframe / join_logo_scp に渡すため、サーバー側で映像エンコードは行わない。
         work_directory = pathlib.Path(tempfile.mkdtemp(
             prefix=f'.{self.file_path.stem}.konomitv-cm-',
-            dir=str(self.file_path.parent),
         ))
         try:
             result = await GenericCMAnalyzer().analyze(CMAnalyzerRequest(
