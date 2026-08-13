@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.constants import JST
 from app.routers.SeriesRouter import (
+    GetSeriesSummaries,
     ON_AIR_SERIES_GENRES,
     ExtractOfficialWebsiteURL,
     OnAirSeriesListAPI,
@@ -75,6 +76,39 @@ class SeriesRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
         sql = connection.execute_query.await_args.args[0]
         self.assertIn('ORDER BY MAX(rv.file_created_at) ASC, s.id ASC', sql)
 
+    async def test_series_summary_uses_only_generated_thumbnails(self) -> None:
+        """一覧の重ねサムネイル候補は、サムネイル情報が生成済みの録画だけに絞る。"""
+
+        now = datetime.now(JST)
+        row = {
+            'id': 1,
+            'title': '作品',
+            'description': '説明',
+            'genres': '[]',
+            'bangumi_subject_id': None,
+            'bangumi_subject_name': None,
+            'bangumi_subject_name_cn': None,
+            'bangumi_subject_summary': None,
+            'bangumi_subject_image_url': None,
+            'thumbnail_recorded_program_ids': '[102, 101]',
+            'channel_ids': '[]',
+            'official_website_sources': '[]',
+            'recorded_programs_count': 3,
+            'latest_video_file_created_at': now.isoformat(),
+            'created_at': now.isoformat(),
+            'updated_at': now.isoformat(),
+        }
+        connection = AsyncMock()
+        connection.execute_query.side_effect = [(1, [row]), (1, [{'count': 1}])]
+        with patch('app.routers.SeriesRouter.connections.get', return_value=connection):
+            result = await GetSeriesSummaries()
+
+        self.assertEqual(result.series_list[0].thumbnail_recorded_program_ids, [102, 101])
+        sql = connection.execute_query.await_args_list[0].args[0]
+        self.assertIn('rv_thumbnail.thumbnail_info IS NOT NULL', sql)
+        # 録画件数はサムネイルの有無にかかわらず全件を数える。
+        self.assertEqual(result.series_list[0].recorded_programs_count, 3)
+
     async def test_on_air_accepts_first_episode_with_next_epg_and_weekly_variety(self) -> None:
         """初回だけ録画済みのアニメと、履歴で週次と分かるバラエティを掲載する。"""
 
@@ -87,37 +121,37 @@ class SeriesRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
                 'series_id': 1, 'series_title': '新番組', 'genres': anime_genres,
                 'program_title': '新番組 #1', 'id': 101, 'channel_id': 'gr011',
                 'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '1',
-                'is_partially_recorded': True,
+                'is_partially_recorded': True, 'has_thumbnail': True,
             },
             {
                 'series_id': 1, 'series_title': '新番組', 'genres': anime_genres,
                 'program_title': '新番組 #1 [再]', 'id': 102, 'channel_id': 'gr011',
                 'start_time': now.isoformat(), 'episode_number': '1',
-                'is_partially_recorded': False,
+                'is_partially_recorded': False, 'has_thumbnail': False,
             },
             {
                 'series_id': 2, 'series_title': '8K紀行', 'genres': documentary_genres,
                 'program_title': '8K紀行 第1回', 'id': 201, 'channel_id': 'bs811',
                 'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '1',
-                'is_partially_recorded': False,
+                'is_partially_recorded': False, 'has_thumbnail': False,
             },
             {
                 'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
                 'program_title': '週刊バラエティ #2', 'id': 302, 'channel_id': 'gr041',
                 'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '2',
-                'is_partially_recorded': True,
+                'is_partially_recorded': True, 'has_thumbnail': False,
             },
             {
                 'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
                 'program_title': '週刊バラエティ #2', 'id': 303, 'channel_id': 'gr051',
                 'start_time': (now - timedelta(days=1)).isoformat(), 'episode_number': '2',
-                'is_partially_recorded': False,
+                'is_partially_recorded': False, 'has_thumbnail': True,
             },
             {
                 'series_id': 3, 'series_title': '週刊バラエティ', 'genres': variety_genres,
                 'program_title': '週刊バラエティ #1', 'id': 301, 'channel_id': 'gr041',
                 'start_time': (now - timedelta(days=8)).isoformat(), 'episode_number': '1',
-                'is_partially_recorded': False,
+                'is_partially_recorded': False, 'has_thumbnail': True,
             },
         ]
         future_rows = [{
@@ -136,8 +170,10 @@ class SeriesRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(anime.broadcast_time, f'{next_broadcast.hour:02d}:{(next_broadcast.minute // 5) * 5:02d}')
         # 完全録画の再放送があれば、同じ話数の部分録画は警告対象にしない。
         self.assertEqual(anime.partially_recorded_episodes_count, 0)
+        self.assertEqual(anime.thumbnail_recorded_program_ids, [101])
         weekly_variety = next(series for series in result.series_list if series.id == 3)
         self.assertEqual(weekly_variety.partially_recorded_episodes_count, 0)
+        self.assertEqual(weekly_variety.thumbnail_recorded_program_ids, [303, 301])
 
 
 if __name__ == '__main__':

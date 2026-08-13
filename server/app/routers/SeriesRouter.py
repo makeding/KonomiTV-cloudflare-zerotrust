@@ -149,15 +149,19 @@ async def OnAirSeriesListAPI():
     _, rows = await connection.execute_query(
         """
         SELECT rp.series_id, s.title AS series_title, s.genres, rp.title AS program_title,
-               rp.id, rp.channel_id, rp.start_time, rp.episode_number, rp.is_partially_recorded
+               rp.id, rp.channel_id, rp.start_time, rp.episode_number, rp.is_partially_recorded,
+               rv.thumbnail_info IS NOT NULL AS has_thumbnail
         FROM recorded_programs rp
         INNER JOIN series s ON s.id = rp.series_id
+        LEFT JOIN recorded_videos rv ON rv.recorded_program_id = rp.id
         WHERE rp.series_id IS NOT NULL
         ORDER BY rp.series_id, rp.start_time DESC, rp.id DESC
         """,
     )
     samples_by_series: dict[int, list[dict[str, Any]]] = {}
     sample_keys_by_series: dict[int, set[str]] = {}
+    thumbnail_samples_by_series: dict[int, list[dict[str, Any]]] = {}
+    thumbnail_sample_keys_by_series: dict[int, set[str]] = {}
     episode_numbers_by_series: dict[int, set[int]] = {}
     complete_episode_numbers_by_series: dict[int, set[int]] = {}
     partially_recorded_episode_numbers_by_series: dict[int, set[int]] = {}
@@ -184,8 +188,21 @@ async def OnAirSeriesListAPI():
 
         samples = samples_by_series.setdefault(series_id, [])
         sample_keys = sample_keys_by_series.setdefault(series_id, set())
+        thumbnail_samples = thumbnail_samples_by_series.setdefault(series_id, [])
+        thumbnail_sample_keys = thumbnail_sample_keys_by_series.setdefault(series_id, set())
         start_time = ParseDatetimeStringToJST(str(row['start_time']))
         sample_key = f'episode:{episode_number}' if episode_number else f'date:{start_time.date().isoformat()}'
+
+        # Series の重ねサムネイルには、代表サムネイルが正常に生成済みの録画だけを採用する。
+        ## サムネイル未生成の録画を先に重複扱いすると、同じ話数に生成済みの別録画があっても表示できないため、
+        ## サムネイル用の重複判定は放送枠推定用とは分けて管理する。
+        if (
+            bool(row['has_thumbnail'])
+            and len(thumbnail_samples) < 3
+            and sample_key not in thumbnail_sample_keys
+        ):
+            thumbnail_samples.append(row)
+            thumbnail_sample_keys.add(sample_key)
 
         # 同じ自然話数の別局版は Series の重ねサムネイルを重複させない。
         # 話数が取れない番組も、同日の多局同時録画は 1 枚にまとめる。
@@ -262,7 +279,9 @@ async def OnAirSeriesListAPI():
         on_air_series.append(schemas.OnAirSeries(
             id = series_id,
             title = str(samples[0]['series_title']),
-            thumbnail_recorded_program_ids = [int(sample['id']) for sample in samples[:3]],
+            thumbnail_recorded_program_ids = [
+                int(sample['id']) for sample in thumbnail_samples_by_series.get(series_id, [])
+            ],
             channel_ids = list(dict.fromkeys(
                 str(sample['channel_id']) for sample in samples if sample['channel_id'] is not None
             )),
@@ -340,7 +359,10 @@ async def GetSeriesSummaries(
                                 ORDER BY rp_thumbnail.start_time DESC, rp_thumbnail.id DESC
                             ) AS duplicate_rank
                         FROM recorded_programs rp_thumbnail
+                        INNER JOIN recorded_videos rv_thumbnail
+                            ON rv_thumbnail.recorded_program_id = rp_thumbnail.id
                         WHERE rp_thumbnail.series_id = s.id
+                          AND rv_thumbnail.thumbnail_info IS NOT NULL
                     ) AS distinct_thumbnails
                     WHERE distinct_thumbnails.duplicate_rank = 1
                     ORDER BY distinct_thumbnails.start_time DESC, distinct_thumbnails.id DESC
