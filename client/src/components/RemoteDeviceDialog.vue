@@ -42,7 +42,7 @@
                 <v-divider class="my-2" />
                 <div class="remote-device-menu__now-playing">
                     <div v-if="selectedPlaybackState.artwork_url" class="remote-device-menu__artwork"
-                        :class="{'remote-device-menu__artwork--logo': selectedPlaybackState.content_type === 'Live'}">
+                        :style="{'--remote-device-artwork-url': `url(${selectedPlaybackState.artwork_url})`}">
                         <img :src="selectedPlaybackState.artwork_url" alt="" />
                     </div>
                     <div class="remote-device-menu__media-info">
@@ -239,6 +239,7 @@ watch(remoteDeviceMenuOpenRequest, () => {
     }
 
     &__artwork {
+        position: relative;
         width: 96px;
         height: 54px;
         overflow: hidden;
@@ -246,14 +247,20 @@ watch(remoteDeviceMenuOpenRequest, () => {
         border-radius: 4px;
         background: rgb(var(--v-theme-background));
 
-        img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
+        &::before {
+            position: absolute;
+            inset: -20px;
+            background-image: var(--remote-device-artwork-url);
+            background-position: center;
+            background-size: cover;
+            content: '';
+            filter: blur(18px);
         }
 
-        &--logo img {
-            padding: 6px;
+        img {
+            position: relative;
+            width: 100%;
+            height: 100%;
             object-fit: contain;
         }
     }

@@ -967,7 +967,7 @@ const confirmDeleteOfflineVideo = async (): Promise<void> => {
         }
     }
 
-    &--recording, &--failed, &--offline-blocked {
+    &--failed, &--offline-blocked {
         pointer-events: none;
         &:hover {
             background: rgb(var(--v-theme-background-lighten-1));
