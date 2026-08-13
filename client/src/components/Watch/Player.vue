@@ -99,6 +99,18 @@ const handleSettingCoverClick = () => {
     }
     .dplayer-video-wrap {
         background: transparent !important;
+
+        // ARIB HTML5 の iframe / receiver 背景 / external video plane が共有する描画領域を、
+        // 右パネルの開閉やウインドウ比率にかかわらず親要素内へ 16:9 で contain する。
+        &:has(> .dplayer-video-wrap-aspect > .dplayer-tlv-data-broadcast) {
+            container-type: size;
+
+            .dplayer-video-wrap-aspect {
+                width: min(100cqw, calc(100cqh * 16 / 9));
+                height: min(100cqh, calc(100cqw * 9 / 16));
+            }
+        }
+
         .dplayer-video-wrap-aspect {
             transition: opacity 0.2s cubic-bezier(0.4, 0.38, 0.49, 0.94);
             opacity: 1;
