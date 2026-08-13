@@ -238,9 +238,9 @@ router.beforeResolve(async (to, from, next) => {
         const sent = await RemoteControl.sendOpenCommand(selectedDeviceId, remoteCommand);
         if (sent === true) {
             Message.success('テレビへ再生を送信しました。');
+            next(false);
+            return;
         }
-        next(false);
-        return;
     }
 
     // View Transition API を適用しないルートの prefix

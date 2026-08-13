@@ -1,5 +1,6 @@
 import Message from '@/message';
 import APIClient from '@/services/APIClient';
+import Utils from '@/utils';
 
 export interface IRemoteDevice {
     device_id: string;
@@ -15,6 +16,36 @@ export type RemoteCommand =
     | {type: 'SeekRelative'; delta_seconds: number;};
 
 class RemoteControl {
+    static subscribeDevices(
+        onDevices: (devices: IRemoteDevice[]) => void,
+        onDisconnected: () => void,
+    ): () => void {
+        const accessToken = Utils.getAccessToken();
+        if (accessToken === null) return () => {};
+
+        const websocketURL = new URL(`${Utils.api_base_url}/remote/devices/ws`);
+        websocketURL.protocol = websocketURL.protocol === 'https:' ? 'wss:' : 'ws:';
+        const websocket = new WebSocket(websocketURL);
+        let isDisposed = false;
+        websocket.addEventListener('open', () => {
+            websocket.send(JSON.stringify({type: 'Authenticate', token: accessToken}));
+        });
+        websocket.addEventListener('message', (event) => {
+            const message: unknown = JSON.parse(event.data);
+            if (typeof message === 'object' && message !== null && 'devices' in message && Array.isArray(message.devices)) {
+                onDevices(message.devices as IRemoteDevice[]);
+            }
+        });
+        websocket.addEventListener('close', () => {
+            if (isDisposed === false) onDisconnected();
+        });
+
+        return () => {
+            isDisposed = true;
+            websocket.close();
+        };
+    }
+
     static async fetchDevices(): Promise<IRemoteDevice[] | null> {
         const response = await APIClient.get<{devices: IRemoteDevice[];}>('/remote/devices');
         if (response.type === 'error') {

@@ -17,7 +17,7 @@
                         :aria-label="isPinned ? 'テレビ操作メニューの固定を解除' : 'テレビ操作メニューを固定'" @click="togglePinned">
                         <Icon :icon="isPinned ? 'fluent:pin-20-filled' : 'fluent:pin-20-regular'" width="20px" />
                     </v-btn>
-                    <v-btn icon size="small" variant="text" aria-label="テレビ一覧を更新" :loading="isLoading" @click="refreshDevices">
+                    <v-btn icon size="small" variant="text" aria-label="テレビ一覧を更新" :loading="isLoading" @click="refreshDevices()">
                         <Icon icon="fluent:arrow-clockwise-20-regular" width="21px" />
                     </v-btn>
                 </template>
@@ -96,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 
 import RemoteControl, { type IRemoteDevice, type RemoteCommand } from '@/services/RemoteControl';
 import useSettingsStore from '@/stores/SettingsStore';
@@ -124,23 +124,13 @@ const selectedDeviceName = computed(() => selectedDevice.value?.device_name ?? n
 const selectedPlaybackState = computed<IRemotePlaybackState>(() => {
     return selectedDevice.value?.state as unknown as IRemotePlaybackState ?? {content_type: 'Idle'};
 });
-let refreshInterval: number | null = null;
+let unsubscribeDevices: (() => void) | null = null;
+let reconnectTimer: number | null = null;
 let refreshInProgress = false;
-let devicesMissingSince: number | null = null;
 
 function isActivatorVisible(): boolean {
     const element = activatorButton.value?.$el;
     return element !== undefined && element.getClientRects().length > 0;
-}
-
-function syncPinnedMenuVisibility(): void {
-    // HeaderBar と SPHeaderBar は CSS で片方を隠しているだけで、どちらのコンポーネントもマウントされている。
-    // 固定状態を全インスタンスへそのまま適用すると、非表示側の v-menu まで Teleport されて二重表示になる。
-    if (isActivatorVisible() === false) {
-        isOpen.value = false;
-    } else if (isPinned.value === true) {
-        isOpen.value = true;
-    }
 }
 
 async function refreshDevices(): Promise<void> {
@@ -151,37 +141,42 @@ async function refreshDevices(): Promise<void> {
         const fetchedDevices = await RemoteControl.fetchDevices();
         // 通信失敗時は直前の成功結果を維持し、一瞬だけ「オフライン」に切り替わるのを防ぐ。
         if (fetchedDevices === null) return;
-
-        if (fetchedDevices.length > 0 || devices.value.length === 0) {
-            devices.value = fetchedDevices;
-            devicesMissingSince = null;
-            return;
-        }
-
-        // Komorebi の WebSocket 再接続中に一覧が一時的に空になるため、3秒継続した場合だけオフラインへ切り替える。
-        devicesMissingSince ??= performance.now();
-        if (performance.now() - devicesMissingSince >= 3_000) {
-            devices.value = [];
-            devicesMissingSince = null;
-        }
+        devices.value = fetchedDevices;
     } finally {
         isLoading.value = false;
         refreshInProgress = false;
     }
 }
 
+function disconnectDeviceSubscription(): void {
+    if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+    unsubscribeDevices?.();
+    unsubscribeDevices = null;
+}
+
+function connectDeviceSubscription(): void {
+    disconnectDeviceSubscription();
+    isLoading.value = devices.value.length === 0;
+    unsubscribeDevices = RemoteControl.subscribeDevices((fetchedDevices) => {
+        devices.value = fetchedDevices;
+        isLoading.value = false;
+    }, () => {
+        unsubscribeDevices = null;
+        isLoading.value = false;
+        // 一時的な切断時だけ3秒後に同じユーザーの部屋へ入り直す。
+        if (isOpen.value === true && isActivatorVisible()) {
+            reconnectTimer = window.setTimeout(connectDeviceSubscription, 3_000);
+        }
+    });
+}
+
 function handleMenuVisibility(visible: boolean): void {
-    if (visible === false && isPinned.value === true && isActivatorVisible()) {
-        isOpen.value = true;
-        return;
-    }
-    if (refreshInterval !== null) {
-        window.clearInterval(refreshInterval);
-        refreshInterval = null;
-    }
+    disconnectDeviceSubscription();
     if (visible) {
-        refreshDevices();
-        refreshInterval = window.setInterval(refreshDevices, 1_000);
+        connectDeviceSubscription();
     }
 }
 
@@ -204,16 +199,8 @@ function togglePinned(): void {
 }
 
 onBeforeUnmount(() => {
-    window.removeEventListener('resize', syncPinnedMenuVisibility);
-    if (refreshInterval !== null) window.clearInterval(refreshInterval);
+    disconnectDeviceSubscription();
 });
-
-onMounted(() => {
-    window.addEventListener('resize', syncPinnedMenuVisibility);
-    nextTick(syncPinnedMenuVisibility);
-});
-
-watch(isPinned, () => nextTick(syncPinnedMenuVisibility));
 </script>
 
 <style scoped lang="scss">

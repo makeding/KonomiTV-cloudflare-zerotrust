@@ -44,6 +44,8 @@ class RemoteDeviceConnection:
 
 # オンライン状態は WebSocket の生存期間だけに対応するため、DB へ保存せずプロセス内で管理する。
 REMOTE_DEVICE_CONNECTIONS: dict[tuple[int, str], RemoteDeviceConnection] = {}
+# ブラウザ側はユーザーごとの部屋へ参加し、同じユーザーの Komorebi の状態変化だけを受信する。
+REMOTE_DEVICE_SUBSCRIBERS: dict[int, set[WebSocket]] = {}
 REMOTE_DEVICE_CONNECTIONS_LOCK = asyncio.Lock()
 
 
@@ -64,6 +66,63 @@ def GetBearerToken(authorization: str | None) -> str | None:
     if separator == '' or scheme.lower() != 'bearer' or token.strip() == '':
         return None
     return token.strip()
+
+
+def BuildRemoteDeviceList(user_id: int) -> schemas.RemoteDeviceList:
+    """
+    指定したユーザーが操作できるオンライン Komorebi の一覧を構築する。
+
+    Args:
+        user_id (int): 一覧を取得するユーザー ID。
+
+    Returns:
+        schemas.RemoteDeviceList: 現在の Server プロセスへ接続中のテレビ一覧。
+    """
+
+    devices = [
+        schemas.RemoteDevice(
+            device_id=connection.device_id,
+            device_name=connection.device_name,
+            last_seen_at=connection.last_seen_at,
+            state=connection.state,
+        )
+        for connection in REMOTE_DEVICE_CONNECTIONS.values()
+        if connection.user_id == user_id
+    ]
+    return schemas.RemoteDeviceList(devices=sorted(devices, key=lambda device: device.device_name))
+
+
+async def BroadcastRemoteDeviceList(user_id: int) -> None:
+    """
+    指定したユーザーのブラウザへ最新のオンライン Komorebi 一覧を配信する。
+
+    Args:
+        user_id (int): 配信先となるユーザー ID。
+
+    Returns:
+        None: 配信完了後に戻る。
+    """
+
+    # WebSocket 送信中に接続一覧の更新を止めないよう、ロック内ではスナップショットだけを作る。
+    async with REMOTE_DEVICE_CONNECTIONS_LOCK:
+        subscribers = list(REMOTE_DEVICE_SUBSCRIBERS.get(user_id, set()))
+        device_list = BuildRemoteDeviceList(user_id)
+
+    disconnected_subscribers: list[WebSocket] = []
+    for subscriber in subscribers:
+        try:
+            await subscriber.send_json(device_list.model_dump(mode='json'))
+        except (RuntimeError, WebSocketDisconnect):
+            disconnected_subscribers.append(subscriber)
+
+    # 配信中に切断を検出した購読者だけをユーザーの部屋から取り除く。
+    if len(disconnected_subscribers) > 0:
+        async with REMOTE_DEVICE_CONNECTIONS_LOCK:
+            current_subscribers = REMOTE_DEVICE_SUBSCRIBERS.get(user_id)
+            if current_subscribers is not None:
+                current_subscribers.difference_update(disconnected_subscribers)
+                if len(current_subscribers) == 0:
+                    del REMOTE_DEVICE_SUBSCRIBERS[user_id]
 
 
 @router.websocket('/receiver/{device_id}')
@@ -109,12 +168,14 @@ async def RemoteControlReceiverAPI(
         await previous_connection.websocket.close(code=status.WS_1000_NORMAL_CLOSURE, reason='Replaced by a new connection')
 
     logging.info(f'[RemoteControlRouter] Remote device connected. [device_id: {device_id}, user_id: {current_user.id}]')
+    await BroadcastRemoteDeviceList(current_user.id)
     try:
         while True:
             message = await websocket.receive_json()
             connection.last_seen_at = datetime.now(JST)
             if message.get('type') == 'State':
                 connection.state = message
+                await BroadcastRemoteDeviceList(current_user.id)
     except WebSocketDisconnect:
         pass
     finally:
@@ -123,6 +184,58 @@ async def RemoteControlReceiverAPI(
             if REMOTE_DEVICE_CONNECTIONS.get(connection_key) is connection:
                 del REMOTE_DEVICE_CONNECTIONS[connection_key]
         logging.info(f'[RemoteControlRouter] Remote device disconnected. [device_id: {device_id}]')
+        await BroadcastRemoteDeviceList(current_user.id)
+
+
+@router.websocket('/devices/ws')
+async def RemoteDeviceSubscriberAPI(websocket: WebSocket):
+    """
+    ブラウザをログイン中ユーザーのリモートデバイス更新部屋へ参加させる。
+
+    Args:
+        websocket (WebSocket): Web クライアントとの購読接続。
+
+    Returns:
+        None: WebSocket 切断まで最新状態を配信する。
+    """
+
+    # ブラウザの WebSocket API は Authorization ヘッダーを設定できないため、接続後の最初のメッセージで認証する。
+    await websocket.accept()
+    try:
+        authentication_message = await asyncio.wait_for(websocket.receive_json(), timeout=10)
+    except TimeoutError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason='Authentication required')
+        return
+    except WebSocketDisconnect:
+        return
+
+    token: object = authentication_message.get('token') if authentication_message.get('type') == 'Authenticate' else None
+    if not isinstance(token, str):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason='Authentication required')
+        return
+    try:
+        current_user = await GetCurrentUser(token)
+    except HTTPException:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason='Invalid authorization')
+        return
+
+    # 認証できた接続だけを同じユーザーの部屋へ追加し、初期スナップショットを直ちに返す。
+    async with REMOTE_DEVICE_CONNECTIONS_LOCK:
+        REMOTE_DEVICE_SUBSCRIBERS.setdefault(current_user.id, set()).add(websocket)
+    await BroadcastRemoteDeviceList(current_user.id)
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        async with REMOTE_DEVICE_CONNECTIONS_LOCK:
+            subscribers = REMOTE_DEVICE_SUBSCRIBERS.get(current_user.id)
+            if subscribers is not None:
+                subscribers.discard(websocket)
+                if len(subscribers) == 0:
+                    del REMOTE_DEVICE_SUBSCRIBERS[current_user.id]
 
 
 @router.get('/devices', response_model=schemas.RemoteDeviceList)
@@ -138,17 +251,7 @@ async def RemoteDeviceListAPI(current_user: Annotated[User, Depends(GetCurrentUs
     """
 
     async with REMOTE_DEVICE_CONNECTIONS_LOCK:
-        devices = [
-            schemas.RemoteDevice(
-                device_id=connection.device_id,
-                device_name=connection.device_name,
-                last_seen_at=connection.last_seen_at,
-                state=connection.state,
-            )
-            for connection in REMOTE_DEVICE_CONNECTIONS.values()
-            if connection.user_id == current_user.id
-        ]
-    return schemas.RemoteDeviceList(devices=sorted(devices, key=lambda device: device.device_name))
+        return BuildRemoteDeviceList(current_user.id)
 
 
 @router.post('/devices/{device_id}/commands', response_model=schemas.RemoteCommandAccepted)

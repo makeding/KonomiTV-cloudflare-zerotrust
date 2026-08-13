@@ -863,6 +863,7 @@ onBeforeUnmount(() => {
         margin: 0 auto;
         perspective: 700px;
         @include tablet-vertical { display: none; }
+        @include smartphone-vertical { display: none; }
     }
 
     &__profile-thumbnails--keyframes {
@@ -1042,7 +1043,8 @@ onBeforeUnmount(() => {
         width: max-content;
         min-width: 100%;
         @include smartphone-vertical {
-            grid-template-columns: 52px 56px repeat(var(--episode-column-count), 145px);
+            // 局情報を残しつつ、狭い画面でも次の作品が見える幅にして横スクロールの存在を伝える。
+            grid-template-columns: 52px 56px repeat(var(--episode-column-count), clamp(120px, 34vw, 145px));
         }
     }
 

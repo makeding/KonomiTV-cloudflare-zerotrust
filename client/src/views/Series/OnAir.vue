@@ -80,7 +80,8 @@
                                 </button>
                                 <div v-else class="on-air-cell__placeholder"></div>
                             </div>
-                            <div v-if="expandedSeriesInRow(seriesRow)" class="on-air-week__episodes">
+                            <div v-if="expandedSeriesInRow(seriesRow)" class="on-air-week__episodes"
+                                :style="getExpandedDetailsStyle(seriesRow)">
                                 <div v-if="isSummaryLoading" class="on-air-week__loading">
                                     <v-skeleton-loader type="heading, image, paragraph, paragraph" />
                                 </div>
@@ -208,6 +209,16 @@ const expandedSeriesInRow = (seriesRow: Array<IOnAirSeries | null>): IOnAirSerie
     return seriesRow.find(series => series?.id === expandedSeriesID.value) ?? undefined;
 };
 
+const getExpandedDetailsStyle = (seriesRow: Array<IOnAirSeries | null>): Record<string, string> => {
+    const expandedWeekday = seriesRow.findIndex(series => series?.id === expandedSeriesID.value);
+    return {
+        '--expanded-weekday-column': String(Math.max(0, expandedWeekday) + 1),
+        ...(rememberedDetailsHeight.value > 0
+            ? {minHeight: `${rememberedDetailsHeight.value}px`}
+            : {}),
+    };
+};
+
 const syncExpandedSeriesFromRoute = async () => {
     const routeSeriesID = Array.isArray(route.params.series_id)
         ? route.params.series_id[0]
@@ -233,12 +244,17 @@ const syncExpandedSeriesFromRoute = async () => {
 const toggleSeries = async (seriesID: number) => {
     const targetCard = onAirGridElement.value?.querySelector<HTMLElement>(`[data-series-id="${seriesID}"]`);
     const targetTopBeforeUpdate = targetCard?.getBoundingClientRect().top;
+    const horizontalScrollBeforeUpdate = onAirGridElement.value?.scrollLeft;
     const isClosing = expandedSeriesID.value === seriesID;
     await router.push(isClosing ? '/series/on-air' : `/series/on-air/${seriesID}`);
 
     // 上の行で開いていた詳細が消えても、クリックしたカードの画面内位置を維持する。
     if (isClosing || targetCard === null || targetCard === undefined || targetTopBeforeUpdate === undefined) return;
     await nextTick();
+    // モバイルでは展開位置を現在の曜日のまま保ち、詳細追加によって月曜日側へ戻らないようにする。
+    if (onAirGridElement.value && horizontalScrollBeforeUpdate !== undefined) {
+        onAirGridElement.value.scrollLeft = horizontalScrollBeforeUpdate;
+    }
     window.scrollBy(0, targetCard.getBoundingClientRect().top - targetTopBeforeUpdate);
 };
 
@@ -400,7 +416,11 @@ watch(() => route.params.series_id, async () => {
         &__logo { --ch-sprite-width: 30; --ch-sprite-height: 18; --ch-sprite-border-radius: 3; }
     }
     .on-air-week__episodes {
-        min-width: calc(7 * min(36vw, 180px) + 6 * 8px);
+        // 選択した曜日のカード直下から、外側の週間スクロールの右方向へ適度な幅で展開する。
+        grid-column: var(--expanded-weekday-column);
+        width: calc(100vw - 16px);
+        max-width: 480px;
+        min-width: 0;
         min-height: 70vh;
     }
     .on-air-week__episodes-reserve {
