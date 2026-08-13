@@ -1525,16 +1525,16 @@ async def VideoReanalyzeAPI(
     try:
         file_path = anyio.Path(recorded_program.recorded_video.file_path)
         # メタデータ再解析を実行
-        ## wait_background_analysis = True 指定時は DriveIOLimiter を掛けるとデッドロックが発生するので、敢えて掛けない
-        ## どのみち内部で実行される RecordedScanTask で DriveIOLimiter を掛けているため、ここで掛ける必要はない
+        ## 重いサムネイル生成と CM 解析は RecordedScanTask の管理下で継続させ、
+        ## メタデータの DB 更新が終わった時点で API レスポンスを返す。
         await RecordedScanTask().processRecordedFile(
             file_path = file_path,
             # 既に DB に登録されている録画ファイルのメタデータを強制的に再解析する
             force_update = True,
             # 指定されたサービスID (複数チャンネル選択用)
             selected_service_id = selected_service_id,
-            # API レスポンスの返却をもってメタデータ再解析が完全に完了したことをユーザーに伝えるため、バックグラウンド解析タスクが完了するまで待つ
-            wait_background_analysis = True,
+            # CM 解析とサムネイル生成は数十秒以上掛かるため、HTTP リクエストを待たせない
+            wait_background_analysis = False,
             # ファイル情報のみを再解析するかどうか
             files_only = files_only,
         )

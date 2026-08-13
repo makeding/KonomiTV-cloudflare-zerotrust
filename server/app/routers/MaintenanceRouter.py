@@ -209,8 +209,6 @@ async def BatchScanAPI():
     ## asyncio.create_task() で実行することで、API への HTTP コネクションが切断されてもタスクが継続される
     if batch_scan_task is None:
         batch_scan_task = asyncio.create_task(BatchScan())
-        # タスクの実行が完了するまで待機
-        await batch_scan_task
     else:
         logging.warning('[MaintenanceRouter][BatchScanAPI] Batch scan of recording folders is already running.')
         raise HTTPException(
@@ -279,7 +277,7 @@ async def BackgroundAnalysisAPI():
                     logging.warning(f'{file_path}: File not found. Skipping...')
                     continue
 
-                # CM 区間検出とサムネイル生成を同時に実行
+                # CM 区間検出とサムネイル生成を順番に実行する
                 tasks: list[Coroutine[Any, Any, None]] = []
 
                 # CM 区間情報が未解析の場合、タスクに追加
@@ -311,9 +309,10 @@ async def BackgroundAnalysisAPI():
                         recorded_program = schemas.RecordedProgram.model_validate(db_recorded_program, from_attributes=True)
                         tasks.append(ThumbnailGenerator.fromRecordedProgram(recorded_program).generateAndSave())
 
-                # タスクが存在する場合、同時実行
+                # 同じ録画ファイルの全編走査を重ねず、CM とサムネイルを直列に実行する
                 if tasks:
-                    await asyncio.gather(*tasks)
+                    for task in tasks:
+                        await task
 
             except Exception as ex:
                 logging.error(f'{file_path}: Error in background analysis:', exc_info=ex)
@@ -327,8 +326,6 @@ async def BackgroundAnalysisAPI():
     ## asyncio.create_task() で実行することで、API への HTTP コネクションが切断されてもタスクが継続される
     if background_analysis_task is None:
         background_analysis_task = asyncio.create_task(BackgroundAnalysis())
-        # タスクの実行が完了するまで待機
-        await background_analysis_task
     else:
         logging.warning('[MaintenanceRouter][BackgroundAnalysisAPI] Background analysis task is already running.')
         raise HTTPException(

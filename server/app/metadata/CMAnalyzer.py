@@ -544,7 +544,7 @@ class GenericCMAnalyzer:
     async def resolveInputDescriptor(self, request: CMAnalyzerRequest) -> CMInputDescriptor:
         """FFprobe の実データから対象 stream を決定する。"""
 
-        process = await self._runProcess((
+        process = await self._runProcessWithDiagnostics((
             str(self.ffprobe_path),
             '-v', 'error',
             *self._inputFormatOptions(request),
@@ -553,7 +553,7 @@ class GenericCMAnalyzer:
             '-show_programs',
             '-of', 'json',
             str(request.recorded_file_path),
-        ), self._buildMediaEnvironment(request))
+        ), self._buildMediaEnvironment(request), request.work_directory / 'processes.log')
         if process.return_code != 0:
             raise OSError(process.diagnostic or 'FFprobe failed.')
         payload = json.loads(process.output)
@@ -1345,7 +1345,6 @@ class GenericCMAnalyzer:
                 None
             """
 
-            diagnostic_log_path.parent.mkdir(parents=True, exist_ok=True)
             with diagnostic_log_path.open('a', encoding='utf-8') as file:
                 file.write(diagnostic)
 

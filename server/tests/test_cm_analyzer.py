@@ -1017,6 +1017,7 @@ def test_playback_ffmpeg_environment_never_loads_private_cm_ffmpeg_libraries(
 def test_process_diagnostic_preserves_complete_command_output_and_log(tmp_path: Path) -> None:
     analyzer = CreateRuntime(tmp_path)
     diagnostic_log_path = tmp_path / 'work/processes.log'
+    diagnostic_log_path.parent.mkdir()
     stdout_text = 'stdout-start\n' + ('x' * 5000) + '\nstdout-end'
     stderr_text = 'stderr-start\n' + ('y' * 5000) + '\nstderr-end'
     command = (
