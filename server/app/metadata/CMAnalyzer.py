@@ -1361,6 +1361,11 @@ class GenericCMAnalyzer:
         """AviSynth/FFMS2用private libraryを優先するnative解析環境を返す。"""
 
         environment = self._buildMediaEnvironment(request)
+        # AviSynth+ 3.7.3 は初期化時に getenv("HOME") の戻り値を null check せず
+        ## std::string へ渡すため、HOME を設定しない systemd service では chapter_exe が
+        ## basic_string::_M_construct null not valid で即座に abort する。
+        ## job 専用ディレクトリを HOME にして、ユーザー側 AviSynth plugin の自動読込も避ける。
+        environment['HOME'] = str(request.work_directory)
         existing = environment.get('LD_LIBRARY_PATH')
         paths = [str(self.runtime_directory)]
         if existing:

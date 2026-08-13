@@ -277,7 +277,7 @@ async def BackgroundAnalysisAPI():
                     logging.warning(f'{file_path}: File not found. Skipping...')
                     continue
 
-                # CM 区間検出とサムネイル生成を順番に実行する
+                # CM 区間検出とサムネイル生成を同時に実行
                 tasks: list[Coroutine[Any, Any, None]] = []
 
                 # CM 区間情報が未解析の場合、タスクに追加
@@ -309,10 +309,9 @@ async def BackgroundAnalysisAPI():
                         recorded_program = schemas.RecordedProgram.model_validate(db_recorded_program, from_attributes=True)
                         tasks.append(ThumbnailGenerator.fromRecordedProgram(recorded_program).generateAndSave())
 
-                # 同じ録画ファイルの全編走査を重ねず、CM とサムネイルを直列に実行する
+                # タスクが存在する場合、同時実行
                 if tasks:
-                    for task in tasks:
-                        await task
+                    await asyncio.gather(*tasks)
 
             except Exception as ex:
                 logging.error(f'{file_path}: Error in background analysis:', exc_info=ex)

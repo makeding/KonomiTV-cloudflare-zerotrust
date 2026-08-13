@@ -1014,6 +1014,21 @@ def test_playback_ffmpeg_environment_never_loads_private_cm_ffmpeg_libraries(
     assert media_environment['LIBVA_DRIVER_NAME'] == 'test'
 
 
+def test_native_environment_supplies_private_home_for_systemd_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyzer = CreateRuntime(tmp_path)
+    request = CreateRequest(tmp_path)
+    monkeypatch.delenv('HOME', raising=False)
+
+    media_environment = analyzer._buildMediaEnvironment(request)  # pyright: ignore[reportPrivateUsage]
+    native_environment = analyzer._buildEnvironment(request)  # pyright: ignore[reportPrivateUsage]
+
+    assert 'HOME' not in media_environment
+    assert native_environment['HOME'] == str(request.work_directory)
+
+
 def test_process_diagnostic_preserves_complete_command_output_and_log(tmp_path: Path) -> None:
     analyzer = CreateRuntime(tmp_path)
     diagnostic_log_path = tmp_path / 'work/processes.log'
