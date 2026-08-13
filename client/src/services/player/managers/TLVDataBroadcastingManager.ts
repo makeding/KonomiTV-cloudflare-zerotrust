@@ -14,7 +14,6 @@ import type {
 } from 'libaribhtml5';
 
 import PlayerManager from '@/services/player/PlayerManager';
-import useChannelsStore from '@/stores/ChannelsStore';
 import usePlayerStore from '@/stores/PlayerStore';
 import useSettingsStore from '@/stores/SettingsStore';
 import { dayjs } from '@/utils';
@@ -227,7 +226,6 @@ class TLVDataBroadcastingManager implements PlayerManager {
 
     private readonly player: DPlayer;
     private readonly playback_mode: 'Live' | 'Video';
-    private readonly receiver_default_background_color: number;
     private readonly remocon_element: HTMLElement;
     private readonly remocon_data_broadcasting_element: HTMLElement;
     private viewport: HTMLDivElement | null = null;
@@ -257,15 +255,6 @@ class TLVDataBroadcastingManager implements PlayerManager {
     constructor(player: DPlayer, playback_mode: 'Live' | 'Video') {
         this.player = player;
         this.playback_mode = playback_mode;
-        const network_id = playback_mode === 'Live' ?
-            useChannelsStore().channel.current.network_id :
-            usePlayerStore().recorded_program.network_id;
-        const service_id = playback_mode === 'Live' ?
-            useChannelsStore().channel.current.service_id :
-            usePlayerStore().recorded_program.service_id;
-        // 放送局側が LCT 背景色を送っていない場合の実機互換色。
-        // NHK BS8K (NID11-SID102) は黒、それ以外の BS4K サービスは白を使う。
-        this.receiver_default_background_color = network_id === 11 && service_id === 102 ? 0x000000 : 0xffffff;
         this.remocon_element = document.querySelector('.watch-panel__remocon')!;
         this.remocon_data_broadcasting_element = this.remocon_element.querySelector('.remote-control-data-broadcasting')!;
     }
@@ -709,8 +698,9 @@ class TLVDataBroadcastingManager implements PlayerManager {
     };
 
     private applyLayoutBackgroundColor(background_color_rgb: number | null): void {
-        // LCT がある場合は放送局指定を優先し、ない場合だけサービス別の実機互換色へ戻す。
-        this.host?.setLctBackgroundColor(background_color_rgb ?? this.receiver_default_background_color);
+        // ARIB STD-B62 に従い、背景平面の色は受信中の LCT に指定された色だけを反映する。
+        // LCT に背景色がない場合は上書きを解除し、HTML アプリの背景色、透明なら受信機の黒背景へ戻す。
+        this.host?.setLctBackgroundColor(background_color_rgb);
     }
 
     private syncLayoutConfiguration(): void {

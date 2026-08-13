@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app.constants import JST
 from app.routers.RemoteControlRouter import (
@@ -8,6 +8,7 @@ from app.routers.RemoteControlRouter import (
     BuildRemoteDeviceList,
     GetBearerToken,
     RemoteDeviceConnection,
+    RequestRemoteDeviceStates,
 )
 
 
@@ -69,3 +70,33 @@ class RemoteControlRouterTest(unittest.TestCase):
             REMOTE_DEVICE_CONNECTIONS.clear()
 
         self.assertEqual([device.device_id for device in device_list.devices], ['living-room'])
+
+
+class RemoteControlRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncTearDown(self) -> None:
+        """各テストで追加したオンライン端末を破棄する。"""
+
+        REMOTE_DEVICE_CONNECTIONS.clear()
+
+    async def test_state_request_is_sent_only_to_requested_user_room(self) -> None:
+        """ブラウザ参加時の状態再送要求を同じユーザーのテレビだけへ送る。"""
+
+        user_websocket = AsyncMock()
+        other_user_websocket = AsyncMock()
+        REMOTE_DEVICE_CONNECTIONS[(1, 'living-room')] = RemoteDeviceConnection(
+            device_id='living-room',
+            device_name='リビング',
+            user_id=1,
+            websocket=user_websocket,
+        )
+        REMOTE_DEVICE_CONNECTIONS[(2, 'bedroom')] = RemoteDeviceConnection(
+            device_id='bedroom',
+            device_name='寝室',
+            user_id=2,
+            websocket=other_user_websocket,
+        )
+
+        await RequestRemoteDeviceStates(1)
+
+        user_websocket.send_json.assert_awaited_once_with({'type': 'RequestState'})
+        other_user_websocket.send_json.assert_not_awaited()

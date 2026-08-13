@@ -4756,10 +4756,10 @@ levn@^0.4.1:
     prelude-ls "^1.2.1"
     type-check "~0.4.0"
 
-libaribhtml5@^0.1.5:
-  version "0.1.5"
-  resolved "https://registry.yarnpkg.com/libaribhtml5/-/libaribhtml5-0.1.5.tgz#5793ec43a872281d09fe01c425217adefa8a3fcc"
-  integrity sha512-2DV4HJ4bqE8ped9wvzq6YGDlWLsBAoxDPgVt88ciHcyxenFIvzf7dSS0YFi/zzIoF7skDfBJDlQREMv3PHOWhg==
+libaribhtml5@^0.1.7:
+  version "0.1.7"
+  resolved "https://registry.npmjs.org/libaribhtml5/-/libaribhtml5-0.1.7.tgz#a0604428b3a6ad831fc96d4bd0f4ed2055e7ed5e"
+  integrity sha512-KGBJnM2agV0kv78L3MfFHlbjFcjXnI4g+ms/BwHpSwqZw+DhzUuxvYWWhVbwlEQ6fLn1cpEJ6olG1GWM2GmjUw==
 
 locate-path@^6.0.0:
   version "6.0.0"

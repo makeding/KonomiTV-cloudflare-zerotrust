@@ -125,6 +125,37 @@ async def BroadcastRemoteDeviceList(user_id: int) -> None:
                     del REMOTE_DEVICE_SUBSCRIBERS[user_id]
 
 
+async def RequestRemoteDeviceStates(user_id: int) -> None:
+    """
+    指定したユーザーのオンライン Komorebi へ、最新状態の再送を要求する。
+
+    Args:
+        user_id (int): 状態の再送を要求するユーザー ID。
+
+    Returns:
+        None: オンライン端末への要求送信完了後に戻る。
+    """
+
+    # ブラウザが部屋へ参加した時点の状態を確実に取得するため、同じユーザーの受信機だけへ再送要求を届ける。
+    # 送信中に接続一覧の更新を止めないよう、ロック内では接続のスナップショットだけを作る。
+    async with REMOTE_DEVICE_CONNECTIONS_LOCK:
+        connections = [
+            connection
+            for connection in REMOTE_DEVICE_CONNECTIONS.values()
+            if connection.user_id == user_id
+        ]
+
+    for connection in connections:
+        try:
+            await connection.websocket.send_json({'type': 'RequestState'})
+        except (RuntimeError, WebSocketDisconnect) as ex:
+            # 切断処理は受信側 WebSocket の finally に一元化し、ここでは他のテレビへの要求を継続する。
+            logging.warning(
+                f'[RemoteControlRouter] Failed to request remote device state. [device_id: {connection.device_id}]',
+                exc_info=ex,
+            )
+
+
 @router.websocket('/receiver/{device_id}')
 async def RemoteControlReceiverAPI(
     websocket: WebSocket,
@@ -223,6 +254,8 @@ async def RemoteDeviceSubscriberAPI(websocket: WebSocket):
     async with REMOTE_DEVICE_CONNECTIONS_LOCK:
         REMOTE_DEVICE_SUBSCRIBERS.setdefault(current_user.id, set()).add(websocket)
     await BroadcastRemoteDeviceList(current_user.id)
+    # 続けてオンラインの各テレビへ再送を要求し、ブラウザ参加直前の状態変化や古いスナップショットを解消する。
+    await RequestRemoteDeviceStates(current_user.id)
 
     try:
         while True:
