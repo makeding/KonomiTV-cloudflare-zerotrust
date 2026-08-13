@@ -8,9 +8,12 @@ import json
 import math
 import os
 import re
+import shlex
 import signal
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, cast
@@ -182,10 +185,29 @@ class _ProcessResult:
     return_code: int
     output: str
     error_output: str = ''
+    command: tuple[str, ...] = ()
+    started_at: str | None = None
+    elapsed_seconds: float | None = None
 
     @property
     def diagnostic(self) -> str:
-        return '\n'.join(part for part in (self.output, self.error_output) if part)[-4000:]
+        """外部プロセスを同じ条件で再現できる完全な診断情報を返す。"""
+
+        lines: list[str] = []
+        if self.command:
+            lines.append(f'Command: {shlex.join(self.command)}')
+        if self.started_at is not None:
+            lines.append(f'Started at: {self.started_at}')
+        if self.elapsed_seconds is not None:
+            lines.append(f'Elapsed: {self.elapsed_seconds:.3f} sec')
+        lines.extend((
+            f'Exit code: {self.return_code}',
+            '----- stdout -----',
+            self.output or '(empty)',
+            '----- stderr -----',
+            self.error_output or '(empty)',
+        ))
+        return '\n'.join(lines)
 
 
 @dataclass(frozen=True, slots=True)
@@ -655,7 +677,7 @@ class GenericCMAnalyzer:
             '-v', str(chapter_script),
             '-o', str(chapter_output),
             '-s', '10',
-        ), environment)
+        ), environment, request.work_directory / 'processes.log')
         # chapter_exe は AviSynth の読み込み失敗時にも 0 を返し、不正な出力を
         # 作ることがある。出力中の明示的な AviSynth エラーも工程失敗として扱う。
         if (
@@ -712,6 +734,7 @@ class GenericCMAnalyzer:
                 work_directory,
                 environment,
                 logo_worker_count,
+                request.work_directory / 'processes.log',
             )
             if logo_process.return_code != 0:
                 return self._failure(
@@ -752,7 +775,11 @@ class GenericCMAnalyzer:
             'SERVICE_ID': str(descriptor.program_id or request.service_id or 0),
             'CLI_OUT_PATH': str(work_directory / 'result'),
         })
-        jls_process = await self._runProcess(tuple(command), jls_environment)
+        jls_process = await self._runProcess(
+            tuple(command),
+            jls_environment,
+            request.work_directory / 'processes.log',
+        )
         if jls_process.return_code != 0 or trim_output.is_file() is False:
             return self._failure(
                 'JoinLogoScpFailed', jls_process, descriptor, decode_mode, warnings,
@@ -804,6 +831,7 @@ class GenericCMAnalyzer:
         work_directory: Path,
         environment: dict[str, str],
         worker_count: int,
+        diagnostic_log_path: Path,
     ) -> tuple[_ProcessResult, _LogoFrameOutput]:
         analysis_output = work_directory / 'logoframe-analysis.txt'
         command = [
@@ -817,7 +845,7 @@ class GenericCMAnalyzer:
         ]
         for index, logo_path in enumerate(logo_paths, start=1):
             command.extend((f'-logo{index}', str(logo_path)))
-        process = await self._runProcess(tuple(command), environment)
+        process = await self._runProcess(tuple(command), environment, diagnostic_log_path)
         if process.return_code != 0:
             return process, _LogoFrameOutput(None, None, None)
         list_path = analysis_output.with_name(f'{analysis_output.stem}_list.ini')
@@ -1005,7 +1033,7 @@ class GenericCMAnalyzer:
                 '-rf64', 'auto',
                 '-f', 'wav',
                 str(raw_audio_partial_path),
-            ), environment)
+            ), environment, request.work_directory / 'processes.log')
             if process.return_code != 0:
                 self._removeFiles(temporary_paths)
                 return process
@@ -1049,13 +1077,12 @@ class GenericCMAnalyzer:
     ) -> _ProcessResult:
         """全trackを一度だけindexし、完成後に原子的に公開する。"""
 
-        del request
         partial_path = index_path.with_name(f'{index_path.name}.partial')
         process = await self._runProcess((
             str(self.ffmsindex_path),
             '-f', '-t', '-1',
             str(media_path), str(partial_path),
-        ), environment)
+        ), environment, request.work_directory / 'processes.log')
         if process.return_code == 0 and partial_path.is_file():
             try:
                 os.replace(partial_path, index_path)
@@ -1072,7 +1099,7 @@ class GenericCMAnalyzer:
         process = await self._runProcess((
             str(self.ffprobe_path),
             '-v', 'error', '-show_streams', '-of', 'json', str(media_path),
-        ), self._buildMediaEnvironment(request))
+        ), self._buildMediaEnvironment(request), request.work_directory / 'processes.log')
         if process.return_code != 0:
             raise OSError(process.diagnostic or 'Prepared media FFprobe failed.')
         payload = json.loads(process.output)
@@ -1171,7 +1198,22 @@ class GenericCMAnalyzer:
         self,
         command: tuple[str, ...],
         environment: Mapping[str, str],
+        diagnostic_log_path: Path | None = None,
     ) -> _ProcessResult:
+        """
+        外部プロセスを実行し、完全な標準出力・標準エラーと再現条件を記録する。
+
+        Args:
+            command (tuple[str, ...]): 実行するコマンドと引数。
+            environment (Mapping[str, str]): プロセスへ渡す環境変数。
+            diagnostic_log_path (Path | None): 全工程の診断ログを追記するファイル。
+
+        Returns:
+            _ProcessResult: 終了コードと省略していない標準出力・標準エラー。
+        """
+
+        started_at = datetime.now().astimezone().isoformat(timespec='milliseconds')
+        started_monotonic = time.monotonic()
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -1181,7 +1223,16 @@ class GenericCMAnalyzer:
                 start_new_session=True,
             )
         except OSError as ex:
-            return _ProcessResult(-1, '', str(ex))
+            result = _ProcessResult(
+                -1,
+                '',
+                str(ex),
+                command,
+                started_at,
+                time.monotonic() - started_monotonic,
+            )
+            await self._appendProcessDiagnostic(diagnostic_log_path, result, environment)
+            return result
         try:
             stdout, stderr = await process.communicate()
         except asyncio.CancelledError:
@@ -1198,11 +1249,87 @@ class GenericCMAnalyzer:
                     pass
                 await process.wait()
             raise
-        return _ProcessResult(
+        result = _ProcessResult(
             process.returncode or 0,
             stdout.decode('utf-8', errors='replace').strip(),
             stderr.decode('utf-8', errors='replace').strip(),
+            command,
+            started_at,
+            time.monotonic() - started_monotonic,
         )
+        await self._appendProcessDiagnostic(diagnostic_log_path, result, environment)
+        return result
+
+    @staticmethod
+    async def _appendProcessDiagnostic(
+        diagnostic_log_path: Path | None,
+        result: _ProcessResult,
+        environment: Mapping[str, str],
+    ) -> None:
+        """
+        一つの外部プロセスの再現条件と完全な出力を job 共通ログへ追記する。
+
+        Args:
+            diagnostic_log_path (Path | None): 追記先。None の場合は保存しない。
+            result (_ProcessResult): 保存するプロセス実行結果。
+            environment (Mapping[str, str]): 実行時の環境変数。
+
+        Returns:
+            None
+        """
+
+        if diagnostic_log_path is None:
+            return
+
+        # native library・VAAPI・一時領域の差を比較できる値だけを残す。
+        ## token や credential を含み得る環境変数は値を出力しない。
+        environment_keys = (
+            'HOME',
+            'LANG',
+            'LC_ALL',
+            'LD_LIBRARY_PATH',
+            'LIBVA_DRIVER_NAME',
+            'LIBVA_DRIVERS_PATH',
+            'PATH',
+            'PWD',
+            'TMPDIR',
+            'USER',
+            'XDG_RUNTIME_DIR',
+        )
+        environment_lines = [
+            f'{key}={environment[key]}'
+            for key in environment_keys
+            if key in environment
+        ]
+        diagnostic = '\n'.join((
+            '========== CM analyzer process ==========',
+            f'Working directory: {os.getcwd()}',
+            '----- environment -----',
+            *(environment_lines or ['(no relevant variables set)']),
+            result.diagnostic,
+            '',
+        ))
+
+        def Append() -> None:
+            """
+            診断ログへ一回分の情報を追記する。
+
+            Returns:
+                None
+            """
+
+            diagnostic_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with diagnostic_log_path.open('a', encoding='utf-8') as file:
+                file.write(diagnostic)
+
+        try:
+            await asyncio.to_thread(Append)
+        except OSError as ex:
+            # 診断ログ自体の保存失敗で本来の解析結果を上書きしない。
+            logging.warning(
+                f'Failed to write CM analyzer diagnostic log. [path: {diagnostic_log_path}]',
+                exc_info=ex,
+            )
 
     def _buildEnvironment(self, request: CMAnalyzerRequest) -> dict[str, str]:
         """AviSynth/FFMS2用private libraryを優先するnative解析環境を返す。"""

@@ -3,6 +3,7 @@
 import asyncio
 import errno
 import json
+import sys
 from collections.abc import Mapping
 from dataclasses import replace
 from fractions import Fraction
@@ -1009,6 +1010,39 @@ def test_playback_ffmpeg_environment_never_loads_private_cm_ffmpeg_libraries(
     assert str(analyzer.runtime_directory) not in media_environment['LD_LIBRARY_PATH']
     assert native_environment['LD_LIBRARY_PATH'] == f'{analyzer.runtime_directory}:/host/libraries'
     assert media_environment['LIBVA_DRIVER_NAME'] == 'test'
+
+
+def test_process_diagnostic_preserves_complete_command_output_and_log(tmp_path: Path) -> None:
+    analyzer = CreateRuntime(tmp_path)
+    diagnostic_log_path = tmp_path / 'work/processes.log'
+    stdout_text = 'stdout-start\n' + ('x' * 5000) + '\nstdout-end'
+    stderr_text = 'stderr-start\n' + ('y' * 5000) + '\nstderr-end'
+    command = (
+        sys.executable,
+        '-c',
+        f'import sys; print({stdout_text!r}); print({stderr_text!r}, file=sys.stderr)',
+    )
+
+    result = asyncio.run(analyzer._runProcess(  # pyright: ignore[reportPrivateUsage]
+        command,
+        {'PATH': '/test/path', 'LC_ALL': 'C.UTF-8'},
+        diagnostic_log_path,
+    ))
+
+    assert result.return_code == 0
+    assert result.output == stdout_text
+    assert result.error_output == stderr_text
+    assert result.command == command
+    assert result.started_at is not None
+    assert result.elapsed_seconds is not None
+    assert stdout_text in result.diagnostic
+    assert stderr_text in result.diagnostic
+    diagnostic_log = diagnostic_log_path.read_text(encoding='utf-8')
+    assert f'Command: {sys.executable}' in diagnostic_log
+    assert 'Exit code: 0' in diagnostic_log
+    assert 'PATH=/test/path' in diagnostic_log
+    assert stdout_text in diagnostic_log
+    assert stderr_text in diagnostic_log
 
 
 def test_invalid_runtime_manifest_is_stably_unavailable(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ import typer
 
 from app import logging, schemas
 from app.config import LoadConfig
+from app.constants import LOGS_DIR
 from app.metadata.CMAnalyzer import (
     CMAnalyzerRequest,
     CMContainerFormat,
@@ -126,11 +127,13 @@ class CMSectionsDetector:
                 container_format=self.container_format,
             ))
             if result.status != 'completed':
+                diagnostic_directory = await self.__preserveFailureDiagnostics(work_directory)
                 logging.warning(
                     f'{self.file_path}: CM analysis failed. '
                     f'[status: {result.status}] [error_code: {result.error_code}] '
                     f'[decode_mode: {result.decode_mode}] [hardware_devices: {hardware_devices}] '
-                    f'[error_message: {result.error_message}]'
+                    f'[diagnostic_directory: {diagnostic_directory or "unavailable"}]\n'
+                    f'{result.error_message or "No error message was returned."}'
                 )
                 return None
             return [schemas.CMSection(
@@ -139,6 +142,54 @@ class CMSectionsDetector:
             ) for section in result.sections if section['start_time'] < float(self.duration_sec)]
         finally:
             await asyncio.to_thread(shutil.rmtree, work_directory, ignore_errors=True)
+
+    async def __preserveFailureDiagnostics(self, work_directory: pathlib.Path) -> pathlib.Path | None:
+        """
+        大容量の正規化媒体を除き、失敗工程の完全なログとテキスト成果物を永続化する。
+
+        Args:
+            work_directory (pathlib.Path): CM 解析 job の一時作業ディレクトリ。
+
+        Returns:
+            pathlib.Path | None: 保存できた診断ディレクトリ。保存に失敗した場合は None。
+        """
+
+        def Preserve() -> pathlib.Path:
+            """
+            診断に必要な小容量ファイルをログディレクトリへコピーする。
+
+            Returns:
+                pathlib.Path: 作成した永続診断ディレクトリ。
+            """
+
+            diagnostic_root = pathlib.Path(LOGS_DIR) / 'CMAnalysis'
+            diagnostic_root.mkdir(parents=True, exist_ok=True)
+            diagnostic_directory = pathlib.Path(tempfile.mkdtemp(
+                prefix=f'{self.file_path.stem}.',
+                dir=diagnostic_root,
+            ))
+
+            # prepared media と FFMS2 index は数 GB に達し得るため保存しない。
+            ## 全コマンド・環境・stdout・stderr は processes.log に省略せず記録済みで、
+            ## AviSynth/JLS の再現に必要なテキスト成果物だけを階層ごと保持する。
+            preserved_suffixes = {'.avs', '.cmchapter', '.ini', '.json', '.log', '.txt'}
+            for source_path in work_directory.rglob('*'):
+                if source_path.is_file() is False or source_path.suffix not in preserved_suffixes:
+                    continue
+                relative_path = source_path.relative_to(work_directory)
+                destination_path = diagnostic_directory / relative_path
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, destination_path)
+            return diagnostic_directory
+
+        try:
+            return await asyncio.to_thread(Preserve)
+        except OSError as ex:
+            logging.error(
+                f'{self.file_path}: Failed to preserve CM analysis diagnostics.',
+                exc_info=ex,
+            )
+            return None
 
     async def __detectFromChapterFile(self) -> list[schemas.CMSection] | None:
         """
