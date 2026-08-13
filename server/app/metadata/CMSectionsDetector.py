@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import shutil
+import tempfile
 import time
 
 import anyio
@@ -10,6 +12,11 @@ import typer
 
 from app import logging, schemas
 from app.config import LoadConfig
+from app.metadata.CMAnalyzer import (
+    CMAnalyzerRequest,
+    CMContainerFormat,
+    GenericCMAnalyzer,
+)
 from app.models.RecordedVideo import RecordedVideo
 
 
@@ -20,17 +27,29 @@ class CMSectionsDetector:
     .chapter.txt が存在しない場合は自前で CM 区間を検出する
     """
 
-    def __init__(self, file_path: anyio.Path, duration_sec: float) -> None:
+    def __init__(
+        self,
+        file_path: anyio.Path,
+        duration_sec: float,
+        container_format: CMContainerFormat,
+        service_id: int | None = None,
+    ) -> None:
         """
         録画 TS ファイルに含まれる CM 区間を検出するクラスを初期化する
 
         Args:
             file_path (anyio.Path): 動画ファイルのパス
             duration_sec (float): 動画の再生時間(秒)
+            container_format (CMContainerFormat): 動画ファイルのコンテナ形式
+            service_id (int | None): 録画対象のサービス ID
         """
 
         self.file_path = file_path
         self.duration_sec = duration_sec
+        # FFmpeg / FFprobe の入力 demuxer 選択に使うコンテナ形式
+        self.container_format: CMContainerFormat = container_format
+        # 複数サービスを含む入力から録画対象のストリームを選ぶためのサービス ID
+        self.service_id = service_id
 
 
     async def detectAndSave(self) -> None:
@@ -47,15 +66,14 @@ class CMSectionsDetector:
             cm_sections = await self.__detectFromChapterFile()
 
             # チャプターファイルが存在しない場合、join_logo_scp を使って自前で解析を試みる
-            if not cm_sections:
+            if cm_sections is None:
                 cm_sections = await self.__detectWithJLS()
 
-            # 自前でも解析できなかった（解析に失敗した）or CM 区間が1つも検出されなかった場合、
-            # バックグラウンド解析処理が再度実行された際の再解析を回避するために [] を設定する
-            ## [] は解析したが CM 区間がなかった/検出に失敗したことを表す
-            ## CM 区間解析はかなり計算コストが高い処理のため、一度解析に失敗した録画ファイルは再解析しない
+            # ランタイム不足や解析失敗時は未解析の None を維持する。
+            ## [] にすると「正常に解析したが CM なし」と区別できず、ランタイム導入後も再解析されないため。
             if cm_sections is None:
-                cm_sections = []
+                logging.warning(f'{self.file_path}: CM section detection did not complete. Keeping it pending.')
+                return
 
             # 検出結果をログに出力
             for cm_section in cm_sections:
@@ -88,8 +106,34 @@ class CMSectionsDetector:
             list[schemas.CMSection] | None: 解析に成功した場合は CM 区間のリストを返す
         """
 
-        # TODO: CM 区間を検出する処理を実装する
-        return None
+        # 4K upstream の GenericCMAnalyzer を、録画ファイルと同じファイルシステム上の一時領域で実行する。
+        ## 映像は FFmpeg で Matroska へ stream-copy し、音声だけ固定 PCM へ正規化してから
+        ## chapter_exe / logoframe / join_logo_scp に渡すため、サーバー側で映像エンコードは行わない。
+        work_directory = pathlib.Path(tempfile.mkdtemp(
+            prefix=f'.{self.file_path.stem}.konomitv-cm-',
+            dir=str(self.file_path.parent),
+        ))
+        try:
+            result = await GenericCMAnalyzer().analyze(CMAnalyzerRequest(
+                recorded_file_path=pathlib.Path(str(self.file_path)),
+                work_directory=work_directory,
+                service_id=self.service_id,
+                duration_seconds=self.duration_sec,
+                container_format=self.container_format,
+            ))
+            if result.status != 'completed':
+                logging.warning(
+                    f'{self.file_path}: CM analysis failed. '
+                    f'[status: {result.status}] [error_code: {result.error_code}] '
+                    f'[error_message: {result.error_message}]'
+                )
+                return None
+            return [schemas.CMSection(
+                start_time=section['start_time'],
+                end_time=min(section['end_time'], float(self.duration_sec)),
+            ) for section in result.sections if section['start_time'] < float(self.duration_sec)]
+        finally:
+            await asyncio.to_thread(shutil.rmtree, work_directory, ignore_errors=True)
 
 
     async def __detectFromChapterFile(self) -> list[schemas.CMSection] | None:
@@ -229,6 +273,8 @@ if __name__ == "__main__":
         detector = CMSectionsDetector(
             file_path = anyio.Path(recorded_program.recorded_video.file_path),
             duration_sec = recorded_program.recorded_video.duration,
+            container_format = recorded_program.recorded_video.container_format,
+            service_id = recorded_program.service_id,
         )
 
         # CM 区間を検出

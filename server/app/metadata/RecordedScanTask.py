@@ -1634,17 +1634,18 @@ class RecordedScanTask:
             async with ProcessLimiter.getSemaphore('RecordedScanTask'):
                 # DriveIOLimiter で同一 HDD に対してのバックグラウンドタスクの同時実行数を原則1セッションに制限
                 async with DriveIOLimiter.getSemaphore(file_path):
-                    # MMT/TLV はパッチ済み FFmpeg でサムネイルを生成できるが、CMSectionsDetector はまだ直接扱えない。
-                    # サムネイル生成は全形式で実行し、CM 区間検出だけを MMT/TLV で省略する。
+                    # サムネイル生成と CM 区間検出を並列実行する。
+                    ## MMT/TLV は CMSectionsDetector 側で libaribtlv demuxer を明示し、
+                    ## パッチ済み同梱 FFmpeg から通常の解析用媒体へ無再エンコードで正規化する。
                     background_tasks = [
                         ThumbnailGenerator.fromRecordedProgram(recorded_program).generateAndSave(),
+                        CMSectionsDetector(
+                            file_path,
+                            recorded_program.recorded_video.duration,
+                            recorded_program.recorded_video.container_format,
+                            recorded_program.service_id,
+                        ).detectAndSave(),
                     ]
-                    if recorded_program.recorded_video.container_format != 'MMT/TLV':
-                        background_tasks.append(
-                            CMSectionsDetector(file_path, recorded_program.recorded_video.duration).detectAndSave()
-                        )
-                    else:
-                        logging.info(f'{file_path}: CM section detection is skipped for MMT/TLV recordings.')
                     await asyncio.gather(*background_tasks)
             logging.info(f'{file_path}: Background analysis task completed.')
 

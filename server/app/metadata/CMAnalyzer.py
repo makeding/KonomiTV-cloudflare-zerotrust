@@ -13,9 +13,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, TypeAlias, cast
 
 from typing_extensions import TypedDict
+
+from app.constants import LIBRARY_PATH
 
 
 CMAnalyzerStatus = Literal[
@@ -25,6 +27,7 @@ CMAnalyzerStatus = Literal[
     'interrupted',
 ]
 CMDecodeMode = Literal['Hardware', 'CPU']
+CMContainerFormat: TypeAlias = Literal['MPEG-TS', 'MPEG-4', 'MMT/TLV']
 CMAnalysisStage = Literal[
     'PreparingMedia',
     'IndexingMedia',
@@ -105,6 +108,7 @@ class CMAnalyzerRequest:
     has_variable_video_format: bool = False
     input_descriptor: CMInputDescriptor | None = None
     stage_callback: CMAnalysisStageCallback | None = None
+    container_format: CMContainerFormat = 'MPEG-TS'
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +237,7 @@ class GenericCMAnalyzer:
 
     def __init__(
         self,
-        runtime_directory: Path = Path('/code/server/thirdparty/CMAnalysis'),
+        runtime_directory: Path | None = None,
         ffms2_path: Path | None = None,
         ffmsindex_path: Path | None = None,
         chapter_executable_path: Path | None = None,
@@ -241,9 +245,11 @@ class GenericCMAnalyzer:
         join_logo_scp_path: Path | None = None,
         join_logo_scp_command_path: Path | None = None,
         runtime_manifest_path: Path | None = None,
-        ffmpeg_path: Path = Path('/code/server/thirdparty/FFmpeg8/ffmpeg8.elf'),
-        ffprobe_path: Path = Path('/code/server/thirdparty/FFmpeg8/ffprobe8.elf'),
+        ffmpeg_path: Path | None = None,
+        ffprobe_path: Path | None = None,
     ) -> None:
+        if runtime_directory is None:
+            runtime_directory = Path(LIBRARY_PATH['FFmpeg']).parent.parent / 'CMAnalysis'
         self.runtime_directory = runtime_directory
         self.ffms2_path = ffms2_path or runtime_directory / 'libffms2.so'
         self.ffmsindex_path = ffmsindex_path or runtime_directory / 'ffmsindex'
@@ -254,8 +260,8 @@ class GenericCMAnalyzer:
             join_logo_scp_command_path or runtime_directory / 'JL/JL_標準.txt'
         )
         self.runtime_manifest_path = runtime_manifest_path or runtime_directory / 'Runtime-Manifest.json'
-        self.ffmpeg_path = ffmpeg_path
-        self.ffprobe_path = ffprobe_path
+        self.ffmpeg_path = ffmpeg_path or Path(LIBRARY_PATH['FFmpeg'])
+        self.ffprobe_path = ffprobe_path or Path(LIBRARY_PATH['FFprobe'])
 
     @property
     def runtimeFingerprint(self) -> dict[str, object]:
@@ -500,6 +506,7 @@ class GenericCMAnalyzer:
         process = await self._runProcess((
             str(self.ffprobe_path),
             '-v', 'error',
+            *self._inputFormatOptions(request),
             '-show_format',
             '-show_streams',
             '-show_programs',
@@ -959,6 +966,7 @@ class GenericCMAnalyzer:
                 str(self.ffmpeg_path),
                 '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
                 '-fflags', '+genpts+discardcorrupt',
+                *self._inputFormatOptions(request),
                 '-i', str(request.recorded_file_path),
                 # video-only Matroska: chapterとlogoがこの同じ媒体・indexを読む。
                 '-map', f'0:{descriptor.video_stream_index}',
@@ -1068,6 +1076,16 @@ class GenericCMAnalyzer:
     ) -> None:
         if request.stage_callback is not None:
             await request.stage_callback(stage, progress)
+
+    @staticmethod
+    def _inputFormatOptions(request: CMAnalyzerRequest) -> tuple[str, ...]:
+        """録画コンテナに応じて FFmpeg / FFprobe の入力 demuxer を固定する。"""
+
+        # Raw TLV は拡張子や先頭バイトだけでは安定して自動判定できないため、
+        # libaribtlv を組み込んだ同梱 FFmpeg に demuxer を明示する。
+        if request.container_format == 'MMT/TLV':
+            return ('-f', 'libaribtlv')
+        return ()
 
     @classmethod
     def _parseCMSections(

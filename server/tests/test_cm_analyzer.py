@@ -904,6 +904,23 @@ def test_analyzer_requires_precreated_private_workspace(tmp_path: Path) -> None:
     assert result.error_code == 'TemporaryStorageUnavailable'
 
 
+def test_tlv_input_forces_libaribtlv_for_probe_and_media_preparation(tmp_path: Path) -> None:
+    analyzer = CreateRuntime(tmp_path)
+    payload = ProbePayload(format_name='libaribtlv', codec='hevc')
+    commands: list[tuple[str, ...]] = []
+    InstallSuccessfulProcesses(analyzer, payload, commands)
+    request = replace(CreateRequest(tmp_path), container_format='MMT/TLV')
+
+    result = asyncio.run(analyzer.analyze(request))
+
+    assert result.status == 'completed'
+    source_probe = next(command for command in commands if command[0] == str(analyzer.ffprobe_path))
+    media_preparation = next(command for command in commands if command[0] == str(analyzer.ffmpeg_path))
+    assert source_probe[source_probe.index('-f') + 1] == 'libaribtlv'
+    assert media_preparation[media_preparation.index('-f') + 1] == 'libaribtlv'
+    assert media_preparation[media_preparation.index('-c:v') + 1] == 'copy'
+
+
 def test_jls_output_requires_ordered_determinate_trim_ranges() -> None:
     assert GenericCMAnalyzer._parseCMSections(
         'Trim(0,899) ++ Trim(1200,1799)',

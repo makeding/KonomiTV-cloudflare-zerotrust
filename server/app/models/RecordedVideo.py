@@ -56,7 +56,7 @@ class RecordedVideo(TortoiseModel):
         ## 空配列は未キャッシュ状態を表し、再生可否の判定には使わない
         fields.JSONField(default=[], encoder=lambda x: json.dumps(x, ensure_ascii=False)))  # type: ignore
     cm_sections = cast(TortoiseField[list[CMSection] | None],
-        # None は未解析状態を表す ([] は解析したが CM 区間がなかった/検出に失敗したことを表す)
+        # None は未解析状態または解析失敗を表す ([] は正常に解析したが CM 区間がなかったことを表す)
         fields.JSONField(default=None, encoder=lambda x: json.dumps(x, ensure_ascii=False), null=True))  # type: ignore
     thumbnail_info = cast(TortoiseField[ThumbnailInfo | None],
         # None はサムネイル未生成か、旧仕様から移行しきれていないことを表す
