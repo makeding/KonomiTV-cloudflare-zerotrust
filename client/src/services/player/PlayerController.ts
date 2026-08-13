@@ -369,9 +369,10 @@ class PlayerController {
             player_store.recorded_program.recorded_video.status === 'Recording';
 
         // シーク秒数が指定されていない（初回ロード時）は、視聴履歴があればその位置から再生を開始する
-        // なければ録画開始マージン + 2秒シークする
-        // 2秒プラスしているのは、実際の放送波では EPG (EIT[p/f]) の変更より2〜4秒後に実際に番組が切り替わる場合が多いため
-        // この誤差は放送局や TOT 精度によっておそらく異なるので、本編の最初が削れないように2秒のプラスに留めている
+        // 視聴履歴がなければ設定に応じてファイルの先頭、または録画開始マージン + 2秒から再生する
+        // 番組の開始時刻を選んだときに2秒プラスしているのは、実際の放送波では EPG (EIT[p/f]) の変更より
+        // 2〜4秒後に実際に番組が切り替わる場合が多いため。この誤差は放送局や TOT 精度によっておそらく異なるので、
+        // 本編の最初が削れないように2秒のプラスに留めている
         // seek_seconds はこの後 DPlayer を初期化した後の初回シーク時に参照される
         let seek_seconds = options.seek_seconds;
         let is_initial_video_playback_without_history = false;
@@ -384,9 +385,12 @@ class PlayerController {
                     seek_seconds = history.last_playback_position;
                     console.log(`\u001b[31m[PlayerController] Seeking to ${seek_seconds} seconds. (Watched History)`);
                 } else {
-                    seek_seconds = player_store.recorded_program.recording_start_margin + 2;
+                    seek_seconds = settings_store.settings.video_playback_start_position === 'FileStart' ?
+                        0 : player_store.recorded_program.recording_start_margin + 2;
                     is_initial_video_playback_without_history = true;
-                    console.log(`\u001b[31m[PlayerController] Seeking to ${seek_seconds} seconds. (Recording Start Margin + 2)`);
+                    const playback_start_position_label = settings_store.settings.video_playback_start_position === 'FileStart' ?
+                        'File Start' : 'Recording Start Margin + 2';
+                    console.log(`\u001b[31m[PlayerController] Seeking to ${seek_seconds} seconds. (${playback_start_position_label})`);
                 }
             } else {
                 // ライブ再生時は使わない値だが、型エラー回避のために 0 を設定
@@ -399,6 +403,7 @@ class PlayerController {
         if (
             this.playback_mode === 'Video' &&
             is_initial_video_playback_without_history === true &&
+            settings_store.settings.video_playback_start_position === 'ProgramStart' &&
             settings_store.settings.video_auto_skip_cm === true
         ) {
             const cm_skip_target = RecordedCMSkipManager.getInitialSkipTarget(

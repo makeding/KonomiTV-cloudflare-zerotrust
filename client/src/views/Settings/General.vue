@@ -107,6 +107,17 @@
                     v-model="settingsStore.settings.show_original_broadcast_time_during_playback">
                 </v-switch>
             </div>
+            <div class="settings__item">
+                <div class="settings__item-heading">録画番組の再生開始位置</div>
+                <div class="settings__item-label">
+                    視聴履歴がない録画番組を最初に再生するときの開始位置を設定します。デフォルトは番組の開始時刻です。<br>
+                    視聴履歴がある録画番組は、この設定にかかわらず前回の続きから再生されます。<br>
+                </div>
+                <v-select class="settings__item-form" color="primary" variant="outlined" hide-details
+                    :density="is_form_dense ? 'compact' : 'default'"
+                    :items="video_playback_start_position" v-model="settingsStore.settings.video_playback_start_position">
+                </v-select>
+            </div>
             <v-divider class="mt-6"></v-divider>
             <div class="settings__item">
                 <div class="settings__item-heading">デフォルトのパネルの表示状態</div>
@@ -269,6 +280,12 @@ export default defineComponent({
 
             // 番組表の表示設定のモーダルを表示するか
             timetable_settings_modal: false,
+
+            // 録画番組の再生開始位置の選択肢
+            video_playback_start_position: [
+                {title: 'ファイルの先頭', value: 'FileStart'},
+                {title: '番組の開始時刻', value: 'ProgramStart'},
+            ],
 
             // デフォルトのパネルの表示状態の選択肢
             panel_display_state: [
