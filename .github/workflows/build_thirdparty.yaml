@@ -29,12 +29,12 @@ env:
   ## 公式 FFmpeg の固定タグに、libaribtlv を利用する MMT/TLV 対応パッチを適用してビルドする
   ## ビルド環境には BtbN/FFmpeg-Builds の公開済み Docker イメージを使うが、FFmpeg 本体は必ずここで再ビルドする
   ## ref: https://github.com/FFmpeg/FFmpeg/releases/tag/n8.1.2
-  ## ref: https://github.com/makeding/libaribtlv/releases/tag/v0.2.0
+  ## ref: https://github.com/makeding/libaribtlv
   ## ref: https://github.com/BtbN/FFmpeg-Builds
   FFMPEG_SOURCE_TAG: 'n8.1.2'
   FFMPEG_BUILDS_COMMIT_HASH: '8c736b2d6fe5da2a10a8896d01e53bfb0ca4f665'
-  FFMPEG_LIBARIBTLV_COMMIT_HASH: '29cc14822fae9cb8cd06bbfdd584d06aa7a6a1fa'
-  LIBARIBTLV_COMMIT_HASH: '91bafe32479141c660a334cc03aed1f9869a18a5'
+  FFMPEG_LIBARIBTLV_COMMIT_HASH: '2929c086013e8a5d6ccba9bba951176d9913a128'
+  LIBARIBTLV_COMMIT_HASH: 'd72b3d43e61a89afe998a1dcf4c8caf101cfba36'
   # QSVEncC・NVEncC・VCEEncC・rkmppenc のバージョン
   ## ref: https://github.com/rigaya/QSVEnc/releases
   ## ref: https://github.com/rigaya/NVEnc/releases
