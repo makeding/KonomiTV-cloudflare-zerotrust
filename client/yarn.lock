@@ -2311,10 +2311,10 @@ aribb24.js@^1.11.0, aribb24.js@~1.11.5:
   resolved "https://registry.yarnpkg.com/aribb24.js/-/aribb24.js-1.11.5.tgz#fb4dfc5bc4b10625c0d92987bd4e833d3faa532e"
   integrity sha512-WEprzYs18FgAIxX885X7YLrgIsjmAecodm6tjmUUckX0kp2Lj9uSdOo+1vxgI7dtEEhhPSB5ocJhDIv560CRFg==
 
-aribb62.js@^0.1.11:
-  version "0.1.11"
-  resolved "https://registry.yarnpkg.com/aribb62.js/-/aribb62.js-0.1.11.tgz#342b4c1b7cec30aac1a07a4c52f1157fa67c4261"
-  integrity sha512-+pYLk/AKCOqvqnQDJzARMLXggGQ23nIZkPlutwXaIkQLai2qdkYlA/mjJCAxEs8X4CdI20QSYITyy9MIb5zkzg==
+aribb62.js@^0.2.0:
+  version "0.2.0"
+  resolved "https://registry.yarnpkg.com/aribb62.js/-/aribb62.js-0.2.0.tgz#fb9c6c627632e9468208dc3953befbd8f1221e7a"
+  integrity sha512-v/dm9e6Kv+HAk7g4ye8UM/7IzJwSnT865v71Va7ouOdJH1rpgFRJRYtx9iZqwFwbZfzORUjnit2OxBCsiw9muQ==
 
 array-buffer-byte-length@^1.0.1, array-buffer-byte-length@^1.0.2:
   version "1.0.2"
@@ -3100,15 +3100,15 @@ dotenv@^16.3.1:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
   integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
 
-"dplayer@github:makeding/DPlayer#eb1cfd1bb5ca215ac7c467cafe59159baaec7418":
-  version "1.32.8"
-  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/eb1cfd1bb5ca215ac7c467cafe59159baaec7418"
+"dplayer@github:makeding/DPlayer#b594b661e2dd57b4bf67a2974d7fff6315532168":
+  version "1.32.9"
+  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/b594b661e2dd57b4bf67a2974d7fff6315532168"
   dependencies:
     aribb24.js "~1.11.5"
-    aribb62.js "^0.1.11"
+    aribb62.js "^0.2.0"
     axios "^1.7.2"
     balloon-css "^1.2.0"
-    tlvdemux "^0.1.11"
+    tlvdemux "^0.2.0"
 
 dunder-proto@^1.0.0, dunder-proto@^1.0.1:
   version "1.0.1"
@@ -6390,10 +6390,10 @@ tinyspy@^3.0.2:
   resolved "https://registry.yarnpkg.com/tinyspy/-/tinyspy-3.0.2.tgz#86dd3cf3d737b15adcf17d7887c84a75201df20a"
   integrity sha512-n1cw8k1k0x4pgA2+9XrOkFydTerNcJ1zWCO5Nn9scWHTD+5tp8dghT2x1uduQePZTZgd3Tupf+x9BxJjeJi77Q==
 
-tlvdemux@^0.1.11:
-  version "0.1.11"
-  resolved "https://registry.yarnpkg.com/tlvdemux/-/tlvdemux-0.1.11.tgz#4fb0fb93d53680af95d4dc46d816438533783166"
-  integrity sha512-YCfhnnZyhWaQauIeMcpjN2bkfL1DEtUJf0ewBkQ75WSPtSyvItUZfvZvKm0abH8/zNCTNQmm+79i6AJCNxU4Sg==
+tlvdemux@^0.2.0:
+  version "0.2.0"
+  resolved "https://registry.yarnpkg.com/tlvdemux/-/tlvdemux-0.2.0.tgz#9041a3b10b772935c3069bc3933e8fe961acb91c"
+  integrity sha512-7feYDGpIxcbJBLVKglO0D8tclL676d3BD3HEdbd1xmYj8FkUXJbZ9kGdUnuWJ6pgXbBnLWzsgZPzIDEt1vyzsQ==
 
 to-regex-range@^5.0.1:
   version "5.0.1"

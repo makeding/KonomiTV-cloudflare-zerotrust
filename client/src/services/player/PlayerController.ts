@@ -66,10 +66,6 @@ class PlayerController {
     private static readonly PASSTHROUGH_LEGACY_QUALITY_NAMES = ['Raw MMTS', 'TLV パススルー'];
     private static readonly PASSTHROUGH_LEGACY_SECONDARY_QUALITY_NAMES = ['TLV パススルー（降雨対応）'];
 
-    // 選択中の通常放送で短時間にストリーム不連続が頻発した場合、降雨放送へ自動切り替えするための判定条件
-    private static readonly TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_WINDOW_MS = 30 * 1000;
-    private static readonly TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_THRESHOLD = 4;
-
     // BS4K/BS8K の TLV/MMT では HEVC 映像アセットが複数存在する
     // 降雨放送対応チャンネルでは通常/降雨映像の両方を packet_id で明示する
     private static readonly BS4K_TLV_PRIMARY_VIDEO_PACKET_ID = 0xf300;
@@ -155,9 +151,6 @@ class PlayerController {
     // DPlayer 標準の音声選択チェックアイコン
     // TLV のトラック列挙で項目を作り直しても、初期 DOM から取得した SVG を保持し続ける。
     private tlv_audio_check_icon_html: string | null = null;
-
-    // ライブ視聴中に、通常放送の選択中映像で検出したストリーム不連続の発生時刻を保持する
-    private tlv_secondary_auto_switch_discontinuity_timestamps_ms: number[] = [];
 
 
     /**
@@ -292,7 +285,6 @@ class PlayerController {
         this.is_live_startup_temporary_muted = false;
         this.ignore_tlv_video_switch_error_until = 0;
         this.tlv_selected_audio_packet_id_override = null;
-        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
         this.is_offline_fallback_in_progress = false;
 
         // PlayerStore にプレイヤーを初期化したことを通知する
@@ -1089,8 +1081,8 @@ class PlayerController {
         };
         dplayer_instance.on('tlv_ready', syncTLVTracks);
         dplayer_instance.on('tlv_tracks', syncTLVTracks);
-        dplayer_instance.on('tlv_broadcast_clock', (clock: {discontinuity?: boolean}) => {
-            this.handleTLVBroadcastDiscontinuityForSecondaryAutoSwitch(clock);
+        dplayer_instance.on('tlv_layer_change', (layer: DPlayerType.TLVLayerChange) => {
+            this.handleTLVLayerChangeForSecondaryAutoSwitch(layer);
         });
         dplayer_instance.on('tlv_error', (error: unknown) => {
             console.error('\u001b[31m[PlayerController] TLV playback error:', error);
@@ -1551,9 +1543,6 @@ class PlayerController {
         // mpegts.js などの DPlayer のプラグインは画質切り替え時に一旦破棄されるため、再度イベントハンドラーを登録する必要がある
         const on_init_or_quality_change = async () => {
             assert(this.player !== null);
-
-            // 画質切り替え後に以前の不連続回数が残ると、別画質で即座に自動切り替えしてしまうためクリアする
-            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
 
             // ローディング中の背景写真をランダムに変更
             player_store.background_url = PlayerUtils.generatePlayerBackgroundURL();
@@ -2845,71 +2834,18 @@ class PlayerController {
 
 
     /**
-     * tlvdemux が選択中の通常映像で検出したストリーム不連続を数え、頻発時だけ降雨放送へ切り替える
+     * tlvdemux C++ が完了した自動映像 layer 切替を、DPlayer の画質 UI に反映する。
      */
-    private handleTLVBroadcastDiscontinuityForSecondaryAutoSwitch(clock: {discontinuity?: boolean}): void {
-
-        // HTMLVideoElement の waiting は通信速度やデコーダー停止でも発生するため、放送ストリームの不連続だけを判定に使う
-        if (clock.discontinuity !== true || this.playback_mode !== 'Live') {
-            return;
-        }
-
-        // 初回のトラック選択でも discontinuity が立つため、実際の再生開始後だけを判定対象にする
-        const player_store = usePlayerStore();
-        if (
-            this.player === null ||
-            this.player.video.paused === true ||
-            player_store.is_loading === true ||
-            player_store.live_stream_status !== 'ONAir'
-        ) {
-            return;
-        }
-
-        // 通常放送の Raw TLV 再生中でなければ、それ以前の不連続履歴を破棄する
-        if (
-            this.player.quality?.type !== 'tlv' ||
-            this.player.quality.name !== PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME
-        ) {
-            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
-            return;
-        }
-
-        // 同じ Raw TLV ストリーム内に降雨放送の映像 packet_id がある場合だけ自動切り替えできる
+    private handleTLVLayerChangeForSecondaryAutoSwitch(layer: DPlayerType.TLVLayerChange): void {
+        if (this.player === null || this.playback_mode !== 'Live' || this.player.quality?.type !== 'tlv') return;
         const qualities = this.player.options.video.quality;
         const secondary_quality_index = qualities?.findIndex((quality) => (
             quality.name === PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME &&
-            quality.type === 'tlv' &&
-            quality.tlv?.videoPacketId !== undefined
+            quality.type === 'tlv' && quality.tlv?.videoPacketId === layer.videoTrack.packetId
         )) ?? -1;
-        if (qualities === undefined || secondary_quality_index === -1) {
-            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
-            return;
-        }
+        if (!qualities || secondary_quality_index < 0) return;
 
-        // 30 秒のスライディングウィンドウ内に、選択中の映像で発生した不連続だけを保持する
-        const now = performance.now();
-        const oldest_accepted_timestamp = now - PlayerController.TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_WINDOW_MS;
-        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms =
-            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms.filter((timestamp) => timestamp >= oldest_accepted_timestamp);
-        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms.push(now);
-
-        if (
-            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms.length <
-            PlayerController.TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_THRESHOLD
-        ) {
-            return;
-        }
-
-        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
         const secondary_quality = qualities[secondary_quality_index];
-        const secondary_video_packet_id = secondary_quality.tlv?.videoPacketId;
-        if (secondary_video_packet_id === undefined) {
-            return;
-        }
-        console.warn('\u001b[31m[PlayerController] Frequent TLV video discontinuities detected. Switching to rain-fade fallback video.');
-        this.player.selectTLVVideoTrack(secondary_video_packet_id);
-
-        // selectTLVVideoTrack() は同じ Player 内のトラックだけを切り替えるため、DPlayer の画質表示も同じ項目へ同期する
         const player = this.player as any;
         player.qualityIndex = secondary_quality_index;
         player.quality = secondary_quality;
