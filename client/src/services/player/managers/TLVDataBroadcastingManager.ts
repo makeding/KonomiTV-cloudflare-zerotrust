@@ -14,6 +14,7 @@ import type {
 } from 'libaribhtml5';
 
 import PlayerManager from '@/services/player/PlayerManager';
+import useChannelsStore from '@/stores/ChannelsStore';
 import usePlayerStore from '@/stores/PlayerStore';
 import useSettingsStore from '@/stores/SettingsStore';
 import { dayjs } from '@/utils';
@@ -479,6 +480,7 @@ class TLVDataBroadcastingManager implements PlayerManager {
         this.player.plugins.tlv?.setSubtitleSuppressedComponentTags([]);
         this.host?.clearBroadcastClock();
         this.host?.clearProgramInfo();
+        this.seedProgramIdentity();
         // レイアウト設定は選局中のサービス / セッションだけに属するため、
         // 非同期の VFS 構築より先に消して、前のチャンネルの LCT 背景色を残さない。
         this.applyLayoutBackgroundColor(null);
@@ -496,6 +498,20 @@ class TLVDataBroadcastingManager implements PlayerManager {
             console.error('[TLVDataBroadcastingManager] Failed to begin VFS session.', error);
             this.toggleRemoconLoading(false);
         }
+    }
+
+    private seedProgramIdentity(): void {
+        // MH-AIT は MH-EIT[present] より先に起動できる。放送アプリが起動直後から現在サービスを
+        // 判定できるよう、KonomiTV が既に持つ選局情報だけを先に渡し、完全な番組情報は MH-EIT で上書きする。
+        const source = this.playback_mode === 'Live' ?
+            useChannelsStore().channel.current :
+            usePlayerStore().recorded_program;
+        if (source.service_id === null || source.service_id === 0) return;
+        const program_info: ProgramInfo = {service_id: source.service_id};
+        if (source.network_id !== null && source.network_id !== 0) {
+            program_info.original_network_id = source.network_id;
+        }
+        this.host?.setProgramInfo(program_info);
     }
 
     private readonly handleResourcesReset = (): void => {
