@@ -362,7 +362,7 @@ const handleSettingCoverClick = () => {
     .dplayer-setting-box {
         z-index: 10 !important;
         &.dplayer-setting-box-audio {
-            clip-path: inset(calc(100% - var(--mmts-audio-panel-height, 114px)) 0 0 round 7px) !important;
+            clip-path: inset(calc(100% - var(--tlv-audio-panel-height, 114px)) 0 0 round 7px) !important;
         }
         @include tablet-vertical {
             height: calc(100% - 60px) !important;

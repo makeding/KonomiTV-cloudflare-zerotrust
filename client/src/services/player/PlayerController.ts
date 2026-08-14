@@ -47,15 +47,10 @@ class PlayerController {
     // 4 秒程度の遅延を許容する
     private static readonly LIVE_PLAYBACK_BUFFER_SECONDS = 4.0;
 
-    // ライブ視聴: Raw MMTS 向けの再生開始待ちバッファ (秒単位)
+    // ライブ視聴: Raw TLV 向けの再生開始待ちバッファ (秒単位)
     // TLV/MMT の境界端数は demuxer 自身が保持できるため、低遅延時は大きな IO stash を置かず
     // CRA から音声を含む再生可能範囲が短く揃う分だけ待つ。
-    private static readonly LIVE_MMTS_PLAYBACK_BUFFER_SECONDS = 0.75;
-
-    // ライブ視聴: Raw MMTS 向けの SourceBuffer 保持時間 (秒単位)
-    // ブラウザ側のメモリ肥大を避けつつ、多少の揺らぎや手動同期には耐えられるだけの後方バッファを残す
-    private static readonly LIVE_MMTS_AUTO_CLEANUP_MAX_BACKWARD_DURATION = 90;
-    private static readonly LIVE_MMTS_AUTO_CLEANUP_MIN_BACKWARD_DURATION = 45;
+    private static readonly LIVE_TLV_PLAYBACK_BUFFER_SECONDS = 0.75;
 
     // 何秒視聴したら視聴履歴に追加するかの閾値 (秒)
     private static readonly WATCHED_HISTORY_THRESHOLD_SECONDS = 30;
@@ -71,14 +66,16 @@ class PlayerController {
     private static readonly PASSTHROUGH_LEGACY_QUALITY_NAMES = ['Raw MMTS', 'TLV パススルー'];
     private static readonly PASSTHROUGH_LEGACY_SECONDARY_QUALITY_NAMES = ['TLV パススルー（降雨対応）'];
 
-    // ライブ視聴中に短時間でバッファリングが頻発した場合、降雨放送へ自動切り替えするための判定条件
-    private static readonly MMTS_SECONDARY_AUTO_SWITCH_BUFFERING_WINDOW_MS = 30 * 1000;
-    private static readonly MMTS_SECONDARY_AUTO_SWITCH_BUFFERING_THRESHOLD = 4;
+    // 選択中の通常放送で短時間にストリーム不連続が頻発した場合、降雨放送へ自動切り替えするための判定条件
+    private static readonly TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_WINDOW_MS = 30 * 1000;
+    private static readonly TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_THRESHOLD = 4;
 
     // BS4K/BS8K の TLV/MMT では HEVC 映像アセットが複数存在する
-    // 通常は mmts.js の自動選択に任せ、Secondary 映像を明示する場合だけ packet_id を固定する
-    private static readonly BS4K_MMTS_SECONDARY_VIDEO_PACKET_ID = 0xf301;
-    private static readonly BS8K_MMTS_SECONDARY_VIDEO_PACKET_ID = 0xf101;
+    // 降雨放送対応チャンネルでは通常/降雨映像の両方を packet_id で明示する
+    private static readonly BS4K_TLV_PRIMARY_VIDEO_PACKET_ID = 0xf300;
+    private static readonly BS4K_TLV_SECONDARY_VIDEO_PACKET_ID = 0xf301;
+    private static readonly BS8K_TLV_PRIMARY_VIDEO_PACKET_ID = 0xf100;
+    private static readonly BS8K_TLV_SECONDARY_VIDEO_PACKET_ID = 0xf101;
 
     // DPlayer のインスタンス
     private player: DPlayer | null = null;
@@ -143,28 +140,24 @@ class PlayerController {
     // 一時ミュートで発火した volumechange を、ユーザー操作として保存しないために使う
     private is_live_startup_temporary_muted = false;
 
-    // MMTS の Primary/Secondary 映像が切り替わった直後に発生した MSE / Native error を、
+    // TLV の通常/降雨映像が切り替わった直後に発生した MSE / Native error を、
     // 予期された切り替え由来として扱い PlayerController の自動再起動を抑止する期限
-    private ignore_mmts_video_switch_error_until = 0;
+    private ignore_tlv_video_switch_error_until = 0;
 
-    // 現在の MMTS 映像ロール
-    private mmts_video_role: 'unknown' | 'primary' | 'secondary' = 'unknown';
+    // ユーザーが選択した MMT/TLV 音声 packet_id
+    // DPlayer の音声 UI は primary/secondary 前提のため、TLV では packet_id を PlayerController 側で保持する
+    private tlv_preferred_audio_packet_id: number | null = null;
 
-    // ユーザーが選択した MMTS 音声 packet_id
-    // DPlayer の音声 UI は primary/secondary 前提のため、MMTS では packet_id を PlayerController 側で保持する
-    private mmts_preferred_audio_packet_id: number | null = null;
-
-    // mmts.js に選択を要求済みの MMTS 音声 packet_id
-    // 古い MMTS_AUDIO_TRACKS イベントで設定表示が巻き戻るのを防ぐために使う
-    private mmts_selected_audio_packet_id_override: number | null = null;
+    // tlvdemux に選択を要求済みの MMT/TLV 音声 packet_id
+    // トラック一覧の再通知で設定表示が巻き戻るのを防ぐために使う
+    private tlv_selected_audio_packet_id_override: number | null = null;
 
     // DPlayer 標準の音声選択チェックアイコン
     // TLV のトラック列挙で項目を作り直しても、初期 DOM から取得した SVG を保持し続ける。
-    private mmts_audio_check_icon_html: string | null = null;
+    private tlv_audio_check_icon_html: string | null = null;
 
-    // ライブ視聴中のバッファリング発生時刻を保持する
-    // handleLiveBufferingForMMTSSecondaryAutoSwitch() で 30 秒以内に何度バッファリングしたかを判定するために使う
-    private mmts_secondary_auto_switch_buffering_timestamps_ms: number[] = [];
+    // ライブ視聴中に、通常放送の選択中映像で検出したストリーム不連続の発生時刻を保持する
+    private tlv_secondary_auto_switch_discontinuity_timestamps_ms: number[] = [];
 
 
     /**
@@ -271,7 +264,7 @@ class PlayerController {
     private get current_live_playback_buffer_seconds(): number {
         // Raw MMTS は低遅延より安定性を優先し、通常 MPEG-TS より大きいバッファを使う
         if (this.player?.quality?.type === 'tlv') {
-            return PlayerController.LIVE_MMTS_PLAYBACK_BUFFER_SECONDS;
+            return PlayerController.LIVE_TLV_PLAYBACK_BUFFER_SECONDS;
         }
         return this.live_playback_buffer_seconds;
     }
@@ -297,10 +290,9 @@ class PlayerController {
         // 破棄済みかどうかのフラグを下ろす
         this.destroyed = false;
         this.is_live_startup_temporary_muted = false;
-        this.ignore_mmts_video_switch_error_until = 0;
-        this.mmts_video_role = 'unknown';
-        this.mmts_selected_audio_packet_id_override = null;
-        this.mmts_secondary_auto_switch_buffering_timestamps_ms = [];
+        this.ignore_tlv_video_switch_error_until = 0;
+        this.tlv_selected_audio_packet_id_override = null;
+        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
         this.is_offline_fallback_in_progress = false;
 
         // PlayerStore にプレイヤーを初期化したことを通知する
@@ -353,7 +345,7 @@ class PlayerController {
                 )
             );
 
-        // upstream の mpegts.js には旧 mmts.js fork の Worker 内 HEVC 対応判定 API がない。
+        // 現行 mpegts.js には Worker 内の HEVC 対応を確認する API がないため、
         // HEVC 再生時だけ Worker を無効化し、未検証の Worker 経路へ入らないようにする。
         const is_hevc_video_supported_in_worker = false;
 
@@ -460,194 +452,6 @@ class PlayerController {
         (window as any).mpegts = mpegts;
         (window as any).Hls = Hls;
 
-        type MMTSVideoQuality = DPlayerType.VideoQuality & {
-            mmtsVideoPacketId?: number;
-            mmtsFileSize?: number;
-        };
-        const initialized_aribb62_subtitle_players = new WeakSet<object>();
-        let is_aribb62_subtitle_event_unavailable_warned = false;
-
-        // DPlayer の字幕表示状態を Raw MMTS 用の aribb62 overlay に反映する
-        // initARIBB62Subtitle() は overlay を新規作成した直後に表示状態へしてしまうため、字幕を非表示にした状態で
-        // Raw MMTS の初期化・画質切り替え・プレイヤー再起動が起きた場合でも、保存済みの非表示状態を即座に反映する必要がある
-        const syncARIBB62SubtitleVisibility = (dplayer: DPlayer): void => {
-            if (dplayer.plugins.aribb62 === undefined) {
-                return;
-            }
-
-            const is_subtitle_hidden =
-                dplayer.user.get('subtitle') === 0 ||
-                dplayer.template.subtitle.classList.contains('dplayer-subtitle-hide');
-
-            // DPlayer の CSS は .dplayer-subtitle.dplayer-subtitle-hide にだけ display: none を定義している
-            // aribb62 overlay は .dplayer-aribb62-subtitle なので、class だけでは非表示にならない環境がある
-            if (is_subtitle_hidden === true) {
-                dplayer.plugins.aribb62.overlay.classList.add('dplayer-subtitle-hide');
-                dplayer.plugins.aribb62.overlay.style.display = 'none';
-                dplayer.plugins.aribb62.overlay.innerHTML = '';
-            } else {
-                dplayer.plugins.aribb62.overlay.classList.remove('dplayer-subtitle-hide');
-                dplayer.plugins.aribb62.overlay.style.display = '';
-                dplayer.plugins.aribb62.renderer.render();
-            }
-        };
-
-        // DPlayer 側の initARIBB62Subtitle() は呼び出しのたびに MMTS_SUBTITLE_DATA_ARRIVED の listener を追加する。
-        // Raw MMTS の customType は HonomiTV 側で直接呼び出すため、同じ mpegts.js Player に対して二重登録しないようにする。
-        const initializeARIBB62Subtitle = (
-            video: HTMLVideoElement,
-            dplayer: DPlayer,
-            mpegtsPlayer: {on(event: string, listener: (data: unknown) => void): void},
-        ): void => {
-            const init_aribb62_subtitle = (dplayer as any).initARIBB62Subtitle;
-            if (typeof init_aribb62_subtitle !== 'function') {
-                return;
-            }
-
-            const mmts_subtitle_data_event = (mpegts.Events as any).MMTS_SUBTITLE_DATA_ARRIVED;
-            if (mmts_subtitle_data_event === undefined) {
-                if (is_aribb62_subtitle_event_unavailable_warned === false) {
-                    is_aribb62_subtitle_event_unavailable_warned = true;
-                    console.warn('\u001b[31m[PlayerController] mpegts.js does not expose MMTS subtitle events. ARIB B62 subtitles are disabled.');
-                }
-                return;
-            }
-
-            const mpegts_player_object = mpegtsPlayer as object;
-            if (initialized_aribb62_subtitle_players.has(mpegts_player_object)) {
-                return;
-            }
-            initialized_aribb62_subtitle_players.add(mpegts_player_object);
-            init_aribb62_subtitle.call(dplayer, video, mpegtsPlayer);
-            syncARIBB62SubtitleVisibility(dplayer);
-        };
-
-        // DPlayer は内蔵の mpegts.js 連携では MediaDataSource.type を常に 'mpegts' として作成する。
-        // Raw MMTS では mpegts.js 側の MMTSDemuxer を明示的に選ばせる必要があるため、
-        // DPlayer の customType 経由で MediaDataSource.type='mmts' の mpegts.js Player を直接作成する。
-        const initializeMMTSPlayer = (video: HTMLVideoElement, dplayer: DPlayer): void => {
-            // mpegts.js が利用できない環境では Raw MMTS も再生できないため、ここでは何も初期化しない
-            if (mpegts.isSupported() !== true) {
-                console.warn('\u001b[31m[PlayerController] mpegts.js is not supported. Raw MMTS playback is unavailable.');
-                return;
-            }
-            if (dplayer.options.subtitle) {
-                dplayer.options.subtitle.type = 'aribb62';
-            }
-
-            // DPlayer 内蔵の mpegts.js 初期化処理を通らないため、字幕/文字スーパーの Renderer も明示的に破棄する
-            if (dplayer.plugins.aribb24Caption) {
-                dplayer.plugins.aribb24Caption.dispose();
-                delete dplayer.plugins.aribb24Caption;
-            }
-            if (dplayer.plugins.aribb24Superimpose) {
-                dplayer.plugins.aribb24Superimpose.dispose();
-                delete dplayer.plugins.aribb24Superimpose;
-            }
-            if (dplayer.plugins.aribb62) {
-                dplayer.plugins.aribb62.renderer.destroy();
-                dplayer.plugins.aribb62.overlay.remove();
-                delete dplayer.plugins.aribb62;
-            }
-            dplayer.template.videoWrap.querySelectorAll('.dplayer-aribb62-subtitle').forEach((overlay) => overlay.remove());
-
-            // 画質切り替え時に既存の mpegts.js Player が残っている場合は、DPlayer 内蔵処理と同じ順序で破棄する
-            if (dplayer.plugins.mpegts) {
-                dplayer.plugins.mpegts.unload();
-                dplayer.plugins.mpegts.detachMediaElement();
-                dplayer.plugins.mpegts.destroy();
-                delete dplayer.plugins.mpegts;
-            }
-
-            // pluginOptions.mpegts は通常の MPEG-TS 再生と同じ設定を共有する
-            if (dplayer.options.pluginOptions.mpegts === undefined) {
-                dplayer.options.pluginOptions.mpegts = {};
-            }
-            const mpegts_config: NonNullable<Parameters<typeof mpegts.createPlayer>[1]> & {mmtsVideoPacketId?: number} = Object.assign(
-                {},
-                dplayer.options.pluginOptions.mpegts.config,
-            );
-            // 選択中の画質に packet_id が紐づいている場合のみ mmts.js に渡す
-            // Primary では渡さず、mmts.js 側で Primary/Secondary 映像を自動選択させる
-            const current_quality = dplayer.quality as MMTSVideoQuality | null;
-            if (current_quality?.type === 'mmts' && dplayer.options.live === true) {
-                // 10/30 MiB の generic IO stash は BS4K/8K では数秒分の遅延になる。
-                // TLV 境界端数は MMTSDemuxer が保持するため直接渡し、MSE には短い再生可能範囲だけ先行させる。
-                Object.assign(mpegts_config, {
-                    enableStashBuffer: false,
-                    startupBufferDuration: PlayerController.LIVE_MMTS_PLAYBACK_BUFFER_SECONDS,
-                    mmtsLiveInitialBufferDuration: PlayerController.LIVE_MMTS_PLAYBACK_BUFFER_SECONDS,
-                    mseAppendBatchDuration: 0.15,
-                    liveSync: false,
-                    autoCleanupSourceBuffer: true,
-                    autoCleanupMaxBackwardDuration: PlayerController.LIVE_MMTS_AUTO_CLEANUP_MAX_BACKWARD_DURATION,
-                    autoCleanupMinBackwardDuration: PlayerController.LIVE_MMTS_AUTO_CLEANUP_MIN_BACKWARD_DURATION,
-                });
-            }
-            if (current_quality?.mmtsVideoPacketId !== undefined) {
-                mpegts_config.mmtsVideoPacketId = current_quality.mmtsVideoPacketId;
-            }
-            const media_data_source: Parameters<typeof mpegts.createPlayer>[0] = Object.assign(
-                {},
-                dplayer.options.pluginOptions.mpegts.mediaDataSource,
-                {
-                    type: 'mmts',
-                    isLive: dplayer.options.live === true,
-                    url: video.src,
-                },
-            );
-            // MMTS VOD の duration は DB 上の録画時間を信用せず、mpegts.probeMMTSDuration() で実データから事前取得した値を使う。
-            // filesize は byte-range シークに必要なため、ファイルそのものから取得した値を引き続き渡す。
-            if (dplayer.options.live !== true && current_quality?.type === 'mmts') {
-                if (mmts_vod_duration_ms !== null && mmts_vod_duration_ms > 0) {
-                    media_data_source.duration = mmts_vod_duration_ms;
-                }
-                if (current_quality.mmtsFileSize !== undefined && current_quality.mmtsFileSize > 0) {
-                    media_data_source.filesize = current_quality.mmtsFileSize;
-                }
-            }
-            const mpegtsPlayer = mpegts.createPlayer(
-                media_data_source,
-                mpegts_config,
-            );
-            dplayer.plugins.mpegts = mpegtsPlayer;
-
-            const mmts_video_tracks_event = (mpegts.Events as any).MMTS_VIDEO_TRACKS;
-            if (mmts_video_tracks_event !== undefined) {
-                mpegtsPlayer.on(mmts_video_tracks_event, (video_tracks: any) => {
-                    this.onMMTSVideoTracks(video_tracks);
-                });
-            }
-            const mmts_audio_tracks_event = (mpegts.Events as any).MMTS_AUDIO_TRACKS;
-            if (mmts_audio_tracks_event !== undefined) {
-                mpegtsPlayer.on(mmts_audio_tracks_event, (audio_tracks: any) => {
-                    this.onMMTSAudioTracks(audio_tracks);
-                });
-            }
-
-            initializeARIBB62Subtitle(video, dplayer, mpegtsPlayer);
-
-            mpegtsPlayer.attachMediaElement(video);
-            mpegtsPlayer.load();
-
-            // プレイヤー破棄時にも mpegts.js Player を確実に閉じる
-            dplayer.on('destroy', () => {
-                // 画質切り替え後は別の mpegts.js Player が入っている可能性があるため、現在のインスタンスだけを破棄する
-                if (dplayer.plugins.mpegts !== mpegtsPlayer) {
-                    return;
-                }
-                mpegtsPlayer.unload();
-                mpegtsPlayer.detachMediaElement();
-                mpegtsPlayer.destroy();
-                delete dplayer.plugins.mpegts;
-                if (dplayer.plugins.aribb62) {
-                    dplayer.plugins.aribb62.renderer.destroy();
-                    dplayer.plugins.aribb62.overlay.remove();
-                    delete dplayer.plugins.aribb62;
-                }
-            });
-        };
-
         const caption_normal_font = (() => {
             let font = settings_store.settings.caption_font;
             if (font === 'sans-serif') {
@@ -668,10 +472,6 @@ class PlayerController {
             }
         })();
 
-        // TLV VOD の duration / Range シークは DPlayer の tlvdemux 経路が担当する。
-        // 旧 mmts.js fork の probeMMTSDuration() は upstream mpegts.js には存在しない。
-        const mmts_vod_duration_ms: number | null = null;
-
         // DPlayer を初期化
         const is_bs4k_live_channel = this.playback_mode === 'Live' && channels_store.channel.current.type === 'BS4K';
         this.player = new DPlayer({
@@ -688,7 +488,7 @@ class PlayerController {
             syncWhenPlayingLive: is_bs4k_live_channel === false,
             // ライブモードで同期する際の最小バッファサイズ
             liveSyncMinBufferSize: (is_bs4k_live_channel === true ?
-                PlayerController.LIVE_MMTS_PLAYBACK_BUFFER_SECONDS :
+                PlayerController.LIVE_TLV_PLAYBACK_BUFFER_SECONDS :
                 this.live_playback_buffer_seconds) - 0.1,
             // ループ再生 (ライブ視聴では無効)
             loop: (this.playback_mode === 'Live' || is_recording_chase_playback === true) ? false : true,
@@ -712,7 +512,7 @@ class PlayerController {
             // 動画の設定
             video: (() => {
                 // 画質リスト
-                const qualities: MMTSVideoQuality[] = [];
+                const qualities: DPlayerType.VideoQuality[] = [];
                 // H.265 / HEVC 再生時のみ、API に渡す画質の末尾に -hevc を付ける
                 const hevc_suffix = is_hevc_playback === true ? '-hevc' : '';
                 // -10bit や -24fps は品質名の末尾に付けて API パスに含める
@@ -742,7 +542,7 @@ class PlayerController {
                     // BS4K チャンネルでは、Mirakurun から decode=0 で受け取った Raw MMTS をそのまま再生できる
                     const is_bs4k_channel = channels_store.channel.current.type === 'BS4K';
                     // NHK BSP4K (NID11-SID101 / bs4k101) と NHK BS8K (NID11-SID102 / bs4k102) のみ降雨放送がある
-                    const has_mmts_secondary_video = channels_store.channel.current.network_id === 11 &&
+                    const has_tlv_secondary_video = channels_store.channel.current.network_id === 11 &&
                         [101, 102].includes(channels_store.channel.current.service_id);
                     // NHK BS8K では packet_id が 0xf100 -> 0xf101、それ以外の降雨放送対応 BS4K では 0xf300 -> 0xf301 になる
                     const is_bs8k_channel = channels_store.channel.current.network_id === 11 && channels_store.channel.current.service_id === 102;
@@ -764,16 +564,21 @@ class PlayerController {
                                 name: PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME,
                                 type: 'tlv',
                                 url: `${streaming_api_base_url}/raw-mmts/mpegts`,
+                                tlv: has_tlv_secondary_video === true ? {
+                                    videoPacketId: is_bs8k_channel === true ?
+                                        PlayerController.BS8K_TLV_PRIMARY_VIDEO_PACKET_ID :
+                                        PlayerController.BS4K_TLV_PRIMARY_VIDEO_PACKET_ID,
+                                } : undefined,
                             });
-                            if (has_mmts_secondary_video === true) {
+                            if (has_tlv_secondary_video === true) {
                                 qualities.push({
                                     name: PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME,
                                     type: 'tlv',
                                     url: `${streaming_api_base_url}/raw-mmts/mpegts`,
                                     tlv: {
                                         videoPacketId: is_bs8k_channel === true ?
-                                            PlayerController.BS8K_MMTS_SECONDARY_VIDEO_PACKET_ID :
-                                            PlayerController.BS4K_MMTS_SECONDARY_VIDEO_PACKET_ID,
+                                            PlayerController.BS8K_TLV_SECONDARY_VIDEO_PACKET_ID :
+                                            PlayerController.BS4K_TLV_SECONDARY_VIDEO_PACKET_ID,
                                     },
                                 });
                             }
@@ -818,9 +623,6 @@ class PlayerController {
                     return {
                         quality: qualities,
                         defaultQuality: default_quality,
-                        customType: {
-                            mmts: initializeMMTSPlayer,
-                        },
                     };
 
                     // ビデオ視聴: 録画番組情報がセットされているはず
@@ -933,9 +735,6 @@ class PlayerController {
                     return {
                         quality: qualities,
                         defaultQuality: default_quality,
-                        customType: {
-                            mmts: initializeMMTSPlayer,
-                        },
                         thumbnails: tile_info !== null ? {
                             url: `${Utils.api_base_url}/videos/${player_store.recorded_program.id}/thumbnail/tiled`,
                             interval: tile_info.interval_sec,
@@ -1282,24 +1081,19 @@ class PlayerController {
         // 音声メニューへ packet_id ベースの表示と選択だけを反映する。
         const syncTLVTracks = (): void => {
             const audio_tracks = dplayer_instance.plugins.tlv?.tracks.filter((track) =>
-                track.kind === 'audio' && this.isMMTSAudioTrackBrowserCompatible(track)) ?? [];
-            this.onMMTSAudioTracks({
+                track.kind === 'audio' && this.isTLVAudioTrackBrowserCompatible(track)) ?? [];
+            this.syncTLVAudioTracks({
                 tracks: audio_tracks,
-                selectedPacketId: this.mmts_preferred_audio_packet_id ?? audio_tracks[0]?.packetId ?? null,
+                selectedPacketId: this.tlv_preferred_audio_packet_id ?? audio_tracks[0]?.packetId ?? null,
             });
         };
         dplayer_instance.on('tlv_ready', syncTLVTracks);
         dplayer_instance.on('tlv_tracks', syncTLVTracks);
+        dplayer_instance.on('tlv_broadcast_clock', (clock: {discontinuity?: boolean}) => {
+            this.handleTLVBroadcastDiscontinuityForSecondaryAutoSwitch(clock);
+        });
         dplayer_instance.on('tlv_error', (error: unknown) => {
             console.error('\u001b[31m[PlayerController] TLV playback error:', error);
-        });
-        // DPlayer の字幕ボタンで表示状態が変わったとき、通常の字幕コンテナだけでなく Raw MMTS 用の aribb62 overlay にも反映する
-        // aribb62 overlay は initARIBB62Subtitle() が別 DOM として作成するため、この同期がないと字幕ボタンの状態から外れることがある
-        dplayer_instance.on('subtitle_show', () => {
-            syncARIBB62SubtitleVisibility(dplayer_instance);
-        });
-        dplayer_instance.on('subtitle_hide', () => {
-            syncARIBB62SubtitleVisibility(dplayer_instance);
         });
 
         const syncDPlayerSubtitleTypeForQuality = (quality: DPlayerType.VideoQuality | null | undefined): void => {
@@ -1741,8 +1535,6 @@ class PlayerController {
         this.player.on('waiting', () => {
             // Progress Circular を表示する
             player_store.is_video_buffering = true;
-            // ライブ視聴で短時間にバッファリングが頻発した場合、降雨放送が選べるチャンネルでは自動的に降雨放送へ切り替える
-            this.handleLiveBufferingForMMTSSecondaryAutoSwitch();
         });
         this.player.on('playing', () => {
             // ロード中 (映像が表示されていない) でなければ Progress Circular を非表示にする
@@ -1760,8 +1552,8 @@ class PlayerController {
         const on_init_or_quality_change = async () => {
             assert(this.player !== null);
 
-            // 画質切り替え後に以前のバッファリング回数が残ると、別画質で即座に自動切り替えしてしまうためクリアする
-            this.mmts_secondary_auto_switch_buffering_timestamps_ms = [];
+            // 画質切り替え後に以前の不連続回数が残ると、別画質で即座に自動切り替えしてしまうためクリアする
+            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
 
             // ローディング中の背景写真をランダムに変更
             player_store.background_url = PlayerUtils.generatePlayerBackgroundURL();
@@ -1798,9 +1590,9 @@ class PlayerController {
                         await Utils.waitUntilOnline();
                     }
 
-                    // MMTS の Primary/Secondary 映像切り替え直後のエラーは、mmts.js 側の自動選択に任せる
-                    if (this.shouldIgnoreMMTSVideoSwitchError() === true) {
-                        console.warn('\u001b[31m[PlayerController] mpegts.js error event ignored after MMTS video mode switch:', error_type, detail);
+                    // TLV の通常/降雨映像切り替え直後に発生した一時的なエラーでは、プレイヤーを再起動しない
+                    if (this.shouldIgnoreTLVVideoSwitchError() === true) {
+                        console.warn('\u001b[31m[PlayerController] mpegts.js error event ignored after TLV video track switch:', error_type, detail);
                         return;
                     }
 
@@ -1824,9 +1616,9 @@ class PlayerController {
                     // すぐ再起動すると問題があるケースがあるので、少し待機する
                     await Utils.sleep(1);
 
-                    // MMTS の Primary/Secondary 映像切り替え直後のエラーは、mmts.js 側の自動選択に任せる
-                    if (this.shouldIgnoreMMTSVideoSwitchError() === true) {
-                        console.warn('\u001b[31m[PlayerController] HTMLVideoElement error event ignored after MMTS video mode switch:', this.player.video.error);
+                    // TLV の通常/降雨映像切り替え直後に発生した一時的なエラーでは、プレイヤーを再起動しない
+                    if (this.shouldIgnoreTLVVideoSwitchError() === true) {
+                        console.warn('\u001b[31m[PlayerController] HTMLVideoElement error event ignored after TLV video track switch:', this.player.video.error);
                         return;
                     }
 
@@ -2007,7 +1799,7 @@ class PlayerController {
                     player_store.live_stream_status === 'ONAir' &&
                     player_store.is_video_buffering === true &&
                     on_canplay_called === false &&
-                    this.shouldIgnoreMMTSVideoSwitchError() === false
+                    this.shouldIgnoreTLVVideoSwitchError() === false
                 ) {
                     player_store.event_emitter.emit('PlayerRestartRequired', {
                         message: '再生開始までに時間が掛かっています。プレイヤーを再起動しています…',
@@ -2823,9 +2615,9 @@ class PlayerController {
 
 
     /**
-     * mmts.js から通知される MMTS 音声トラック情報を DPlayer の音声メニューに反映する
+     * tlvdemux から通知される MMT/TLV 音声トラック情報を DPlayer の音声メニューに反映する
      */
-    private onMMTSAudioTracks(audio_tracks: any): void {
+    private syncTLVAudioTracks(audio_tracks: any): void {
         if (this.player === null || Array.isArray(audio_tracks?.tracks) === false) {
             return;
         }
@@ -2834,30 +2626,30 @@ class PlayerController {
         // packet_id (0xf310, 0xf311 など) を一意キーにして、メニューに同じ音声を複数表示しない。
         const tracks_by_packet_id = new Map<number, any>();
         for (const track of audio_tracks.tracks as any[]) {
-            const packet_id = this.getMMTSAudioTrackPacketId(track);
-            if (packet_id === null || this.isMMTSAudioTrackBrowserCompatible(track) === false) continue;
+            const packet_id = this.getTLVAudioTrackPacketId(track);
+            if (packet_id === null || this.isTLVAudioTrackBrowserCompatible(track) === false) continue;
             tracks_by_packet_id.set(packet_id, track);
         }
         const tracks = [...tracks_by_packet_id.values()];
         const reported_selected_packet_id = typeof audio_tracks.selectedPacketId === 'number' ? audio_tracks.selectedPacketId : null;
         if (
-            this.mmts_selected_audio_packet_id_override !== null &&
-            reported_selected_packet_id === this.mmts_selected_audio_packet_id_override
+            this.tlv_selected_audio_packet_id_override !== null &&
+            reported_selected_packet_id === this.tlv_selected_audio_packet_id_override
         ) {
-            this.mmts_selected_audio_packet_id_override = null;
+            this.tlv_selected_audio_packet_id_override = null;
         }
-        const preferred_track = this.mmts_preferred_audio_packet_id !== null ?
-            tracks.find((track) => this.getMMTSAudioTrackPacketId(track) === this.mmts_preferred_audio_packet_id) :
+        const preferred_track = this.tlv_preferred_audio_packet_id !== null ?
+            tracks.find((track) => this.getTLVAudioTrackPacketId(track) === this.tlv_preferred_audio_packet_id) :
             undefined;
         const should_restore_preferred_track =
             preferred_track !== undefined &&
-            reported_selected_packet_id !== this.mmts_preferred_audio_packet_id &&
-            this.mmts_selected_audio_packet_id_override !== this.mmts_preferred_audio_packet_id;
+            reported_selected_packet_id !== this.tlv_preferred_audio_packet_id &&
+            this.tlv_selected_audio_packet_id_override !== this.tlv_preferred_audio_packet_id;
         const selected_packet_id =
-            this.mmts_selected_audio_packet_id_override ??
-            (preferred_track !== undefined ? this.getMMTSAudioTrackPacketId(preferred_track) : null) ??
+            this.tlv_selected_audio_packet_id_override ??
+            (preferred_track !== undefined ? this.getTLVAudioTrackPacketId(preferred_track) : null) ??
             reported_selected_packet_id ??
-            this.getMMTSAudioTrackPacketId(tracks.find((track) => track.selected === true));
+            this.getTLVAudioTrackPacketId(tracks.find((track) => track.selected === true));
 
         const audio_panel = this.player.container.querySelector<HTMLDivElement>('.dplayer-setting-audio-panel');
         if (audio_panel === null) {
@@ -2866,12 +2658,12 @@ class PlayerController {
 
         // トラックが一時的に 0 件になる TLV restart 中でもアイコンを失わないよう、
         // すでに置き換えた panel ではなく DPlayer が作った初期項目から一度だけ保存する。
-        this.mmts_audio_check_icon_html ??=
+        this.tlv_audio_check_icon_html ??=
             this.player.template.audioItem[0]?.querySelector<HTMLDivElement>('.dplayer-toggle')?.innerHTML ?? '';
-        const current_icon_html = this.mmts_audio_check_icon_html;
+        const current_icon_html = this.tlv_audio_check_icon_html;
         audio_panel.querySelectorAll('.dplayer-setting-audio-item').forEach((item) => item.remove());
 
-        this.player.template.settingBox.style.setProperty('--mmts-audio-panel-height', `${54 + tracks.length * 30}px`);
+        this.player.template.settingBox.style.setProperty('--tlv-audio-panel-height', `${54 + tracks.length * 30}px`);
 
         if (tracks.length <= 1) {
             this.player.container.classList.add('dplayer-no-audio-switching');
@@ -2880,7 +2672,7 @@ class PlayerController {
         }
 
         for (const track of tracks) {
-            const packet_id = this.getMMTSAudioTrackPacketId(track);
+            const packet_id = this.getTLVAudioTrackPacketId(track);
             if (packet_id === null) {
                 continue;
             }
@@ -2892,7 +2684,7 @@ class PlayerController {
                 'dplayer-setting-audio-item',
                 selected ? 'dplayer-setting-audio-current' : '',
             ].filter(Boolean).join(' ');
-            item.dataset.audio = `mmts-${packet_id}`;
+            item.dataset.audio = `tlv-${packet_id}`;
             item.dataset.audioPacketId = String(packet_id);
 
             const toggle = document.createElement('div');
@@ -2902,43 +2694,43 @@ class PlayerController {
 
             const label = document.createElement('span');
             label.className = 'dplayer-label';
-            label.textContent = this.formatMMTSAudioTrackLabel(track);
+            label.textContent = this.formatTLVAudioTrackLabel(track);
             item.appendChild(label);
 
             item.addEventListener('click', () => {
-                this.selectMMTSAudioTrack(track, true);
+                this.selectTLVAudioTrack(track, true);
             });
 
             audio_panel.appendChild(item);
         }
 
-        const selected_track = tracks.find((track) => this.getMMTSAudioTrackPacketId(track) === selected_packet_id) ??
+        const selected_track = tracks.find((track) => this.getTLVAudioTrackPacketId(track) === selected_packet_id) ??
             tracks.find((track) => track.selected === true);
         if (selected_track !== undefined) {
-            const selected_track_packet_id = this.getMMTSAudioTrackPacketId(selected_track);
+            const selected_track_packet_id = this.getTLVAudioTrackPacketId(selected_track);
             if (selected_track_packet_id !== null) {
-                this.syncMMTSAudioTrackSelection(selected_track_packet_id, this.formatMMTSAudioTrackLabel(selected_track));
+                this.syncTLVAudioTrackSelection(selected_track_packet_id, this.formatTLVAudioTrackLabel(selected_track));
             }
         }
 
         if (should_restore_preferred_track === true) {
-            // 新しい mpegts.js Player で音声トラック情報が揃ったあと、ユーザーが選んだ packet_id を復元する。
+            // 新しい TLV Player で音声トラック情報が揃ったあと、ユーザーが選んだ packet_id を復元する。
             Promise.resolve().then(() => {
-                this.selectMMTSAudioTrack(preferred_track, false);
+                this.selectTLVAudioTrack(preferred_track, false);
             });
         }
     }
 
 
     /**
-     * MMTS 音声トラックを packet_id で選択する
+     * MMT/TLV 音声トラックを packet_id で選択する
      */
-    private selectMMTSAudioTrack(track: any, show_notice: boolean): void {
+    private selectTLVAudioTrack(track: any, show_notice: boolean): void {
         if (this.player === null) {
             return;
         }
 
-        const packet_id = this.getMMTSAudioTrackPacketId(track);
+        const packet_id = this.getTLVAudioTrackPacketId(track);
         if (packet_id === null) {
             return;
         }
@@ -2947,11 +2739,11 @@ class PlayerController {
             return;
         }
 
-        const label = this.formatMMTSAudioTrackLabel(track);
-        this.mmts_preferred_audio_packet_id = packet_id;
-        this.mmts_selected_audio_packet_id_override = packet_id;
+        const label = this.formatTLVAudioTrackLabel(track);
+        this.tlv_preferred_audio_packet_id = packet_id;
+        this.tlv_selected_audio_packet_id_override = packet_id;
         void this.player.selectTLVAudioTrack(packet_id);
-        this.syncMMTSAudioTrackSelection(packet_id, label);
+        this.syncTLVAudioTrackSelection(packet_id, label);
         this.player.template.settingBox.classList.remove('dplayer-setting-box-audio');
         if (show_notice === true) {
             this.player.notice(`音声を ${label} に切り替えました。`);
@@ -2960,9 +2752,9 @@ class PlayerController {
 
 
     /**
-     * MMTS 音声トラック情報から packet_id を取り出す
+     * MMT/TLV 音声トラック情報から packet_id を取り出す
      */
-    private getMMTSAudioTrackPacketId(track: any): number | null {
+    private getTLVAudioTrackPacketId(track: any): number | null {
         if (track === undefined || track === null || typeof track.packetId !== 'number') {
             return null;
         }
@@ -2974,9 +2766,9 @@ class PlayerController {
 
 
     /**
-     * MMTS 音声トラックがブラウザの MSE で再生できるかを判定する
+     * MMT/TLV 音声トラックがブラウザの MSE で再生できるかを判定する
      */
-    private isMMTSAudioTrackBrowserCompatible(track: any): boolean {
+    private isTLVAudioTrackBrowserCompatible(track: any): boolean {
         // 8K の 22.2ch は 24 channels の AAC として送出されるが、Chromium の MSE decoder は
         // この構成を受け付けない。tlvdemux が復元した実声道数で判定し、5.1ch までを表示する。
         const channels = track?.audio?.channels;
@@ -2985,9 +2777,9 @@ class PlayerController {
 
 
     /**
-     * MMTS 音声トラック選択を DPlayer の音声 UI に反映する
+     * MMT/TLV 音声トラック選択を DPlayer の音声 UI に反映する
      */
-    private syncMMTSAudioTrackSelection(packet_id: number, label: string): void {
+    private syncTLVAudioTrackSelection(packet_id: number, label: string): void {
         if (this.player === null) {
             return;
         }
@@ -3008,9 +2800,9 @@ class PlayerController {
 
 
     /**
-     * MMTS 音声トラックの表示名を生成する
+     * MMT/TLV 音声トラックの表示名を生成する
      */
-    private formatMMTSAudioTrackLabel(track: any): string {
+    private formatTLVAudioTrackLabel(track: any): string {
         const channel_layout = track.audio?.channelLayout ?? track.channelLayout;
         // channelLayout は声道数ではなく、ARIB STD-B60 の audio_component_descriptor にある
         // component_type 下位 5bit の音声モード。数値をそのまま表示せず、人が識別できる表記に変換する。
@@ -3053,155 +2845,96 @@ class PlayerController {
 
 
     /**
-     * ライブ視聴中の短時間なバッファリング頻発を検知し、降雨放送が選択可能なら自動的に切り替える
+     * tlvdemux が選択中の通常映像で検出したストリーム不連続を数え、頻発時だけ降雨放送へ切り替える
      */
-    private handleLiveBufferingForMMTSSecondaryAutoSwitch(): void {
+    private handleTLVBroadcastDiscontinuityForSecondaryAutoSwitch(clock: {discontinuity?: boolean}): void {
 
-        // ライブ視聴以外では降雨放送の画質が存在しないため、判定しない
-        if (this.playback_mode !== 'Live') {
+        // HTMLVideoElement の waiting は通信速度やデコーダー停止でも発生するため、放送ストリームの不連続だけを判定に使う
+        if (clock.discontinuity !== true || this.playback_mode !== 'Live') {
             return;
         }
 
-        // プレイヤーが破棄済み、またはユーザーが一時停止している場合は、バッファリング頻発とは扱わない
-        if (this.player === null || this.player.video.paused === true) {
-            return;
-        }
-
+        // 初回のトラック選択でも discontinuity が立つため、実際の再生開始後だけを判定対象にする
         const player_store = usePlayerStore();
-
-        // 初回ロード中やライブストリーム停止中の waiting は、受信状態の悪化ではなく再生準備・接続状態に由来する可能性が高い
-        if (player_store.is_loading === true || player_store.live_stream_status !== 'ONAir') {
+        if (
+            this.player === null ||
+            this.player.video.paused === true ||
+            player_store.is_loading === true ||
+            player_store.live_stream_status !== 'ONAir'
+        ) {
             return;
         }
 
-        // DPlayer の画質リストに降雨放送が存在する場合だけ、自動切り替え可能とみなす
+        // 通常放送の Raw TLV 再生中でなければ、それ以前の不連続履歴を破棄する
+        if (
+            this.player.quality?.type !== 'tlv' ||
+            this.player.quality.name !== PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME
+        ) {
+            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
+            return;
+        }
+
+        // 同じ Raw TLV ストリーム内に降雨放送の映像 packet_id がある場合だけ自動切り替えできる
         const qualities = this.player.options.video.quality;
-        const secondary_quality_index = qualities?.findIndex((quality) => {
-            return quality.name === PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME;
-        }) ?? -1;
+        const secondary_quality_index = qualities?.findIndex((quality) => (
+            quality.name === PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME &&
+            quality.type === 'tlv' &&
+            quality.tlv?.videoPacketId !== undefined
+        )) ?? -1;
         if (qualities === undefined || secondary_quality_index === -1) {
-            this.mmts_secondary_auto_switch_buffering_timestamps_ms = [];
+            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
             return;
         }
 
-        // 既に降雨放送で再生している場合は、それ以上自動切り替えしない
-        if (
-            this.player.qualityIndex === secondary_quality_index ||
-            this.player.quality?.name === PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME
-        ) {
-            this.mmts_secondary_auto_switch_buffering_timestamps_ms = [];
-            return;
-        }
-
-        // 30 秒のスライディングウィンドウ内に発生した waiting だけを保持する
+        // 30 秒のスライディングウィンドウ内に、選択中の映像で発生した不連続だけを保持する
         const now = performance.now();
-        const oldest_accepted_timestamp = now - PlayerController.MMTS_SECONDARY_AUTO_SWITCH_BUFFERING_WINDOW_MS;
-        this.mmts_secondary_auto_switch_buffering_timestamps_ms =
-            this.mmts_secondary_auto_switch_buffering_timestamps_ms.filter((timestamp) => timestamp >= oldest_accepted_timestamp);
-        this.mmts_secondary_auto_switch_buffering_timestamps_ms.push(now);
+        const oldest_accepted_timestamp = now - PlayerController.TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_WINDOW_MS;
+        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms =
+            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms.filter((timestamp) => timestamp >= oldest_accepted_timestamp);
+        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms.push(now);
 
-        // 30 秒以内に 4 回以上バッファリングした場合だけ、降雨放送へ切り替える
         if (
-            this.mmts_secondary_auto_switch_buffering_timestamps_ms.length <
-            PlayerController.MMTS_SECONDARY_AUTO_SWITCH_BUFFERING_THRESHOLD
+            this.tlv_secondary_auto_switch_discontinuity_timestamps_ms.length <
+            PlayerController.TLV_SECONDARY_AUTO_SWITCH_DISCONTINUITY_THRESHOLD
         ) {
             return;
         }
 
-        this.mmts_secondary_auto_switch_buffering_timestamps_ms = [];
-        console.warn('\u001b[31m[PlayerController] Frequent live buffering detected. Switching to MMTS secondary video.');
+        this.tlv_secondary_auto_switch_discontinuity_timestamps_ms = [];
         const secondary_quality = qualities[secondary_quality_index];
-        if (
-            secondary_quality.type === 'tlv' &&
-            secondary_quality.tlv?.videoPacketId !== undefined
-        ) {
-            this.player.selectTLVVideoTrack(secondary_quality.tlv.videoPacketId);
-            this.syncMMTSPassthroughQualityRole('secondary');
-            this.ignore_mmts_video_switch_error_until = performance.now() + 10 * 1000;
-            this.player.notice('降雨放送に切り替えました。', undefined, undefined, '#FFA86A');
+        const secondary_video_packet_id = secondary_quality.tlv?.videoPacketId;
+        if (secondary_video_packet_id === undefined) {
             return;
         }
+        console.warn('\u001b[31m[PlayerController] Frequent TLV video discontinuities detected. Switching to rain-fade fallback video.');
+        this.player.selectTLVVideoTrack(secondary_video_packet_id);
 
-        this.player.switchQuality(secondary_quality_index);
-    }
-
-
-    /**
-     * mmts.js から通知される MMTS 映像トラック情報を元に、Primary/Secondary 映像の切り替えを UI に反映する
-     */
-    private onMMTSVideoTracks(video_tracks: any): void {
-        const next_role = video_tracks?.selectedRole === 'secondary' || video_tracks?.fallback === true ? 'secondary' :
-            video_tracks?.selectedRole === 'primary' ? 'primary' : 'unknown';
-        if (next_role === 'unknown' || next_role === this.mmts_video_role) {
-            return;
-        }
-
-        const previous_role = this.mmts_video_role;
-        this.mmts_video_role = next_role;
-        this.ignore_mmts_video_switch_error_until = performance.now() + 10 * 1000;
-
-        if (this.player === null) {
-            return;
-        }
-
-        // mmts.js 側の自動 Primary/Secondary 選択結果を画質メニューに反映する。
-        // switchQuality() は呼ばず、再初期化や selectVideoTrack() の再入を避ける。
-        this.syncMMTSPassthroughQualityRole(next_role);
-
-        if (next_role === 'secondary') {
-            this.player.notice(
-                previous_role === 'unknown' ?
-                    '降雨放送で再生しています。' :
-                    '降雨放送に切り替えました。',
-                undefined,
-                undefined,
-                '#FFA86A',
-            );
-        } else if (previous_role !== 'unknown') {
-            this.player.notice('通常放送に切り替えました。', undefined, undefined, undefined);
-        }
-    }
-
-
-    /**
-     * MMTS のオンライン PID 切り替え結果を DPlayer の画質 UI に反映する
-     */
-    private syncMMTSPassthroughQualityRole(role: 'unknown' | 'primary' | 'secondary'): void {
-        if (this.player === null || role === 'unknown') {
-            return;
-        }
-
-        const qualities = this.player.options.video.quality;
-        if (qualities === undefined) {
-            return;
-        }
-
-        const target_quality_name = role === 'secondary' ?
-            PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME :
-            PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME;
-        const target_quality_index = qualities.findIndex((quality) => quality.name === target_quality_name);
-        if (target_quality_index === -1) {
-            return;
-        }
-
+        // selectTLVVideoTrack() は同じ Player 内のトラックだけを切り替えるため、DPlayer の画質表示も同じ項目へ同期する
         const player = this.player as any;
-        player.qualityIndex = target_quality_index;
-        player.quality = qualities[target_quality_index];
-        this.player.template.qualityValue.textContent = target_quality_name;
+        player.qualityIndex = secondary_quality_index;
+        player.quality = secondary_quality;
+        this.player.template.qualityValue.textContent = PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME;
         this.player.template.qualityItem.forEach((quality_item: HTMLElement) => {
             quality_item.classList.toggle(
                 'dplayer-setting-quality-current',
-                Number(quality_item.dataset.index) === target_quality_index,
+                Number(quality_item.dataset.index) === secondary_quality_index,
             );
         });
+        this.ignore_tlv_video_switch_error_until = performance.now() + 10 * 1000;
+        this.player.notice(
+            '受信した放送ストリームが不連続なため、降雨放送に切り替えました。',
+            undefined,
+            undefined,
+            '#FFA86A',
+        );
     }
 
 
     /**
-     * MMTS 映像トラック切り替え直後の一時的な MSE / Native error を自動再起動の対象外にする
+     * TLV 映像トラック切り替え直後の一時的な MSE / Native error を自動再起動の対象外にする
      */
-    private shouldIgnoreMMTSVideoSwitchError(): boolean {
-        return performance.now() < this.ignore_mmts_video_switch_error_until;
+    private shouldIgnoreTLVVideoSwitchError(): boolean {
+        return performance.now() < this.ignore_tlv_video_switch_error_until;
     }
 
 
