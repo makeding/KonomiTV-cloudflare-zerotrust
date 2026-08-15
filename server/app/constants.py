@@ -21,6 +21,11 @@ VERSION = '0.14.1'
 ## KonomiTV は日本向けのアプリケーションのため、日時は JST で統一して扱う
 JST = ZoneInfo('Asia/Tokyo')
 
+# 「一部のみ録画」フラグを立てる際の許容誤差 (秒)
+## チューナー確保や録画プロセス起動、放送波の時刻情報の粒度による数秒程度のずれは、
+## 番組本編が欠けていなくても録画開始・終了時刻の比較に現れるため、部分録画とは扱わない
+PARTIALLY_RECORDED_TOLERANCE_SECONDS = 5.0
+
 # ベースディレクトリ
 BASE_DIR = Path(__file__).resolve().parent.parent
 

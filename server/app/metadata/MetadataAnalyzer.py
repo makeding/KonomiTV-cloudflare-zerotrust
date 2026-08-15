@@ -13,7 +13,7 @@ from rich import print
 
 from app import logging, schemas
 from app.config import Config, LoadConfig
-from app.constants import JST, LIBRARY_PATH
+from app.constants import JST, LIBRARY_PATH, PARTIALLY_RECORDED_TOLERANCE_SECONDS
 from app.metadata.MMTSInfoAnalyzer import MMTSInfoAnalyzer
 from app.metadata.TSInfoAnalyzer import TSInfoAnalyzer
 from app.utils import ClosestMultiple
@@ -642,10 +642,12 @@ class MetadataAnalyzer:
             recorded_program.recording_end_margin = \
                 max((recorded_video.recording_end_time - recorded_program.end_time).total_seconds(), 0.0)
 
-            # 番組開始時刻 < 録画開始時刻 or 録画終了時刻 < 番組終了時刻 の場合、部分的に録画されていることを示すフラグを立てる
-            ## 番組全編を録画するには、録画開始時刻が番組開始時刻よりも前で、録画終了時刻が番組終了時刻よりも後である必要がある
-            if (recorded_program.start_time < recorded_video.recording_start_time or
-                recorded_video.recording_end_time < recorded_program.end_time):
+            # 番組の開始または終了が録画範囲から許容誤差を超えて欠けている場合、部分録画フラグを立てる
+            ## 数秒程度の時刻情報のずれでは実際に番組本編が欠けているとは限らないため、警告を表示しない
+            start_missing_seconds = (recorded_video.recording_start_time - recorded_program.start_time).total_seconds()
+            end_missing_seconds = (recorded_program.end_time - recorded_video.recording_end_time).total_seconds()
+            if (start_missing_seconds > PARTIALLY_RECORDED_TOLERANCE_SECONDS or
+                end_missing_seconds > PARTIALLY_RECORDED_TOLERANCE_SECONDS):
                 recorded_program.is_partially_recorded = True
             else:
                 recorded_program.is_partially_recorded = False

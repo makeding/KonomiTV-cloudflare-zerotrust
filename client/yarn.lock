@@ -3100,15 +3100,15 @@ dotenv@^16.3.1:
   resolved "https://registry.yarnpkg.com/dotenv/-/dotenv-16.6.1.tgz#773f0e69527a8315c7285d5ee73c4459d20a8020"
   integrity sha512-uBq4egWHTcTt33a72vpSG0z3HnPuIl6NqYcTrKEg2azoEyl2hpW0zqlxysq2pK9HlDIHyHyakeYaYnSAwd8bow==
 
-"dplayer@github:makeding/DPlayer#b594b661e2dd57b4bf67a2974d7fff6315532168":
+"dplayer@github:makeding/DPlayer#720e14beffac166b58eeed93f25649feffd9d455":
   version "1.32.9"
-  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/b594b661e2dd57b4bf67a2974d7fff6315532168"
+  resolved "https://codeload.github.com/makeding/DPlayer/tar.gz/720e14beffac166b58eeed93f25649feffd9d455"
   dependencies:
     aribb24.js "~1.11.5"
     aribb62.js "^0.2.0"
     axios "^1.7.2"
     balloon-css "^1.2.0"
-    tlvdemux "^0.2.0"
+    tlvdemux "^0.2.1"
 
 dunder-proto@^1.0.0, dunder-proto@^1.0.1:
   version "1.0.1"
@@ -6390,10 +6390,10 @@ tinyspy@^3.0.2:
   resolved "https://registry.yarnpkg.com/tinyspy/-/tinyspy-3.0.2.tgz#86dd3cf3d737b15adcf17d7887c84a75201df20a"
   integrity sha512-n1cw8k1k0x4pgA2+9XrOkFydTerNcJ1zWCO5Nn9scWHTD+5tp8dghT2x1uduQePZTZgd3Tupf+x9BxJjeJi77Q==
 
-tlvdemux@^0.2.0:
-  version "0.2.0"
-  resolved "https://registry.yarnpkg.com/tlvdemux/-/tlvdemux-0.2.0.tgz#9041a3b10b772935c3069bc3933e8fe961acb91c"
-  integrity sha512-7feYDGpIxcbJBLVKglO0D8tclL676d3BD3HEdbd1xmYj8FkUXJbZ9kGdUnuWJ6pgXbBnLWzsgZPzIDEt1vyzsQ==
+tlvdemux@^0.2.1:
+  version "0.2.1"
+  resolved "https://registry.yarnpkg.com/tlvdemux/-/tlvdemux-0.2.1.tgz#e3cc9d0fb68bf627ca6449bea511b5626f781d66"
+  integrity sha512-8zPbwYqLQTlMe6H50E67PGFoxXGddmX5czLWS2HeYME/MzXkly53vDmrkxAOyOhA6u2IkUYDzZQk8o1NBJHl9w==
 
 to-regex-range@^5.0.1:
   version "5.0.1"

@@ -228,7 +228,8 @@ class VideoEncodingTask:
             list[str]: FFmpeg に渡すオプションが連なる配列
         """
 
-        # MMT/TLV は元ファイルを libaribtlv で直接開き、映像・音声を再エンコードせず MPEG-TS へ再多重化する
+        # MMT/TLV は元ファイルを libaribtlv で直接開き、映像は再エンコードせず MPEG-TS へ再多重化する
+        # MMT/TLV の音声は AAC-LATM のため、HLS で扱える通常の AAC へ変換する
         if mmt_seek_seconds is not None:
             if mmt_input_file_path is None:
                 raise ValueError('MMT/TLV input file path is required for stream copy.')
@@ -241,7 +242,13 @@ class VideoEncodingTask:
                 '-map', '0:a:0',
                 '-map', '0:a:1?',
                 '-ignore_unknown',
-                '-codec', 'copy',
+                '-codec:v', 'copy',
+                '-acodec', 'aac',
+                '-aac_coder', 'twoloop',
+                '-ac', '2',
+                '-ab', '192K',
+                '-ar', '48000',
+                '-af', 'volume=2.0',
                 '-output_ts_offset', str(output_ts_offset),
                 '-y',
                 '-f', 'mpegts',

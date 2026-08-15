@@ -9,7 +9,7 @@ from typing import Literal
 import ariblib.constants
 
 from app import logging, schemas
-from app.constants import JST
+from app.constants import JST, PARTIALLY_RECORDED_TOLERANCE_SECONDS
 from app.utils import NormalizeToJSTDatetime
 from app.utils.TSInformation import TSInformation
 
@@ -247,6 +247,11 @@ class MMTSInfoAnalyzer:
         media_info = self.__analyzeMediaInfo(tables, recorded_duration)
         channel = self.__buildChannel(service)
 
+        # MH-TOT と MH-EIT の数秒程度の境界ずれでは、実際に番組本編が欠けているとは限らない。
+        ## 普通の MPEG-TS と同じ許容誤差を適用し、数十秒以上の欠落だけを部分録画として扱う。
+        start_missing_seconds = (recording_start_time - event.start_time).total_seconds()
+        end_missing_seconds = (event_end_time - recording_end_time).total_seconds()
+
         # MMT/TLV 本体は FFprobe で扱えないため、MPT と MH-EIT から KonomiTV が必要とする最小メディア情報を復元する。
         recorded_video = schemas.RecordedVideo(
             status = 'Recorded',
@@ -297,8 +302,8 @@ class MMTSInfoAnalyzer:
             recording_start_margin = max((event.start_time - recording_start_time).total_seconds(), 0.0),
             recording_end_margin = max((recording_end_time - event_end_time).total_seconds(), 0.0),
             is_partially_recorded = (
-                event.start_time < recording_start_time or
-                recording_end_time < event_end_time
+                start_missing_seconds > PARTIALLY_RECORDED_TOLERANCE_SECONDS or
+                end_missing_seconds > PARTIALLY_RECORDED_TOLERANCE_SECONDS
             ),
             # 必須フィールドのため作成日時・更新日時は適当に現在時刻を入れている
             # この値は参照されず、DB の値は別途自動生成される
