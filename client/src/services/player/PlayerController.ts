@@ -698,7 +698,7 @@ class PlayerController {
                         // 画質プロファイルに記載の画質ではなく、指定された（前回再生時の）画質を使ってレジュームする
                         default_quality = options.default_quality;
                     } else if (is_mmts_recorded_video === true) {
-                        // 完全な単一ファイルは、従来どおり raw 直通再生を既定にする
+                        // MMT/TLV は録画状態に関係なく raw 直通再生を既定にする
                         default_quality = PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME;
                     } else if (is_mpegts_passthrough_available === true) {
                         // 変換済み MPEG-TS 録画は、再エンコードを行わない画質を既定にする
