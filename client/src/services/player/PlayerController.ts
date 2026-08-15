@@ -693,13 +693,7 @@ class PlayerController {
                     // デフォルトの画質
                     // ビデオ視聴時はラジオは考慮しない
                     let default_quality: string;
-                    if (
-                        is_mmts_recorded_video === true &&
-                        player_store.recorded_program.is_partially_recorded === true
-                    ) {
-                        // 中断した MMT/TLV 録画は、保存済み画質が raw 直通でも仮想時間軸を扱える HLS を優先する。
-                        default_quality = PlayerController.MMT_HLS_QUALITY_NAME;
-                    } else if (options.default_quality !== null) {
+                    if (options.default_quality !== null) {
                         // PlayerController.init() のオプションでデフォルト画質が指定されている場合は
                         // 画質プロファイルに記載の画質ではなく、指定された（前回再生時の）画質を使ってレジュームする
                         default_quality = options.default_quality;
