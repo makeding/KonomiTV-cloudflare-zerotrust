@@ -115,6 +115,12 @@ const handleSettingCoverClick = () => {
             transition: opacity 0.2s cubic-bezier(0.4, 0.38, 0.49, 0.94);
             opacity: 1;
         }
+        // ARIB STD-B62 字幕・文字スーパーは、receiver 背景 (z=0)・外部映像面 (z=1)・
+        // application canvas / HDR → SDR 変換 canvas (z=2) のすべてより手前に表示する。
+        // DPlayer が実行時に生成する要素の DOM 順序には依存せず、放送映像の合成順を明示する。
+        .dplayer-tlv-media-plane > .dplayer-aribb62-subtitle {
+            z-index: 3;
+        }
         .dplayer-danmaku {
             max-width: 100%;
             max-height: calc(100% - var(--comment-area-vertical-margin, 0px));
