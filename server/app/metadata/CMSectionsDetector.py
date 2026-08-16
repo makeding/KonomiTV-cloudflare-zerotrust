@@ -6,6 +6,7 @@ import pathlib
 import shutil
 import tempfile
 import time
+from typing import ClassVar
 
 import anyio
 import typer
@@ -28,6 +29,10 @@ class CMSectionsDetector:
     録画ファイルと同じファイル名で .chapter.txt が保存されていればそこから CM 区間情報を取得し、
     .chapter.txt が存在しない場合は自前で CM 区間を検出する
     """
+
+    # CM 解析は CPU / GPU / ストレージの負荷が高いため、
+    ## 自動スキャンと手動メンテナンスを含め、サーバープロセス全体で常に1件ずつ実行する。
+    __detection_semaphore: ClassVar[asyncio.Semaphore] = asyncio.Semaphore(1)
 
     def __init__(
         self,
@@ -59,45 +64,48 @@ class CMSectionsDetector:
         録画ファイルの CM 区間を検出し、データベースに保存する
         """
 
-        start_time = time.time()
-        logging.info(f'{self.file_path}: Detecting CM sections...')
-        try:
-            # 録画ファイルに対応するチャプターファイル (.chapter.txt) がもしあれば解析し、CM 区間情報を取得する
-            ## 自前で解析すると計算コストが高いので、もしチャプターファイルがあればそれを優先的に使う
-            ## .chapter.txt は Amatsukaze でエンコードした際に設定次第で自動生成される
-            cm_sections = await self.__detectFromChapterFile()
+        # 前の CM 検出が完了するまで待機し、このメソッド内の全工程を独占実行する。
+        ## async with により、解析中の例外やタスクキャンセル時にも必ず次の待機タスクへ実行権を渡す。
+        async with self.__detection_semaphore:
+            start_time = time.time()
+            logging.info(f'{self.file_path}: Detecting CM sections...')
+            try:
+                # 録画ファイルに対応するチャプターファイル (.chapter.txt) がもしあれば解析し、CM 区間情報を取得する
+                ## 自前で解析すると計算コストが高いので、もしチャプターファイルがあればそれを優先的に使う
+                ## .chapter.txt は Amatsukaze でエンコードした際に設定次第で自動生成される
+                cm_sections = await self.__detectFromChapterFile()
 
-            # チャプターファイルが存在しない場合、join_logo_scp を使って自前で解析を試みる
-            if cm_sections is None:
-                cm_sections = await self.__detectWithJLS()
+                # チャプターファイルが存在しない場合、join_logo_scp を使って自前で解析を試みる
+                if cm_sections is None:
+                    cm_sections = await self.__detectWithJLS()
 
-            # ランタイム不足や解析失敗時は未解析の None を維持する。
-            ## [] にすると「正常に解析したが CM なし」と区別できず、ランタイム導入後も再解析されないため。
-            if cm_sections is None:
-                logging.warning(f'{self.file_path}: CM section detection did not complete. Keeping it pending.')
-                return
+                # ランタイム不足や解析失敗時は未解析の None を維持する。
+                ## [] にすると「正常に解析したが CM なし」と区別できず、ランタイム導入後も再解析されないため。
+                if cm_sections is None:
+                    logging.warning(f'{self.file_path}: CM section detection did not complete. Keeping it pending.')
+                    return
 
-            # 検出結果をログに出力
-            for cm_section in cm_sections:
-                logging.debug(f'{self.file_path}: CM section detected: {cm_section["start_time"]} - {cm_section["end_time"]}')
+                # 検出結果をログに出力
+                for cm_section in cm_sections:
+                    logging.debug(f'{self.file_path}: CM section detected: {cm_section["start_time"]} - {cm_section["end_time"]}')
 
-            # 検出結果をデータベースに保存
-            ## ファイルパスから対応する RecordedVideo レコードを取得
-            db_recorded_video = await RecordedVideo.get_or_none(file_path=str(self.file_path))
-            if db_recorded_video is not None:
-                # CM 区間情報を更新
-                # 検出できなかった場合も必ず [] を設定する
-                db_recorded_video.cm_sections = cm_sections
-                await db_recorded_video.save()
-                if len(cm_sections) > 0:
-                    logging.info(f'{self.file_path}: Saved {len(cm_sections)} CM sections. ({time.time() - start_time:.2f} sec)')
+                # 検出結果をデータベースに保存
+                ## ファイルパスから対応する RecordedVideo レコードを取得
+                db_recorded_video = await RecordedVideo.get_or_none(file_path=str(self.file_path))
+                if db_recorded_video is not None:
+                    # CM 区間情報を更新
+                    # 検出できなかった場合も必ず [] を設定する
+                    db_recorded_video.cm_sections = cm_sections
+                    await db_recorded_video.save()
+                    if len(cm_sections) > 0:
+                        logging.info(f'{self.file_path}: Saved {len(cm_sections)} CM sections. ({time.time() - start_time:.2f} sec)')
+                    else:
+                        logging.info(f'{self.file_path}: No CM sections detected. ({time.time() - start_time:.2f} sec)')
                 else:
-                    logging.info(f'{self.file_path}: No CM sections detected. ({time.time() - start_time:.2f} sec)')
-            else:
-                logging.warning(f'{self.file_path}: RecordedVideo record not found.')
+                    logging.warning(f'{self.file_path}: RecordedVideo record not found.')
 
-        except Exception as ex:
-            logging.error(f'{self.file_path}: Error saving CM sections to DB:', exc_info=ex)
+            except Exception as ex:
+                logging.error(f'{self.file_path}: Error saving CM sections to DB:', exc_info=ex)
 
 
     async def __detectWithJLS(self) -> list[schemas.CMSection] | None:

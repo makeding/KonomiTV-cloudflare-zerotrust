@@ -60,18 +60,14 @@ class PlayerController {
 
     // 元ストリームを再エンコードせずに再生する特殊な画質の表示名
     private static readonly PASSTHROUGH_PRIMARY_QUALITY_NAME = 'TLV パススルー';
-    private static readonly PASSTHROUGH_SECONDARY_QUALITY_NAME = 'TLV パススルー（降雨放送）';
     private static readonly MMT_HLS_QUALITY_NAME = 'HLS (オリジナル)';
     private static readonly MPEGTS_PASSTHROUGH_QUALITY_NAME = 'MPEG-TS パススルー';
-    private static readonly PASSTHROUGH_LEGACY_QUALITY_NAMES = ['Raw MMTS', 'TLV パススルー'];
-    private static readonly PASSTHROUGH_LEGACY_SECONDARY_QUALITY_NAMES = ['TLV パススルー（降雨対応）'];
-
-    // BS4K/BS8K の TLV/MMT では HEVC 映像アセットが複数存在する
-    // 降雨放送対応チャンネルでは通常/降雨映像の両方を packet_id で明示する
-    private static readonly BS4K_TLV_PRIMARY_VIDEO_PACKET_ID = 0xf300;
-    private static readonly BS4K_TLV_SECONDARY_VIDEO_PACKET_ID = 0xf301;
-    private static readonly BS8K_TLV_PRIMARY_VIDEO_PACKET_ID = 0xf100;
-    private static readonly BS8K_TLV_SECONDARY_VIDEO_PACKET_ID = 0xf101;
+    private static readonly PASSTHROUGH_LEGACY_QUALITY_NAMES = [
+        'Raw MMTS',
+        'TLV パススルー',
+        'TLV パススルー（降雨対応）',
+        'TLV パススルー（降雨放送）',
+    ];
 
     // DPlayer のインスタンス
     private player: DPlayer | null = null;
@@ -533,11 +529,6 @@ class PlayerController {
                     const streaming_api_base_url = `${Utils.api_base_url}/streams/live/${channels_store.channel.current.display_channel_id}`;
                     // BS4K チャンネルでは、Mirakurun から decode=0 で受け取った Raw MMTS をそのまま再生できる
                     const is_bs4k_channel = channels_store.channel.current.type === 'BS4K';
-                    // NHK BSP4K (NID11-SID101 / bs4k101) と NHK BS8K (NID11-SID102 / bs4k102) のみ降雨放送がある
-                    const has_tlv_secondary_video = channels_store.channel.current.network_id === 11 &&
-                        [101, 102].includes(channels_store.channel.current.service_id);
-                    // NHK BS8K では packet_id が 0xf100 -> 0xf101、それ以外の降雨放送対応 BS4K では 0xf300 -> 0xf301 になる
-                    const is_bs8k_channel = channels_store.channel.current.network_id === 11 && channels_store.channel.current.service_id === 102;
                     // ラジオチャンネルの場合
                     // API が受け付ける画質の値は通常のチャンネルと同じだが (手抜き…)、実際の画質は 48KHz/192kbps で固定される
                     // ラジオチャンネルの場合は、1080p と渡しても 48kHz/192kbps 固定の音声だけの MPEG-TS が配信される
@@ -556,24 +547,7 @@ class PlayerController {
                                 name: PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME,
                                 type: 'tlv',
                                 url: `${streaming_api_base_url}/raw-mmts/mpegts`,
-                                tlv: has_tlv_secondary_video === true ? {
-                                    videoPacketId: is_bs8k_channel === true ?
-                                        PlayerController.BS8K_TLV_PRIMARY_VIDEO_PACKET_ID :
-                                        PlayerController.BS4K_TLV_PRIMARY_VIDEO_PACKET_ID,
-                                } : undefined,
                             });
-                            if (has_tlv_secondary_video === true) {
-                                qualities.push({
-                                    name: PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME,
-                                    type: 'tlv',
-                                    url: `${streaming_api_base_url}/raw-mmts/mpegts`,
-                                    tlv: {
-                                        videoPacketId: is_bs8k_channel === true ?
-                                            PlayerController.BS8K_TLV_SECONDARY_VIDEO_PACKET_ID :
-                                            PlayerController.BS4K_TLV_SECONDARY_VIDEO_PACKET_ID,
-                                    },
-                                });
-                            }
                         }
                         // 画質リストを作成
                         for (const quality_name of LIVE_STREAMING_QUALITIES) {
@@ -597,13 +571,9 @@ class PlayerController {
                     if (PlayerController.PASSTHROUGH_LEGACY_QUALITY_NAMES.includes(default_quality)) {
                         default_quality = PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME;
                     }
-                    if (PlayerController.PASSTHROUGH_LEGACY_SECONDARY_QUALITY_NAMES.includes(default_quality)) {
-                        default_quality = PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME;
-                    }
                     // Raw MMTS は BS4K 以外では使えないため、チャンネル切り替えなどで持ち越された場合は 1080p に戻す
                     if (
-                        (default_quality === PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME ||
-                         default_quality === PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME) &&
+                        default_quality === PlayerController.PASSTHROUGH_PRIMARY_QUALITY_NAME &&
                         is_bs4k_channel === false
                     ) {
                         default_quality = '1080p';
@@ -1075,8 +1045,8 @@ class PlayerController {
         };
         dplayer_instance.on('tlv_ready', syncTLVTracks);
         dplayer_instance.on('tlv_tracks', syncTLVTracks);
-        dplayer_instance.on('tlv_layer_change', (layer: DPlayerType.TLVLayerChange) => {
-            this.handleTLVLayerChangeForSecondaryAutoSwitch(layer);
+        dplayer_instance.on('tlv_layer_change', () => {
+            this.ignore_tlv_video_switch_error_until = performance.now() + 10 * 1000;
         });
         dplayer_instance.on('tlv_error', (error: unknown) => {
             console.error('\u001b[31m[PlayerController] TLV playback error:', error);
@@ -2824,39 +2794,6 @@ class PlayerController {
      */
     private formatHex(value: number, width: number): string {
         return `0x${value.toString(16).padStart(width, '0')}`;
-    }
-
-
-    /**
-     * tlvdemux C++ が完了した自動映像 layer 切替を、DPlayer の画質 UI に反映する。
-     */
-    private handleTLVLayerChangeForSecondaryAutoSwitch(layer: DPlayerType.TLVLayerChange): void {
-        if (this.player === null || this.playback_mode !== 'Live' || this.player.quality?.type !== 'tlv') return;
-        const qualities = this.player.options.video.quality;
-        const secondary_quality_index = qualities?.findIndex((quality) => (
-            quality.name === PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME &&
-            quality.type === 'tlv' && quality.tlv?.videoPacketId === layer.videoTrack.packetId
-        )) ?? -1;
-        if (!qualities || secondary_quality_index < 0) return;
-
-        const secondary_quality = qualities[secondary_quality_index];
-        const player = this.player as any;
-        player.qualityIndex = secondary_quality_index;
-        player.quality = secondary_quality;
-        this.player.template.qualityValue.textContent = PlayerController.PASSTHROUGH_SECONDARY_QUALITY_NAME;
-        this.player.template.qualityItem.forEach((quality_item: HTMLElement) => {
-            quality_item.classList.toggle(
-                'dplayer-setting-quality-current',
-                Number(quality_item.dataset.index) === secondary_quality_index,
-            );
-        });
-        this.ignore_tlv_video_switch_error_until = performance.now() + 10 * 1000;
-        this.player.notice(
-            '受信した放送ストリームが不連続なため、降雨放送に切り替えました。',
-            undefined,
-            undefined,
-            '#FFA86A',
-        );
     }
 
 
