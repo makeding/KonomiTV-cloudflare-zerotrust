@@ -2153,8 +2153,15 @@ class PlayerController {
         };
         this.player.setting.show = () => {
             if (this.player === null) return;
-            original_show.call(this.player.setting);
-            player_store.is_player_setting_panel_open = true;
+            // DPlayer の設定ボタンは表示中でも常に show() を呼ぶため、再度押したときは閉じる
+            // 実際の DOM 状態を判定に使い、Store の状態が一時的にずれていても開閉操作を正しく反映する
+            if (this.player.template.settingBox.classList.contains('dplayer-setting-box-open') === true) {
+                original_hide.call(this.player.setting);
+                player_store.is_player_setting_panel_open = false;
+            } else {
+                original_show.call(this.player.setting);
+                player_store.is_player_setting_panel_open = true;
+            }
         };
 
         const is_offline_playback = this.playback_mode === 'Video' && player_store.is_offline_playback === true;
