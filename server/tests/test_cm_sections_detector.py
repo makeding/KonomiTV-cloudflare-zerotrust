@@ -9,6 +9,22 @@ import anyio
 from app.metadata.CMSectionsDetector import CMSectionsDetector
 
 
+class CMSectionsDetectorPolicyTest(unittest.TestCase):
+    """コンテナ形式と設定による CM 解析対象の選択を検証する。"""
+
+    def test_mmt_tlv_analysis_is_disabled_by_default(self) -> None:
+        """高負荷な MMT/TLV 解析は明示的に有効化されるまで実行しない。"""
+
+        self.assertFalse(CMSectionsDetector.shouldAnalyze('MMT/TLV', False))
+        self.assertTrue(CMSectionsDetector.shouldAnalyze('MMT/TLV', True))
+
+
+    def test_mpeg_ts_analysis_is_not_affected_by_mmt_tlv_setting(self) -> None:
+        """通常の MPEG-TS 解析は MMT/TLV 設定が無効でも継続する。"""
+
+        self.assertTrue(CMSectionsDetector.shouldAnalyze('MPEG-TS', False))
+
+
 class CMSectionsDetectorConcurrencyTest(unittest.IsolatedAsyncioTestCase):
     """CM 区間検出のサーバー全体における独占実行を検証する。"""
 

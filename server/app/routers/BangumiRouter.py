@@ -187,7 +187,8 @@ async def BangumiAuthAPI(
 @router.post(
     '/videos/{video_id}/progress',
     summary = 'Bangumi 録画視聴進捗 API',
-    status_code = status.HTTP_204_NO_CONTENT,
+    response_model = schemas.BangumiPlaybackProgressResponse,
+    status_code = status.HTTP_200_OK,
 )
 async def BangumiPlaybackProgressAPI(
     video_id: Annotated[int, Path(description='視聴中の録画番組 ID。')],
@@ -204,7 +205,7 @@ async def BangumiPlaybackProgressAPI(
         current_user (User): ログイン中の KonomiTV ユーザー。
 
     Returns:
-        None: 同期完了済み、または照合対象外の場合。
+        schemas.BangumiPlaybackProgressResponse: 同期処理の結果。
 
     Raises:
         HTTPException: 録画番組が存在しない、連携がない、または Bangumi API 更新に失敗した場合。
@@ -216,10 +217,6 @@ async def BangumiPlaybackProgressAPI(
             detail = 'Bangumi account is not linked',
         )
 
-    # 完了判定はクライアントのイベント発火条件に依存させず、受信した実再生時間からバックエンドで行う。
-    if BangumiClient.isPlaybackCompleted(progress_request.playback_position, progress_request.duration) is False:
-        return
-
     recorded_program = await RecordedProgram.get_or_none(id=video_id).prefetch_related('recorded_video')
     if recorded_program is None:
         raise HTTPException(
@@ -227,11 +224,22 @@ async def BangumiPlaybackProgressAPI(
             detail = 'Specified video_id was not found',
         )
 
-    # 録画中や、ローカル Series / 単一の正整数話数を抽出できない番組は誤同期を避けるため対象外とする
+    # CM 解析済みならサーバーの録画時間軸を正とする。未解析時は Raw MMT/TLV を含め、実プレイヤーが解決した時間を使う。
+    completion_duration = recorded_program.recorded_video.duration \
+        if recorded_program.recorded_video.cm_sections else progress_request.duration
+    if BangumiClient.isPlaybackCompleted(
+        progress_request.playback_position,
+        completion_duration,
+        recorded_program.recorded_video.cm_sections,
+    ) is False:
+        return schemas.BangumiPlaybackProgressResponse(status='Pending')
+
+    # 録画中は CM 解析とファイル終端が未確定なので、録画完了後にクライアントから再送してもらう。
     if recorded_program.recorded_video.status != 'Recorded':
-        return
+        return schemas.BangumiPlaybackProgressResponse(status='Pending')
+    # 単一の正整数話数を抽出できない番組は誤同期を避けるため対象外とする。
     if BangumiClient.parseEpisodeNumber(recorded_program.episode_number) is None:
-        return
+        return schemas.BangumiPlaybackProgressResponse(status='NotEligible')
 
     # 過去の同期済み記録があれば、重播や複数タブからの重複更新を避ける
     if recorded_program.bangumi_episode_id is not None:
@@ -240,14 +248,14 @@ async def BangumiPlaybackProgressAPI(
             bangumi_episode_id = recorded_program.bangumi_episode_id,
         ).exists()
         if is_completed:
-            return
+            return schemas.BangumiPlaybackProgressResponse(status='AlreadyCompleted')
 
     # 条目・話数照合は收藏一覧同期だけが担当し、再生 API から作品ごとの検索を発生させない。
     if recorded_program.bangumi_subject_id is None or recorded_program.bangumi_episode_id is None:
         logging.info(
             f'[BangumiRouter][BangumiPlaybackProgressAPI] Bangumi episode is not mapped. [video_id: {video_id}]',
         )
-        return
+        return schemas.BangumiPlaybackProgressResponse(status='Pending')
 
     # 外部更新に成功した後で完了記録を作り、失敗を成功として扱わない
     access_token = current_user.decryptBangumiAccessToken()
@@ -266,6 +274,7 @@ async def BangumiPlaybackProgressAPI(
         f'[konomitv_user_id: {current_user.id}, video_id: {video_id}, '
         f'bangumi_episode_id: {recorded_program.bangumi_episode_id}]',
     )
+    return schemas.BangumiPlaybackProgressResponse(status='Completed')
 
 
 @router.delete(

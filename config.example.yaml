@@ -103,6 +103,10 @@ video:
     # 例えば、'E:\TV-Record\Temp' を指定すると、そのサブフォルダ以下の録画ファイルはスキャン対象から除外されます。
     exclude_scan_paths: []
 
+    # BS4K / BS8K の MMT/TLV 録画でも CM 解析を行うか
+    # MMT/TLV の CM 解析は非常に大きな CPU・GPU・ストレージ負荷が掛かるため、デフォルトでは無効です。
+    enable_mmt_tlv_cm_analysis: false
+
 # =============================== キャプチャの設定 ===============================
 capture:
 

@@ -59,6 +59,22 @@ class CMSectionsDetector:
         self.service_id = service_id
 
 
+    @staticmethod
+    def shouldAnalyze(container_format: CMContainerFormat, enable_mmt_tlv_cm_analysis: bool) -> bool:
+        """
+        設定とコンテナ形式から CM 解析を実行するか判定する。
+
+        Args:
+            container_format (CMContainerFormat): 解析対象のコンテナ形式。
+            enable_mmt_tlv_cm_analysis (bool): MMT/TLV の高負荷な CM 解析を許可する設定。
+
+        Returns:
+            bool: CM 解析を実行する場合は True。
+        """
+
+        return container_format != 'MMT/TLV' or enable_mmt_tlv_cm_analysis is True
+
+
     async def detectAndSave(self) -> None:
         """
         録画ファイルの CM 区間を検出し、データベースに保存する

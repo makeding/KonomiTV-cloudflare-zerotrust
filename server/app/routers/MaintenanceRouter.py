@@ -25,7 +25,6 @@ from app.constants import (
     RESTART_REQUIRED_LOCK_PATH,
     THUMBNAILS_DIR,
 )
-from app.metadata.CMAnalyzer import CMContainerFormat
 from app.metadata.CMSectionsDetector import CMSectionsDetector
 from app.metadata.RecordedScanTask import RecordedScanTask
 from app.metadata.ThumbnailGenerator import ThumbnailGenerator
@@ -283,14 +282,21 @@ async def BackgroundAnalysisAPI():
                 # CM 区間情報が未解析の場合、タスクに追加
                 ## cm_sections が [] の時は「正常に解析したが CM 区間がなかった」ことを表す。
                 ## None は未解析または解析失敗なので、ランタイム導入・修復後に再実行できる。
-                if video_row['cm_sections'] is None:
+                container_format = cast(Literal['MPEG-TS', 'MPEG-4', 'MMT/TLV'], video_row['container_format'])
+                if (
+                    video_row['cm_sections'] is None and
+                    CMSectionsDetector.shouldAnalyze(
+                        container_format,
+                        Config().video.enable_mmt_tlv_cm_analysis,
+                    )
+                ):
                     db_recorded_program = await RecordedProgram.all() \
                         .select_related('recorded_video') \
                         .get_or_none(id=video_row['recorded_program_id'])
                     tasks.append(CMSectionsDetector(
                         file_path = anyio.Path(video_row['file_path']),
                         duration_sec = video_row['duration'],
-                        container_format = cast(CMContainerFormat, video_row['container_format']),
+                        container_format = container_format,
                         service_id = db_recorded_program.service_id if db_recorded_program is not None else None,
                     ).detectAndSave())
 

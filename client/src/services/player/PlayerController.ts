@@ -105,6 +105,9 @@ class PlayerController {
     // ビデオ視聴: 同じプレイヤーで Bangumi 視聴完了 API を重複送信しないためのフラグ
     private is_bangumi_episode_completion_requested = false;
 
+    // ビデオ視聴: Bangumi の条目・話数照合が未完了だった場合に、API を再送できる最短時刻
+    private bangumi_progress_retry_at = 0;
+
     // Screen Wake Lock API の WakeLockSentinel のインスタンス
     // 確保した起動ロックを解放するために保持しておく必要がある
     // Screen Wake Lock API がサポートされていない場合やリクエストに失敗した場合は null になる
@@ -2019,7 +2022,13 @@ class PlayerController {
                 if (Number.isFinite(duration) === false || duration <= 0) {
                     return;
                 }
-                if (this.player.video.currentTime / duration < 0.9) {
+                const cm_sections = player_store.recorded_program.recorded_video.cm_sections;
+                const completion_threshold = cm_sections !== null && cm_sections.length > 0 ?
+                    player_store.recorded_program.recorded_video.playback_completion_threshold : duration * 0.9;
+                if (Number.isFinite(completion_threshold) === false || completion_threshold <= 0) {
+                    return;
+                }
+                if (this.player.video.currentTime < completion_threshold || dayjs().valueOf() < this.bangumi_progress_retry_at) {
                     return;
                 }
 
@@ -2028,9 +2037,12 @@ class PlayerController {
                 void Bangumi.updatePlaybackProgress(player_store.recorded_program.id, {
                     playback_position: this.player.video.currentTime,
                     duration,
-                }).then((is_success) => {
-                    // 一時的な API エラーでは、同じプレイヤーセッション内の次回 timeupdate から再送できるようにする
-                    if (is_success === false) this.is_bangumi_episode_completion_requested = false;
+                }).then((response) => {
+                    // 未照合・録画中・通信失敗なら 30 秒後に再送し、同じ timeupdate から連打しない。
+                    if (response === null || response.status === 'Pending') {
+                        this.bangumi_progress_retry_at = dayjs().add(30, 'seconds').valueOf();
+                        this.is_bangumi_episode_completion_requested = false;
+                    }
                 });
             });
 

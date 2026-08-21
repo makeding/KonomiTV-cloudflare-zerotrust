@@ -376,6 +376,7 @@ class _ServerSettingsTV(BaseModel):
 class _ServerSettingsVideo(BaseModel):
     recorded_folders: list[DirectoryPath] = []
     exclude_scan_paths: list[str] = []
+    enable_mmt_tlv_cm_analysis: bool = False
     # チャンネル選択設定
     channel_selection_mode: Literal['auto', 'prefer_main', 'first_found', 'filename_based'] = 'auto'
     enable_filename_based_channel_selection: bool = True

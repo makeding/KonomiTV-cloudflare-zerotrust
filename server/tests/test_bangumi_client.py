@@ -76,8 +76,44 @@ class BangumiClientTest(unittest.TestCase):
     def test_playback_completion_is_decided_at_ninety_percent(self) -> None:
         """30 分番組は 27 分到達時点から完了と判定する。"""
 
-        self.assertFalse(BangumiClient.isPlaybackCompleted(1619.9, 1800.0))
-        self.assertTrue(BangumiClient.isPlaybackCompleted(1620.0, 1800.0))
+        self.assertFalse(BangumiClient.isPlaybackCompleted(1619.9, 1800.0, None))
+        self.assertTrue(BangumiClient.isPlaybackCompleted(1620.0, 1800.0, None))
+
+
+    def test_playback_completion_uses_three_minutes_before_last_cm(self) -> None:
+        """最後の CM が 25 分開始なら、その 3 分前の 22 分から完了と判定する。"""
+
+        cm_sections = [
+            {'start_time': 600.0, 'end_time': 720.0},
+            {'start_time': 1500.0, 'end_time': 1800.0},
+        ]
+
+        self.assertFalse(BangumiClient.isPlaybackCompleted(1319.9, 1800.0, cm_sections))
+        self.assertTrue(BangumiClient.isPlaybackCompleted(1320.0, 1800.0, cm_sections))
+
+
+    def test_short_sponsor_gap_is_merged_between_cm_sections(self) -> None:
+        """CM に挟まれた 1 分未満のスポンサー表示は最後の CM 群へまとめる。"""
+
+        cm_sections = [
+            {'start_time': 1500.0, 'end_time': 1650.0},
+            {'start_time': 1660.0, 'end_time': 1790.0},
+        ]
+
+        self.assertFalse(BangumiClient.isPlaybackCompleted(1319.9, 1800.0, cm_sections))
+        self.assertTrue(BangumiClient.isPlaybackCompleted(1320.0, 1800.0, cm_sections))
+
+
+    def test_one_minute_gap_keeps_cm_sections_separate(self) -> None:
+        """CM 間がちょうど 1 分なら別の CM 群として扱う。"""
+
+        cm_sections = [
+            {'start_time': 1500.0, 'end_time': 1530.0},
+            {'start_time': 1590.0, 'end_time': 1800.0},
+        ]
+
+        self.assertFalse(BangumiClient.isPlaybackCompleted(1409.9, 1800.0, cm_sections))
+        self.assertTrue(BangumiClient.isPlaybackCompleted(1410.0, 1800.0, cm_sections))
 
 
 class BangumiClientAsyncTest(unittest.IsolatedAsyncioTestCase):

@@ -152,6 +152,11 @@ class RecordedVideo(PydanticModel):
     recording_start_time: datetime | None
     recording_end_time: datetime | None
     duration: float
+    # Bangumi 連携を含む各クライアントが同じ時刻で視聴完了を判定できるよう、サーバー側で算出した値を返す。
+    @computed_field
+    @property
+    def playback_completion_threshold(self) -> float:
+        return GetPlaybackCompletionThreshold(self.duration, self.cm_sections)
     container_format: Literal['MPEG-TS', 'MPEG-4', 'MMT/TLV']
     video_codec: Literal['MPEG-2', 'H.264', 'H.265']
     video_codec_profile: Literal['High', 'High 10', 'Main', 'Main 10', 'Baseline', 'Constrained Baseline']
@@ -190,6 +195,45 @@ class SegmentMapEntry(TypedDict):
 class CMSection(TypedDict):
     start_time: float
     end_time: float
+
+
+def GetPlaybackCompletionThreshold(duration: float, cm_sections: list[CMSection] | None) -> float:
+    """
+    録画番組を視聴完了とみなす再生位置を算出する。
+
+    Args:
+        duration (float): 録画ファイル全体の再生時間 (秒)。
+        cm_sections (list[CMSection] | None): 検出済みの CM 区間。
+
+    Returns:
+        float: 録画先頭基準の視聴完了位置 (秒)。
+    """
+
+    normalized_sections: list[CMSection] = []
+    for section in cm_sections or []:
+        # 不正な区間を除外し、録画時間外へはみ出した値をプレイヤーと同じ時間軸へ収める。
+        start_time = max(0.0, min(float(section['start_time']), duration))
+        end_time = max(0.0, min(float(section['end_time']), duration))
+        if start_time >= end_time:
+            continue
+        normalized_sections.append(CMSection(start_time=start_time, end_time=end_time))
+    normalized_sections.sort(key=lambda section: (section['start_time'], section['end_time']))
+
+    merged_sections: list[CMSection] = []
+    for section in normalized_sections:
+        previous_section = merged_sections[-1] if len(merged_sections) > 0 else None
+        # CM 間の 1 分未満の提供・スポンサー表示は番組本編ではないため、完了判定時だけ同じ CM 群として扱う。
+        if previous_section is not None and section['start_time'] - previous_section['end_time'] < 60.0:
+            previous_section['end_time'] = max(previous_section['end_time'], section['end_time'])
+            continue
+        merged_sections.append(section)
+
+    # CM が検出済みなら最後の CM 群を番組終了側の境界とし、その 3 分前から視聴完了とみなす。
+    if len(merged_sections) > 0:
+        return max(merged_sections[-1]['start_time'] - 3 * 60, 0.0)
+
+    # CM 未解析・未検出の録画は従来どおりファイル全体の 90% を完了位置とする。
+    return max(duration, 0.0) * 0.9
 
 class ThumbnailInfo(TypedDict):
     version: int
@@ -841,6 +885,9 @@ class BangumiAuthRequest(BaseModel):
 class BangumiPlaybackProgressRequest(BaseModel):
     playback_position: Annotated[float, Field(ge=0)]
     duration: Annotated[float, Field(gt=0)]
+
+class BangumiPlaybackProgressResponse(BaseModel):
+    status: Literal['Completed', 'AlreadyCompleted', 'Pending', 'NotEligible']
 
 # ***** Twitter 連携 *****
 

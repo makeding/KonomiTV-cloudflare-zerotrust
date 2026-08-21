@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import httpx
 
-from app import logging
+from app import logging, schemas
 from app.constants import API_REQUEST_HEADERS, HTTPX_CLIENT
 from app.metadata.SeriesIndexer import IsStrictSeriesTitlePrefix, NormalizeSeriesTitle
 from app.models.RecordedProgram import RecordedProgram
@@ -99,19 +99,24 @@ class BangumiClient:
 
 
     @staticmethod
-    def isPlaybackCompleted(playback_position: float, duration: float) -> bool:
+    def isPlaybackCompleted(
+        playback_position: float,
+        duration: float,
+        cm_sections: list[schemas.CMSection] | None,
+    ) -> bool:
         """
         プレイヤーが報告した実再生時間から Bangumi の視聴完了を判定する。
 
         Args:
             playback_position (float): 現在の再生位置 (秒)。
-            duration (float): プレイヤーが解決した録画時間 (秒)。
+            duration (float): サーバーに保存されている録画時間 (秒)。
+            cm_sections (list[schemas.CMSection] | None): サーバーで検出済みの CM 区間。
 
         Returns:
-            bool: 90% 以上を再生済みなら True。
+            bool: CM 区間を考慮した視聴完了位置まで再生済みなら True。
         """
 
-        return playback_position / duration >= 0.9
+        return playback_position >= schemas.GetPlaybackCompletionThreshold(duration, cm_sections)
 
 
     @classmethod
