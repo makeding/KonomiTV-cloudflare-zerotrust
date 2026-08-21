@@ -2,17 +2,29 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
+from pydantic import TypeAdapter
+
+from app import schemas
 from app.constants import JST
 from app.routers.RemoteControlRouter import (
     REMOTE_DEVICE_CONNECTIONS,
     BuildRemoteDeviceList,
     GetBearerToken,
+    RemoteCommandAPI,
     RemoteDeviceConnection,
     RequestRemoteDeviceStates,
 )
 
 
 class RemoteControlRouterTest(unittest.TestCase):
+    def test_volume_commands_are_accepted_by_remote_command_schema(self) -> None:
+        """音量操作コマンドを識別子付き Union として受け付ける。"""
+
+        remote_command_adapter = TypeAdapter(schemas.RemoteCommand)
+        for command_type in ('VolumeUp', 'VolumeDown', 'VolumeMute'):
+            command = remote_command_adapter.validate_python({'type': command_type})
+            self.assertEqual(command.type, command_type)
+
     def test_bearer_token_is_parsed_case_insensitively(self) -> None:
         """正しい Bearer ヘッダーだけからトークンを取得する。"""
 
@@ -100,3 +112,24 @@ class RemoteControlRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
 
         user_websocket.send_json.assert_awaited_once_with({'type': 'RequestState'})
         other_user_websocket.send_json.assert_not_awaited()
+
+    async def test_volume_command_is_forwarded_to_authenticated_users_device(self) -> None:
+        """認証済みユーザーのテレビだけへ音量操作コマンドを転送する。"""
+
+        websocket = AsyncMock()
+        REMOTE_DEVICE_CONNECTIONS[(1, 'living-room')] = RemoteDeviceConnection(
+            device_id='living-room',
+            device_name='リビング',
+            user_id=1,
+            websocket=websocket,
+        )
+        command = TypeAdapter(schemas.RemoteCommand).validate_python({'type': 'VolumeUp'})
+
+        response = await RemoteCommandAPI(command, MagicMock(id=1), 'living-room')
+
+        self.assertNotEqual(response.command_id, '')
+        websocket.send_json.assert_awaited_once_with({
+            'type': 'Command',
+            'command_id': response.command_id,
+            'command': {'type': 'VolumeUp'},
+        })

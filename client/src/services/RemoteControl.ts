@@ -13,7 +13,8 @@ export type RemoteCommand =
     | {type: 'OpenLive'; display_channel_id: string;}
     | {type: 'OpenRecording'; recorded_program_id: number; position_seconds: number;}
     | {type: 'Play' | 'Pause' | 'Stop';}
-    | {type: 'SeekRelative'; delta_seconds: number;};
+    | {type: 'SeekRelative'; delta_seconds: number;}
+    | {type: 'VolumeUp' | 'VolumeDown' | 'VolumeMute';};
 
 class RemoteControl {
     static subscribeDevices(

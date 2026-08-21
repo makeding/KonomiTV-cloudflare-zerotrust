@@ -75,6 +75,30 @@
                 </div>
             </template>
 
+            <template v-if="selectedDevice !== null">
+                <v-divider class="my-2" />
+                <div class="remote-device-menu__volume">
+                    <div class="remote-device-menu__section-title">音量</div>
+                    <div class="remote-device-menu__controls">
+                        <v-btn icon size="small" variant="text" :disabled="selectedPlaybackState.can_adjust_volume === false" aria-label="音量を下げる"
+                            @click="sendControl({type: 'VolumeDown'})">
+                            <Icon icon="fluent:speaker-1-20-filled" width="22px" />
+                        </v-btn>
+                        <v-btn icon size="small" variant="text" :disabled="selectedPlaybackState.can_adjust_volume === false" aria-label="ミュートを切り替える"
+                            @click="sendControl({type: 'VolumeMute'})">
+                            <Icon icon="fluent:speaker-mute-20-filled" width="22px" />
+                        </v-btn>
+                        <v-btn icon size="small" variant="text" :disabled="selectedPlaybackState.can_adjust_volume === false" aria-label="音量を上げる"
+                            @click="sendControl({type: 'VolumeUp'})">
+                            <Icon icon="fluent:speaker-2-20-filled" width="22px" />
+                        </v-btn>
+                    </div>
+                    <div v-if="selectedPlaybackState.can_adjust_volume === false" class="remote-device-menu__volume-unavailable">
+                        テレビが固定音量として報告しています。テレビまたはオーディオ機器側で音量を操作してください。
+                    </div>
+                </div>
+            </template>
+
             <template v-if="selectedDeviceId !== null">
                 <v-divider class="my-2" />
                 <v-list-item title="接続を解除" @click="disconnect">
@@ -106,6 +130,7 @@ interface IRemotePlaybackState {
     artwork_url?: string;
     is_playing?: boolean;
     can_seek?: boolean;
+    can_adjust_volume?: boolean;
 }
 
 const settingsStore = useSettingsStore();
@@ -279,6 +304,16 @@ watch(remoteDeviceMenuOpenRequest, () => {
         align-items: center;
         justify-content: space-evenly;
         padding: 0 12px 6px;
+    }
+
+    &__volume {
+        padding-top: 4px;
+    }
+
+    &__volume-unavailable {
+        padding: 0 12px 8px;
+        color: rgb(var(--v-theme-text-darken-1));
+        font-size: 12px;
     }
 }
 </style>

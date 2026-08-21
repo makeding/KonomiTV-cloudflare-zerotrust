@@ -413,8 +413,11 @@ class RemoteCommandSeekRelative(BaseModel):
     type: Literal['SeekRelative']
     delta_seconds: float
 
+class RemoteCommandVolume(BaseModel):
+    type: Literal['VolumeUp', 'VolumeDown', 'VolumeMute']
+
 RemoteCommand = Annotated[
-    RemoteCommandOpenLive | RemoteCommandOpenRecording | RemoteCommandPlayback | RemoteCommandSeekRelative,
+    RemoteCommandOpenLive | RemoteCommandOpenRecording | RemoteCommandPlayback | RemoteCommandSeekRelative | RemoteCommandVolume,
     Field(discriminator='type'),
 ]
 
