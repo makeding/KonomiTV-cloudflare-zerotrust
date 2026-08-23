@@ -47,6 +47,7 @@ REMOTE_DEVICE_CONNECTIONS: dict[tuple[int, str], RemoteDeviceConnection] = {}
 # ブラウザ側はユーザーごとの部屋へ参加し、同じユーザーの Komorebi の状態変化だけを受信する。
 REMOTE_DEVICE_SUBSCRIBERS: dict[int, set[WebSocket]] = {}
 REMOTE_DEVICE_CONNECTIONS_LOCK = asyncio.Lock()
+REMOTE_WEBSOCKET_SEND_TIMEOUT_SECONDS = 3.0
 
 
 def GetBearerToken(authorization: str | None) -> str | None:
@@ -111,9 +112,13 @@ async def BroadcastRemoteDeviceList(user_id: int) -> None:
     disconnected_subscribers: list[WebSocket] = []
     for subscriber in subscribers:
         try:
-            await subscriber.send_json(device_list.model_dump(mode='json'))
-        except (RuntimeError, WebSocketDisconnect):
+            await asyncio.wait_for(
+                subscriber.send_json(device_list.model_dump(mode='json')),
+                timeout=REMOTE_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, RuntimeError, WebSocketDisconnect) as ex:
             disconnected_subscribers.append(subscriber)
+            logging.warning('[RemoteControlRouter] Failed to broadcast the remote device list.', exc_info=ex)
 
     # 配信中に切断を検出した購読者だけをユーザーの部屋から取り除く。
     if len(disconnected_subscribers) > 0:
@@ -145,15 +150,29 @@ async def RequestRemoteDeviceStates(user_id: int) -> None:
             if connection.user_id == user_id
         ]
 
+    disconnected_connections: list[RemoteDeviceConnection] = []
     for connection in connections:
         try:
-            await connection.websocket.send_json({'type': 'RequestState'})
-        except (RuntimeError, WebSocketDisconnect) as ex:
-            # 切断処理は受信側 WebSocket の finally に一元化し、ここでは他のテレビへの要求を継続する。
+            await asyncio.wait_for(
+                connection.websocket.send_json({'type': 'RequestState'}),
+                timeout=REMOTE_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, RuntimeError, WebSocketDisconnect) as ex:
+            # 半切断状態の受信機をオンライン一覧へ残すと、以後の部屋参加でも同じ送信待ちが繰り返されるため削除対象にする。
+            disconnected_connections.append(connection)
             logging.warning(
                 f'[RemoteControlRouter] Failed to request remote device state. [device_id: {connection.device_id}]',
                 exc_info=ex,
             )
+
+    # 送信中に同じ device_id の新しい接続へ置き換わる可能性があるため、失敗した接続と同一の場合だけ削除する。
+    if len(disconnected_connections) > 0:
+        async with REMOTE_DEVICE_CONNECTIONS_LOCK:
+            for connection in disconnected_connections:
+                connection_key = (connection.user_id, connection.device_id)
+                if REMOTE_DEVICE_CONNECTIONS.get(connection_key) is connection:
+                    del REMOTE_DEVICE_CONNECTIONS[connection_key]
+        await BroadcastRemoteDeviceList(user_id)
 
 
 @router.websocket('/receiver/{device_id}')
@@ -196,7 +215,19 @@ async def RemoteControlReceiverAPI(
         previous_connection = REMOTE_DEVICE_CONNECTIONS.get(connection_key)
         REMOTE_DEVICE_CONNECTIONS[connection_key] = connection
     if previous_connection is not None and previous_connection.websocket is not websocket:
-        await previous_connection.websocket.close(code=status.WS_1000_NORMAL_CLOSURE, reason='Replaced by a new connection')
+        try:
+            await asyncio.wait_for(
+                previous_connection.websocket.close(
+                    code=status.WS_1000_NORMAL_CLOSURE,
+                    reason='Replaced by a new connection',
+                ),
+                timeout=REMOTE_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, RuntimeError, WebSocketDisconnect) as ex:
+            logging.warning(
+                f'[RemoteControlRouter] Failed to close the replaced remote device. [device_id: {device_id}]',
+                exc_info=ex,
+            )
 
     logging.info(f'[RemoteControlRouter] Remote device connected. [device_id: {device_id}, user_id: {current_user.id}]')
     await BroadcastRemoteDeviceList(current_user.id)
@@ -250,14 +281,15 @@ async def RemoteDeviceSubscriberAPI(websocket: WebSocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason='Invalid authorization')
         return
 
-    # 認証できた接続だけを同じユーザーの部屋へ追加し、初期スナップショットを直ちに返す。
+    # 認証できた接続だけを同じユーザーの部屋へ追加する。
     async with REMOTE_DEVICE_CONNECTIONS_LOCK:
         REMOTE_DEVICE_SUBSCRIBERS.setdefault(current_user.id, set()).add(websocket)
-    await BroadcastRemoteDeviceList(current_user.id)
-    # 続けてオンラインの各テレビへ再送を要求し、ブラウザ参加直前の状態変化や古いスナップショットを解消する。
-    await RequestRemoteDeviceStates(current_user.id)
 
     try:
+        # 初期配信中に切断・タイムアウトしても finally で部屋から必ず取り除ける状態にしてから送信を始める。
+        await BroadcastRemoteDeviceList(current_user.id)
+        # 続けてオンラインの各テレビへ再送を要求し、ブラウザ参加直前の状態変化や古いスナップショットを解消する。
+        await RequestRemoteDeviceStates(current_user.id)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -312,12 +344,20 @@ async def RemoteCommandAPI(
 
     command_id = str(uuid.uuid4())
     try:
-        await connection.websocket.send_json({
-            'type': 'Command',
-            'command_id': command_id,
-            'command': command.model_dump(mode='json'),
-        })
-    except (RuntimeError, WebSocketDisconnect) as ex:
+        await asyncio.wait_for(
+            connection.websocket.send_json({
+                'type': 'Command',
+                'command_id': command_id,
+                'command': command.model_dump(mode='json'),
+            }),
+            timeout=REMOTE_WEBSOCKET_SEND_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, RuntimeError, WebSocketDisconnect) as ex:
+        # 応答不能な受信機はオンライン扱いを継続せず、同じ接続だけを一覧から取り除く。
+        async with REMOTE_DEVICE_CONNECTIONS_LOCK:
+            if REMOTE_DEVICE_CONNECTIONS.get((current_user.id, device_id)) is connection:
+                del REMOTE_DEVICE_CONNECTIONS[(current_user.id, device_id)]
+        await BroadcastRemoteDeviceList(current_user.id)
         logging.warning(f'[RemoteControlRouter] Failed to send remote command. [device_id: {device_id}]', exc_info=ex)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Remote device is offline') from ex
     return schemas.RemoteCommandAccepted(command_id=command_id)

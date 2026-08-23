@@ -48,6 +48,10 @@ from app.routers import (
 from app.streams.LiveStream import LiveStream
 from app.utils.BangumiClient import BangumiClient
 from app.utils.edcb.EDCBTuner import EDCBTuner
+from app.utils.EventLoopBlockDetector import (
+    StartEventLoopBlockDetector,
+    StopEventLoopBlockDetector,
+)
 from app.utils.FastAPITaskUtil import repeat_every
 from app.utils.HardwareDevice import InitializeVAAPIHardwareDevices
 
@@ -292,6 +296,11 @@ async def UpdateChannelJikkyoStatus():
 async def UpdateBangumiCollections():
     await BangumiClient.syncAllLinkedUsers()
 
+# 通常の起動処理が完了してからイベントループの応答性を監視し、実行中の同期ブロックを次回発生時に捕捉する。
+@app.on_event('startup')
+async def StartEventLoopBlockDetection():
+    StartEventLoopBlockDetector()
+
 # サーバーの終了時に実行する
 cleanup = False
 @app.on_event('shutdown')
@@ -302,6 +311,9 @@ async def Shutdown():
     if cleanup is True:
         return
     cleanup = True
+
+    # 意図したシャットダウン待機をイベントループ停止として記録しないよう、他の終了処理より先に監視を止める。
+    await StopEventLoopBlockDetector()
 
     # 全てのライブストリームを終了する
     for live_stream in LiveStream.getAllLiveStreams():

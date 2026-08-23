@@ -1,6 +1,7 @@
+import asyncio
 import unittest
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from pydantic import TypeAdapter
 
@@ -8,6 +9,8 @@ from app import schemas
 from app.constants import JST
 from app.routers.RemoteControlRouter import (
     REMOTE_DEVICE_CONNECTIONS,
+    REMOTE_DEVICE_SUBSCRIBERS,
+    BroadcastRemoteDeviceList,
     BuildRemoteDeviceList,
     GetBearerToken,
     RemoteCommandAPI,
@@ -89,6 +92,7 @@ class RemoteControlRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
         """各テストで追加したオンライン端末を破棄する。"""
 
         REMOTE_DEVICE_CONNECTIONS.clear()
+        REMOTE_DEVICE_SUBSCRIBERS.clear()
 
     async def test_state_request_is_sent_only_to_requested_user_room(self) -> None:
         """ブラウザ参加時の状態再送要求を同じユーザーのテレビだけへ送る。"""
@@ -112,6 +116,41 @@ class RemoteControlRouterAsyncTest(unittest.IsolatedAsyncioTestCase):
 
         user_websocket.send_json.assert_awaited_once_with({'type': 'RequestState'})
         other_user_websocket.send_json.assert_not_awaited()
+
+    async def test_unresponsive_remote_device_is_removed_after_state_request_timeout(self) -> None:
+        """状態要求を送れない半切断端末をオンライン一覧から取り除く。"""
+
+        async def BlockSend(_message: object) -> None:
+            await asyncio.Event().wait()
+
+        websocket = AsyncMock()
+        websocket.send_json.side_effect = BlockSend
+        REMOTE_DEVICE_CONNECTIONS[(1, 'living-room')] = RemoteDeviceConnection(
+            device_id='living-room',
+            device_name='リビング',
+            user_id=1,
+            websocket=websocket,
+        )
+
+        with patch('app.routers.RemoteControlRouter.REMOTE_WEBSOCKET_SEND_TIMEOUT_SECONDS', 0.01):
+            await RequestRemoteDeviceStates(1)
+
+        self.assertNotIn((1, 'living-room'), REMOTE_DEVICE_CONNECTIONS)
+
+    async def test_unresponsive_subscriber_is_removed_after_broadcast_timeout(self) -> None:
+        """端末一覧を送れない半切断ブラウザを購読部屋から取り除く。"""
+
+        async def BlockSend(_message: object) -> None:
+            await asyncio.Event().wait()
+
+        websocket = AsyncMock()
+        websocket.send_json.side_effect = BlockSend
+        REMOTE_DEVICE_SUBSCRIBERS[1] = {websocket}
+
+        with patch('app.routers.RemoteControlRouter.REMOTE_WEBSOCKET_SEND_TIMEOUT_SECONDS', 0.01):
+            await BroadcastRemoteDeviceList(1)
+
+        self.assertNotIn(1, REMOTE_DEVICE_SUBSCRIBERS)
 
     async def test_volume_command_is_forwarded_to_authenticated_users_device(self) -> None:
         """認証済みユーザーのテレビだけへ音量操作コマンドを転送する。"""
