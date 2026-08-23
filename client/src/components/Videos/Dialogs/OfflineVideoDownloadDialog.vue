@@ -126,6 +126,28 @@ const isShown = computed({
 });
 const isHEVCSupported = computed(() => PlayerUtils.isHEVCVideoSupported());
 const isCopyMode = computed(() => selectedQuality.value === 'copy');
+const isCopyModeAvailable = computed(() => {
+    const recordedVideo = props.program.recorded_video;
+
+    // MMT/TLV 録画では、従来どおり元の映像を HLS へ再多重化できる
+    if (recordedVideo.container_format === 'MMT/TLV') return true;
+
+    // 通常の MPEG-TS 録画は、通常再生と同じ条件でブラウザが元の映像を直接デコードできる場合だけ対象にする
+    if (
+        recordedVideo.status !== 'Recorded' ||
+        recordedVideo.container_format !== 'MPEG-TS' ||
+        recordedVideo.video_scan_type !== 'Progressive' ||
+        recordedVideo.has_video_stream_changes === true
+    ) {
+        return false;
+    }
+    if (recordedVideo.video_codec === 'H.264') {
+        return recordedVideo.video_codec_profile !== 'High 10';
+    }
+    return recordedVideo.video_codec === 'H.265' &&
+        isHEVCSupported.value === true &&
+        (recordedVideo.video_codec_profile !== 'Main 10' || isHEVC10bitSupported.value === true);
+});
 const isMeteredConnection = computed(() => {
     const connection = navigator.connection;
     return connection !== undefined && (connection.saveData === true || ['slow-2g', '2g', '3g'].includes(connection.effectiveType ?? ''));
@@ -140,8 +162,8 @@ const qualityItems = computed(() => {
         value: baseQuality,
     }));
 
-    // MMT/TLV 録画では、元の符号化データを保ったまま HLS へ再多重化する保存形式も選べるようにする
-    if (props.program.recorded_video.container_format === 'MMT/TLV') {
+    // 元の映像をブラウザが直接デコードできる録画では、再エンコードなしで HLS へ再多重化する保存形式も選べるようにする
+    if (isCopyModeAvailable.value === true) {
         items.unshift({
             title: `HLS (オリジナル・再エンコードなし / 約${Utils.formatBytes(props.program.recorded_video.file_size)})`,
             value: 'copy',

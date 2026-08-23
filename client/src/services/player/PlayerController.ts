@@ -2007,7 +2007,7 @@ class PlayerController {
             });
 
             // Bangumi 連携済みのログインユーザーが終盤まで再生したら、実再生位置をバックエンドへ送信する
-            // 90% の完了判定と Bangumi の条目・話数解決はバックエンドだけが担当する
+            // CM 区間を考慮した完了判定と Bangumi の条目・話数解決はバックエンドを正とする
             this.player.on('timeupdate', () => {
                 if (!this.player || !this.player.video || this.is_bangumi_episode_completion_requested) {
                     return;

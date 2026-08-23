@@ -196,7 +196,7 @@ async def BangumiPlaybackProgressAPI(
     current_user: Annotated[User, Depends(GetCurrentUser)],
 ):
     """
-    指定した録画番組の視聴進捗を受け取り、90% 以上なら照合済み Bangumi エピソードを「看過」に更新する。<br>
+    指定した録画番組の視聴進捗を受け取り、完了位置到達後に照合済み Bangumi エピソードを「看過」に更新する。<br>
     JWT エンコードされたアクセストークンが Authorization: Bearer に設定されていないとアクセスできない。
 
     Args:
