@@ -123,6 +123,7 @@ import SPHeaderBar from '@/components/SPHeaderBar.vue';
 import Series, { IOnAirSeries, ISeriesSummary } from '@/services/Series';
 import useSettingsStore from '@/stores/SettingsStore';
 import Utils, { dayjsOriginal } from '@/utils';
+import { isOnAirSeriesInAttentionWindow } from '@/views/Series/OnAirUtils';
 
 const weekdays = [
     { index: 0, label: '月' }, { index: 1, label: '火' }, { index: 2, label: '水' },
@@ -192,20 +193,9 @@ const currentJST = ref(dayjsOriginal().tz('Asia/Tokyo'));
 let currentTimeUpdateTimer: number | null = null;
 
 // 番組表の曜日・時刻は日本時間なので、ブラウザのローカルタイムゾーンには依存させない。
-// 現在時刻の 3 時間前から翌日 5 時までを、直近で確認したい放送枠として扱う。
+// 夜間は放送日の 20:00〜翌朝 05:00 に固定し、日中は直近 3 時間から翌朝までを対象にする。
 const isInAttentionWindow = (series: IOnAirSeries): boolean => {
-    const attentionStart = currentJST.value.subtract(3, 'hour');
-    const attentionEnd = currentJST.value.add(1, 'day').startOf('day').add(5, 'hour');
-    const currentWeekday = (currentJST.value.day() + 6) % 7;
-    const weekStart = currentJST.value.startOf('day').subtract(currentWeekday, 'day');
-    const [hour, minute] = series.broadcast_time.split(':').map(Number);
-    const baseOccurrence = weekStart.add(series.weekday, 'day').hour(hour).minute(minute).second(0);
-
-    // 日曜から月曜へ跨ぐ場合も拾えるよう、前後週の同じ放送枠も照合する。
-    return [-7, 0, 7].some(dayOffset => {
-        const occurrence = baseOccurrence.add(dayOffset, 'day');
-        return occurrence.isBetween(attentionStart, attentionEnd, null, '[]');
-    });
+    return isOnAirSeriesInAttentionWindow(series, currentJST.value);
 };
 
 const hasAttentionSeries = (weekday: number): boolean => {
