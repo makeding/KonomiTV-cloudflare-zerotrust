@@ -239,7 +239,7 @@ window.__invokeGraphQLAPISetupPromise = (async () => {
     // ||twitter.com / ||x.com / ||platform.twitter.com 系ルールを網羅する
     // 加えて、jot → graphql/user_flow に移行された新エンドポイントもブロックする
     const analyticsBlockPatterns = [
-        '/graphql/viewe_context.json',  // 新: scribe イベント (rweb_home_jot_context_enabled=true 時)
+        '/graphql/viewer_context.json',  // 新: scribe イベント (rweb_home_jot_context_enabled=true 時)
         '/graphql/app_context.json',      // 新: エラーログ (同上)
         '/graphql/user_flow.json',      // 新: scribe イベント (rweb_home_jot_migrate_enabled=true 時)
         '/graphql/error_log.json',      // 新: エラーログ (同上)
@@ -252,11 +252,39 @@ window.__invokeGraphQLAPISetupPromise = (async () => {
         '/9/measurement/',              // 広告計測
         '/impressions.js',              // platform.twitter.com の広告インプレッション追跡
     ];
+    // Python 側で EasyPrivacy と uBlock 固有リストから安全に抽出した通信種別付きフィルターを組み立てる
+    // 取得失敗時は空配列が渡され、上記の組み込みパターンだけで通信をブロックする
+    const dynamicAnalyticsBlockFilters = (
+        Array.isArray(window.__dynamicAnalyticsBlockFilters)
+            ? window.__dynamicAnalyticsBlockFilters
+            : []
+    ).flatMap((filter) => {
+        try {
+            if (!Array.isArray(filter.request_types)) return [];
+            return [{
+                regex: new RegExp(filter.regex_pattern, 'i'),
+                requestTypes: filter.request_types,
+            }];
+        } catch (_) {
+            // キャッシュ内の1件が壊れていても、有効な動的ルールと組み込みパターンを利用可能にする
+            return [];
+        }
+    });
 
     // URL がブロック対象のアナリティクスエンドポイントかどうかを判定する
-    const isAnalyticsUrl = (url) => {
-        if (!url || typeof url !== 'string') return false;
-        return analyticsBlockPatterns.some(pattern => url.includes(pattern));
+    const isAnalyticsUrl = (url, requestType) => {
+        const urlString = url instanceof URL ? url.href : url;
+        if (!urlString || typeof urlString !== 'string') return false;
+        if (analyticsBlockPatterns.some(pattern => urlString.includes(pattern))) return true;
+        try {
+            const absoluteUrl = new URL(urlString, window.location.href).href;
+            return dynamicAnalyticsBlockFilters.some(filter => (
+                filter.requestTypes.includes(requestType) && filter.regex.test(absoluteUrl)
+            ));
+        } catch (_) {
+            // URL として解釈できない入力は既存の fetch / XHR 実装へ渡す
+            return false;
+        }
     };
 
     // --- fetch フック ---
@@ -264,8 +292,8 @@ window.__invokeGraphQLAPISetupPromise = (async () => {
     // main.js 実行前にフックすることで、Twitter のコードが fetch 参照をキャプチャしてもフック済みの版を使う
     const OriginalFetch = window.fetch;
     window.fetch = function(input) {
-        const url = typeof input === 'string' ? input : (input?.url || '');
-        if (isAnalyticsUrl(url)) {
+        const url = input instanceof URL ? input.href : (typeof input === 'string' ? input : (input?.url || ''));
+        if (isAnalyticsUrl(url, 'XHR')) {
             // 空の 200 レスポンスを返し、scribe client にはリクエスト成功と認識させる
             // これにより reenqueueOnFailure によるリトライループを防ぐ
             return Promise.resolve(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
@@ -278,16 +306,17 @@ window.__invokeGraphQLAPISetupPromise = (async () => {
     const OriginalXHROpen = XMLHttpRequest.prototype.open;
     const OriginalXHRSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        if (typeof url === 'string') {
+        if (typeof url === 'string' || url instanceof URL) {
+            const urlString = url instanceof URL ? url.href : url;
             // アナリティクス URL をブロック対象としてマークする
-            if (isAnalyticsUrl(url)) {
+            if (isAnalyticsUrl(urlString, 'XHR')) {
                 this.__analyticsBlocked = true;
             }
             // Twitter Web App が HomeLatestTimeline を呼ぶ際、デフォルトでは enableRanking=true (人気順) になる
             // これを false (最新順) に強制することで、「フォロー中」タブの「最新」ソートを維持する
-            if (url.includes('/HomeLatestTimeline')) {
+            if (urlString.includes('/HomeLatestTimeline')) {
                 try {
-                    const parsedUrl = new URL(url);
+                    const parsedUrl = new URL(urlString);
                     const params = new URLSearchParams(parsedUrl.search);
                     const variablesRaw = params.get('variables');
                     if (variablesRaw) {
@@ -329,7 +358,7 @@ window.__invokeGraphQLAPISetupPromise = (async () => {
     // ページ離脱時 (visibilitychange: hidden, pagehide) に navigator.sendBeacon() でアナリティクスが送信されうるため、これらをブロックする
     const OriginalSendBeacon = navigator.sendBeacon;
     navigator.sendBeacon = function(url, data) {
-        if (isAnalyticsUrl(url)) {
+        if (isAnalyticsUrl(url, 'Ping')) {
             return true;  // 送信成功を偽装する
         }
         return OriginalSendBeacon.call(this, url, data);

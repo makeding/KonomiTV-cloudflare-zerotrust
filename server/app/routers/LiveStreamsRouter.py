@@ -44,10 +44,23 @@ async def ValidateChannelID(display_channel_id: Annotated[str, Path(description=
     return display_channel_id
 
 
-async def ValidateQuality(quality: Annotated[str, Path(description='映像の品質。ex: 1080p')]) -> LiveStreamQualityWithOptions:
+async def ValidateQuality(
+    display_channel_id: Annotated[str, Path(description='チャンネル ID 。ex: gr011')],
+    quality: Annotated[str, Path(description='映像の品質。ex: original, 1080p')],
+) -> LiveStreamQualityWithOptions:
     """ 映像の品質のバリデーション """
 
-    # 指定された品質が存在するか確認
+    # ラジオチャンネルには MPEG-2 映像がなく、mpeg2toh264 では再生できないため受け付けない
+    if quality == 'original':
+        channel = await Channel.filter(display_channel_id=display_channel_id).get_or_none()
+        if channel is not None and channel.is_radiochannel is True:
+            logging.error(f'[LiveStreamsRouter][ValidateQuality] Original quality is not available for radio channels. [display_channel_id: {display_channel_id}]')
+            raise HTTPException(
+                status_code = status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail = 'Original quality is not available for radio channels',
+            )
+
+    # 指定されたエンコード済み品質が存在するか確認
     ## 品質の指定に -10bit や -24fps が付いていれば分解する
     ## ライブストリームでは BS4K Raw MMTS 専用の raw-mmts も受け付ける
     stream_quality = SplitLiveQualityAndEncodingOptions(quality)

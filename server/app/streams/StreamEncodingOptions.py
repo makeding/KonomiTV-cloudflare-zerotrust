@@ -93,7 +93,7 @@ class StreamEncodingOptions:
 @dataclass(frozen=True)
 class StreamQualityWithOptions:
     """
-    API パスの品質指定を、ベース画質と追加エンコードオプションへ分解した結果を表す
+   ストリーミング配信 API の品質指定を、ベース画質と追加エンコードオプションへ分解した結果を表す
 
     Args:
         quality (VIDEO_QUALITY_TYPES): 録画ストリーミングで利用する画質
@@ -193,6 +193,13 @@ def SplitLiveQualityAndEncodingOptions(quality: str) -> LiveStreamQualityWithOpt
     if quality == 'raw-mmts':
         return LiveStreamQualityWithOptions(
             quality = 'raw-mmts',
+            encoding_options = StreamEncodingOptions(),
+        )
+
+    # original は LiveEncodingTask 専用で、録画用の SplitQualityAndEncodingOptions には渡さない。
+    if quality == 'original':
+        return LiveStreamQualityWithOptions(
+            quality = 'original',
             encoding_options = StreamEncodingOptions(),
         )
 

@@ -197,7 +197,7 @@ class LiveStream:
 
         Args:
             display_channel_id (str): チャンネルID
-            quality (LIVE_QUALITY_TYPES): 映像の品質 (1080p-60fps ~ 240p, raw-mmts)
+            quality (LIVE_QUALITY_TYPES): 映像の品質 (original, 1080p-60fps ~ 240p, raw-mmts)
             encoding_options (StreamEncodingOptions | None): ベース画質に追加するエンコードオプション
         """
 

@@ -8,7 +8,7 @@ import anyio
 import httpx
 
 from app import logging, schemas
-from app.config import _ServerSettingsNotificationService
+from app.config import ServerSettingsNotificationService
 
 
 class NotificationService(ABC):
@@ -16,7 +16,7 @@ class NotificationService(ABC):
     通知サービスの抽象基底クラス
     """
 
-    def __init__(self, config: _ServerSettingsNotificationService):
+    def __init__(self, config: ServerSettingsNotificationService):
         self.config = config
 
     @abstractmethod
@@ -50,7 +50,7 @@ class TelegramNotificationService(NotificationService):
     Telegram Bot API を使用した通知サービス
     """
 
-    def __init__(self, config: _ServerSettingsNotificationService):
+    def __init__(self, config: ServerSettingsNotificationService):
         super().__init__(config)
         self.bot_token = config.bot_token
         self.chat_id = config.chat_id
@@ -123,7 +123,7 @@ class TelegramNotificationService(NotificationService):
 
         return message
 
-    async def _send_text_message(self, text: str, recorded_program: schemas.RecordedProgram = None) -> None:
+    async def _send_text_message(self, text: str, recorded_program: schemas.RecordedProgram | None = None) -> None:
         """テキストメッセージを送信"""
 
         url = f'{self.base_url}/sendMessage'
@@ -153,7 +153,12 @@ class TelegramNotificationService(NotificationService):
             response = await client.post(url, data=data, timeout=30)
             response.raise_for_status()
 
-    async def _send_photo_with_caption(self, caption: str, photo_path: anyio.Path, recorded_program: schemas.RecordedProgram = None) -> None:
+    async def _send_photo_with_caption(
+        self,
+        caption: str,
+        photo_path: anyio.Path,
+        recorded_program: schemas.RecordedProgram | None = None,
+    ) -> None:
         """サムネイル画像付きでメッセージを送信"""
 
         url = f'{self.base_url}/sendPhoto'
@@ -202,7 +207,7 @@ class NotificationManager:
     複数の通知サービスを管理するクラス
     """
 
-    def __init__(self, service_configs: list[_ServerSettingsNotificationService]):
+    def __init__(self, service_configs: list[ServerSettingsNotificationService]):
         self.services: list[NotificationService] = []
 
         for config in service_configs:

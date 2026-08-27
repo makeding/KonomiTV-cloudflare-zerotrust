@@ -118,7 +118,11 @@ async def WatchedHistoryAPI(
     """
 
     client_settings = ClientSettings.model_validate(current_user.client_settings)
-    return schemas.WatchedHistory(items=client_settings.watched_history)
+    # ClientSettings は後方互換性のため履歴を汎用 JSON として保持しているため、
+    ## API 境界では必ず公開スキーマへ検証・変換してから返す
+    return schemas.WatchedHistory(
+        items=[schemas.WatchedHistoryItem.model_validate(item) for item in client_settings.watched_history],
+    )
 
 
 @router.put(
@@ -155,7 +159,10 @@ async def WatchedHistoryUpdateAPI(
         updated_settings['watched_history'] = merged_history
         current_user.client_settings = updated_settings
         await current_user.save()
-    return schemas.WatchedHistory(items=merged_history)
+    # マージ結果も保存時と同じ JSON 表現なので、レスポンスでは型付きの公開スキーマへ戻す
+    return schemas.WatchedHistory(
+        items=[schemas.WatchedHistoryItem.model_validate(item) for item in merged_history],
+    )
 
 
 @router.get(

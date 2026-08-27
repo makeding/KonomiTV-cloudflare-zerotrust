@@ -391,7 +391,7 @@ class WatchUrlConfig(BaseModel):
     type: Literal['watch_url'] = 'watch_url'
 
 
-class _ServerSettingsNotificationService(BaseModel):
+class ServerSettingsNotificationService(BaseModel):
     type: Literal['Telegram', 'Slack'] = 'Telegram'
     enabled: bool = False
     # Telegram設定
@@ -404,7 +404,7 @@ class _ServerSettingsNotificationService(BaseModel):
 
 
 class _ServerSettingsNotifications(BaseModel):
-    services: list[_ServerSettingsNotificationService] = []
+    services: list[ServerSettingsNotificationService] = []
 
 class ServerSettings(BaseModel):
     general: _ServerSettingsGeneral = _ServerSettingsGeneral()

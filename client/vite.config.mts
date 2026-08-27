@@ -70,6 +70,14 @@ export default defineConfig({
         },
         extensions: ['.js', '.json', '.jsx', '.mjs', '.ts', '.tsx', '.vue'],
     },
+    // mpeg2toh264 は配布済みの Worker を import.meta.url から解決するため、依存関係の事前バンドルから除外する
+    // エントリーポイントだけを .vite/deps/ へ移動すると相対 URL の起点が変わり、同梱 Worker を取得できなくなる
+    optimizeDeps: {
+        exclude: [
+            'mpeg2toh264/player',
+            'mpeg2toh264/yadif',
+        ],
+    },
     // SASS / SCSS の設定
     css: {
         preprocessorOptions: {
