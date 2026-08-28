@@ -29,6 +29,7 @@ import {
     shouldKeepVideoStreamAlive,
 } from '@/services/player/PlayerBackendPolicy';
 import PlayerManager from '@/services/player/PlayerManager';
+import TLVPlaybackNotification from '@/services/player/TLVPlaybackNotification';
 import Videos, { type IJikkyoComments } from '@/services/Videos';
 import useChannelsStore from '@/stores/ChannelsStore';
 import usePlayerStore from '@/stores/PlayerStore';
@@ -183,6 +184,10 @@ class PlayerController {
     // TLV のトラック列挙で項目を作り直しても、初期 DOM から取得した SVG を保持し続ける。
     private tlv_audio_check_icon_html: string | null = null;
 
+    // DPlayer の TLV 障害イベントを DPlayer 左下の notice に集約し、
+    // 同一再生世代で重複する破損・致命的エラー通知を抑止する。
+    private readonly tlv_playback_notification = new TLVPlaybackNotification();
+
 
     /**
      * コンストラクタ
@@ -317,6 +322,7 @@ class PlayerController {
         this.ignore_tlv_video_switch_error_until = 0;
         this.tlv_selected_audio_packet_id_override = null;
         this.is_offline_fallback_in_progress = false;
+        this.tlv_playback_notification.reset();
 
         // PlayerStore にプレイヤーを初期化したことを通知する
         // 実際にはこの時点ではプレイヤーの初期化は完了していないが、PlayerController.init() を実行したことが通知されることが重要
@@ -1151,8 +1157,17 @@ class PlayerController {
         dplayer_instance.on('tlv_layer_change', () => {
             this.ignore_tlv_video_switch_error_until = performance.now() + 10 * 1000;
         });
+        dplayer_instance.on('tlv_playback_damage', (damage: DPlayerType.TLVPlaybackDamage) => {
+            console.warn('[PlayerController] TLV playback damage:', damage);
+            this.tlv_playback_notification.notifyPlaybackDamage(
+                dplayer_instance,
+                damage,
+                this.playback_mode === 'Live',
+            );
+        });
         dplayer_instance.on('tlv_error', (error: unknown) => {
             console.error('\u001b[31m[PlayerController] TLV playback error:', error);
+            this.tlv_playback_notification.notifyError(dplayer_instance, error);
         });
 
         const syncDPlayerSubtitleTypeForQuality = (quality: DPlayerType.VideoQuality | null | undefined): void => {
