@@ -53,3 +53,16 @@ export function shouldForceLiveSync(backendType: string): boolean {
 export function shouldKeepVideoStreamAlive(backendType: string): boolean {
     return backendType === 'hls';
 }
+
+
+/**
+ * Native HLS 互換性警告を表示する必要があるかを返す。
+ * TLV など hls.js プラグインを使わない別バックエンドを、Native HLS と誤認しないための境界でもある。
+ *
+ * @param backendType 現在選択されている DPlayer 画質のバックエンド種別
+ * @param hasHLSPlugin hls.js プラグインが生成済みなら true
+ * @returns HLS 画質なのに hls.js プラグインが生成されていない場合だけ true
+ */
+export function shouldShowNativeHLSWarning(backendType: string | undefined, hasHLSPlugin: boolean): boolean {
+    return backendType === 'hls' && hasHLSPlugin === false;
+}

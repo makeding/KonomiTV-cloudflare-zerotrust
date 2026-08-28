@@ -6,6 +6,7 @@ import {
     MPEG2TOH264_PASSTHROUGH,
     shouldForceLiveSync,
     shouldKeepVideoStreamAlive,
+    shouldShowNativeHLSWarning,
 } from '@/services/player/PlayerBackendPolicy';
 
 
@@ -39,5 +40,12 @@ describe('原始 MPEG-2 TS 再生バックエンド契約', () => {
         expect(shouldKeepVideoStreamAlive('hls')).toBe(true);
         expect(shouldKeepVideoStreamAlive('mpeg2toh264')).toBe(false);
         expect(shouldKeepVideoStreamAlive('tlv')).toBe(false);
+    });
+
+    it('Native HLS 警告は hls.js のない HLS 画質だけに表示し、TLV では表示しない', () => {
+        expect(shouldShowNativeHLSWarning('hls', false)).toBe(true);
+        expect(shouldShowNativeHLSWarning('hls', true)).toBe(false);
+        expect(shouldShowNativeHLSWarning('tlv', false)).toBe(false);
+        expect(shouldShowNativeHLSWarning('mpeg2toh264', false)).toBe(false);
     });
 });

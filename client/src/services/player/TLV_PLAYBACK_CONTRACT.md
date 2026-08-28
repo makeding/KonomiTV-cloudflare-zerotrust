@@ -27,3 +27,6 @@ HonomiTV's copy and displays it through the current DPlayer instance's public
   seek (`seek(position, true)`) and must never call `hideNotice()` as cleanup;
   cleanup for the seek operation must not erase a TLV notice that arrived
   concurrently during startup.
+- TLV playback must never enter HLS / Native HLS fallback presentation. The
+  iOS / iPadOS Native HLS compatibility warning is valid only when the active
+  DPlayer quality itself has `type: 'hls'` and no hls.js plugin was created.

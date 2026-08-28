@@ -27,6 +27,7 @@ import {
     MPEG2TOH264_PASSTHROUGH,
     shouldForceLiveSync,
     shouldKeepVideoStreamAlive,
+    shouldShowNativeHLSWarning,
 } from '@/services/player/PlayerBackendPolicy';
 import { applyInitialPlaybackPosition } from '@/services/player/PlayerInitialPlayback';
 import PlayerManager from '@/services/player/PlayerManager';
@@ -1968,15 +1969,14 @@ class PlayerController {
             // ビデオ視聴のみ
             } else {
 
-                // HLS 画質を選択している場合に限り、hls.js / Native HLS 固有の初期化を行う。
-                // TLV パススルーは DPlayer 内蔵の tlvdemux Player が担当するため plugins.hls が存在しないのが正常であり、
-                // ここで Native HLS と誤判定すると、実際には TLV 再生中なのに hls.js の警告が表示されてしまう。
+                // HLS 画質にだけ hls.js / Native HLS 固有の処理を適用する。
+                // TLV で plugins.hls が存在しないのは正常で、Native HLS フォールバックではない。
+                const hls_plugin = this.player.plugins.hls;
                 if (this.player.quality?.type === 'hls') {
-                    // hls.js の初期化時に startPosition を指定したことで、シーク時に常に startPosition に対応する HLS セグメントが
-                    // ロードされるようになってしまうため、画質切り替えが完了する前に startPosition をデフォルト値の -1 に無理やり戻す
-                    // こうすることで startPosition を指定しつつ、シーク時は従来通りシーク先のセグメントから先読みが開始されるようになる
-                    const hls_plugin = this.player.plugins.hls;
                     if (hls_plugin !== undefined) {
+                        // hls.js の初期化時に startPosition を指定したことで、シーク時に常に startPosition に対応する HLS セグメントが
+                        // ロードされるようになってしまうため、画質切り替えが完了する前に startPosition をデフォルト値の -1 に無理やり戻す
+                        // こうすることで startPosition を指定しつつ、シーク時は従来通りシーク先のセグメントから先読みが開始されるようになる
                         // 部分録画を同一番組の別ファイルから継ぎ合わせた仮想プレイリストでは、
                         // EXT-X-GAP が付いた未録画区間を hls.js が自動的に飛ばす。
                         // 前後の実セグメントが切り替わった時点で、その区間を一度だけユーザーへ知らせる。
@@ -2068,13 +2068,13 @@ class PlayerController {
                                 is_error_message: false,
                             });
                         });
+                    } else if (shouldShowNativeHLSWarning(this.player.quality?.type, hls_plugin !== undefined)) {
+                        // 実はなぜか hls.js を使わずとも Safari では普通に Native HLS 再生できてしまうようなので、警告を出しつつ何もしない
+                        // DPlayer 側の機能により、Native HLS 再生であっても字幕は表示される
+                        console.warn('\u001b[31m[PlayerController] hls.js plugin not found. (Native HLS playback may be supported on Safari.)');
+                        this.player.notice('お使いの iOS / iPadOS Safari は hls.js での再生に対応していません。代わりに Native HLS での再生を試みますが、正常に再生できない可能性があります。',
+                            undefined, undefined, '#FFA86A');
                     }
-                } else if (this.player.type !== 'mpeg2toh264') {
-                    // 実はなぜか hls.js を使わずとも Safari では普通に Native HLS 再生できてしまうようなので、警告を出しつつ何もしない
-                    // DPlayer 側の機能により、Native HLS 再生であっても字幕は表示される
-                    console.warn('\u001b[31m[PlayerController] hls.js plugin not found. (Native HLS playback may be supported on Safari.)');
-                    this.player.notice('お使いの iOS / iPadOS Safari は hls.js での再生に対応していません。代わりに Native HLS での再生を試みますが、正常に再生できない可能性があります。',
-                        undefined, undefined, '#FFA86A');
                 }
 
                 // 必ず最初はローディング状態で、背景写真を表示する
