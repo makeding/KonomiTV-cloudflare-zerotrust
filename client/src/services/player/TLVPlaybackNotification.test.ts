@@ -1,7 +1,6 @@
+import DPlayer, { DPlayerType } from 'dplayer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type DPlayer from 'dplayer';
-import type { DPlayerType } from 'dplayer';
 
 import TLVPlaybackNotification from '@/services/player/TLVPlaybackNotification';
 
@@ -63,6 +62,31 @@ describe('TLV 再生障害の DPlayer notice 表示契約', () => {
             undefined,
             '#FF6F6A',
         );
+    });
+
+    it('実際の DPlayer.notice() が .dplayer-notice の文字列と不透明度を更新する', () => {
+        vi.useFakeTimers();
+        const notice_element = document.createElement('div');
+        notice_element.className = 'dplayer-notice';
+        const actual_player = {
+            template: { notice: notice_element },
+            events: { trigger: vi.fn() },
+            noticeTime: null,
+            hideNotice: DPlayer.prototype.hideNotice,
+        } as unknown as DPlayer;
+        actual_player.notice = DPlayer.prototype.notice.bind(actual_player);
+
+        notification.notifyError(actual_player, {
+            code: 'DEMUXER_ERROR_COULD_NOT_OPEN',
+            message: 'FFmpegDemuxer: open context failed',
+        });
+
+        expect(notice_element.textContent).toContain('FFmpegDemuxer: open context failed');
+        expect(notice_element.textContent).toContain('[DEMUXER_ERROR_COULD_NOT_OPEN]');
+        expect(notice_element.style.opacity).toBe('0.8');
+        expect(notice_element.style.color).toBe('#FF6F6A');
+        vi.clearAllTimers();
+        vi.useRealTimers();
     });
 
     it('操作不要の warning はユーザー通知を出さない', () => {
