@@ -23,3 +23,7 @@ HonomiTV's copy and displays it through the current DPlayer instance's public
 - HonomiTV's global `Message` Snackbar/Toast must never be used for TLV
   failures, so TLV failures stay inside the player and cannot stack with global
   application notifications.
+- applying the initial recorded-playback position must call DPlayer's silent
+  seek (`seek(position, true)`) and must never call `hideNotice()` as cleanup;
+  cleanup for the seek operation must not erase a TLV notice that arrived
+  concurrently during startup.

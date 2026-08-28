@@ -28,6 +28,7 @@ import {
     shouldForceLiveSync,
     shouldKeepVideoStreamAlive,
 } from '@/services/player/PlayerBackendPolicy';
+import { applyInitialPlaybackPosition } from '@/services/player/PlayerInitialPlayback';
 import PlayerManager from '@/services/player/PlayerManager';
 import TLVPlaybackNotification from '@/services/player/TLVPlaybackNotification';
 import Videos, { type IJikkyoComments } from '@/services/Videos';
@@ -1294,24 +1295,14 @@ class PlayerController {
             const apply_initial_seek = () => {
                 if (this.player === null) return;
 
-                // 初期化前に算出しておいた秒数分初回シークを実行
-                // 録画マージン分シークするケースと、プレイヤー再起動前の再生位置を復元するケースの2通りある
-                this.player.seek(initial_playback_position_seconds);
-
-                // 初回シーク時は確実にエンコーダーの起動が発生するため、ロードに若干時間がかかる
-                // このため DPlayer.seek() 内部で実行されているシークバーの更新処理は動作せず、再生が開始されるまで再生済み範囲は反映されない
-                // ここで再生済み範囲がシークバー上反映されていないとユーザーの認知的不協和を招くため、手動で再生済み範囲をシーク地点に移動する
-                // この時点ではまだ HLS プレイリストのロードが完了していないため、API から取得済みの動画長を用いて割合を計算する
-                this.player.bar.set('played', initial_playback_position_seconds / player_store.recorded_program.recorded_video.duration, 'width');
-
-                // 視聴履歴から再生を再開する場合のみ通知を表示
-                // そうでない場合は seek() 実行後に表示される通知を即座に非表示にする
-                if (initial_playback_position_seconds > player_store.recorded_program.recording_start_margin + 2) {
-                    this.player.notice('前回視聴した続きから再生します');
-                } else {
-                    this.player.hideNotice();
-                }
-                this.player.play();
+                // 録画マージンまたは再起動前の位置へ UI と再生状態を揃える。
+                // TLV の初期化も並行しているため、この処理は先に表示された障害 notice を消してはならない。
+                applyInitialPlaybackPosition({
+                    player: this.player,
+                    playbackPositionSeconds: initial_playback_position_seconds,
+                    recordedDurationSeconds: player_store.recorded_program.recorded_video.duration,
+                    recordingStartMarginSeconds: player_store.recorded_program.recording_start_margin,
+                });
                 console.log(`\u001b[31m[PlayerController] Seeking to ${initial_playback_position_seconds} seconds.`);
             };
 
