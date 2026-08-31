@@ -11,6 +11,7 @@ from app import logging
 from app.constants import JST
 from app.models.RecordedProgram import RecordedProgram
 from app.models.Series import Series
+from app.models.SeriesAlias import SeriesAlias
 from app.models.SeriesBroadcastPeriod import SeriesBroadcastPeriod
 from app.schemas import Genre
 
@@ -491,7 +492,14 @@ class SeriesIndexer:
             return False
 
         # 原則は normalized_title の完全一致だけで Series を再利用し、fuzzy 類似度による誤統合を防ぐ。
+        ## Bangumi 条目で統合済みの放送局別表記は alias に残るため、主タイトルの次に完全一致で解決する。
         series = await Series.get_or_none(normalized_title=parsed_title.normalized_title)
+        if series is None:
+            series_alias = await SeriesAlias.get_or_none(
+                normalized_title = parsed_title.normalized_title,
+            ).select_related('series')
+            if series_alias is not None:
+                series = series_alias.series
         is_series_created = False
 
         # 一部放送局は副題を丸ごと省略するため、同じ話数が別局の正式作品名へ既に存在する場合に限り、
@@ -522,6 +530,12 @@ class SeriesIndexer:
                     'genres': recorded_program.genres,
                 },
             )
+
+        # 主タイトルも alias テーブルへ常に登録し、統合時にタイトル所有者を原子的に移せるようにする。
+        await SeriesAlias.update_or_create(
+            normalized_title = parsed_title.normalized_title,
+            defaults = {'series_id': series.id},
+        )
 
         series_broadcast_period: SeriesBroadcastPeriod | None = None
         is_period_changed = False
