@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from tortoise import transactions
 
@@ -41,8 +40,8 @@ class SeriesMerger:
         """
 
         async with transactions.in_transaction() as connection:
-            # 今回の照合対象と、すでに同じ条目 ID を保持する Series を同時にロック範囲へ入れる。
-            ## SQLite は書き込みを直列化するため、以下の読み取りから削除まで他の API が半端な関連を観測しない。
+            # 今回の照合対象と、すでに同じ条目 ID を保持する Series を同じトランザクションで取得する。
+            ## プロセス内の同期は BangumiClient 側で直列化し、DB の一意索引をプロセス間競合の最終防線とする。
             _, candidate_rows = await connection.execute_query(
                 'SELECT id, normalized_title, title '
                 'FROM series '
@@ -56,6 +55,13 @@ class SeriesMerger:
             canonical_row = candidate_rows[0]
             canonical_series_id = int(canonical_row['id'])
             canonical_series_title = str(canonical_row['title'])
+
+            # 移行済み DB だけでなく、テスト用スキーマや新規作成直後の Series でも主タイトルの所有者を必ず登録する。
+            await connection.execute_query(
+                'INSERT INTO series_aliases (normalized_title, series_id) VALUES (?, ?) '
+                'ON CONFLICT(normalized_title) DO UPDATE SET series_id = excluded.series_id',
+                [str(canonical_row['normalized_title']), canonical_series_id],
+            )
 
             # ID が小さい最古の Series を残し、それ以外の表記・放送期間・録画を順番に移す。
             for source_row in candidate_rows[1:]:

@@ -5,10 +5,12 @@ from difflib import SequenceMatcher
 from typing import Any, cast
 
 import httpx
+from tortoise.exceptions import IntegrityError
 
 from app import logging, schemas
 from app.constants import API_REQUEST_HEADERS, HTTPX_CLIENT
 from app.metadata.SeriesIndexer import IsStrictSeriesTitlePrefix, NormalizeSeriesTitle
+from app.metadata.SeriesMerger import SeriesMerger
 from app.models.RecordedProgram import RecordedProgram
 from app.models.Series import Series
 from app.models.User import User
@@ -21,6 +23,7 @@ class BangumiClient:
     COLLECTION_PAGE_SIZE = 100
     EPISODE_PAGE_SIZE = 200
     _sync_tasks: set[asyncio.Task[None]] = set()
+    _subject_merge_locks: dict[int, asyncio.Lock] = {}
 
 
     @staticmethod
@@ -271,9 +274,14 @@ class BangumiClient:
         subjects = await cls._getCollectionSubjects(user)
         access_token = user.decryptBangumiAccessToken()
         episodes_by_subject_id: dict[int, list[dict[str, Any]]] = {}
-        matched_series_count = 0
+        matched_series_ids: set[int] = set()
 
         for series in anime_series:
+            # 先行する同期処理がこの Series を最古の主レコードへ統合済みの場合は、
+            ## 取得済みリストに残る削除済みオブジェクトを再処理しない。
+            if await Series.filter(id=series.id).exists() is False:
+                continue
+
             # すでに条目が確定している Series は、別ユーザーの收藏表記で上書きしない。
             subject = next(
                 (subject for subject in subjects if int(subject['id']) == series.bangumi_subject_id),
@@ -282,48 +290,62 @@ class BangumiClient:
             if subject is None:
                 continue
             subject_id = int(subject['id'])
-            matched_series_count += 1
 
-            # 收藏一覧が返す SlimSubject を Series へ保存し、一覧・詳細画面を外部 API なしで描画できるようにする。
+            # 收藏一覧が返す SlimSubject を永続化すると同時に、同じ条目 ID に照合済みの Series を統合する。
+            ## ロック中に外部 API は呼ばず、異なるユーザーの定期同期が重なっても subject ごとに直列化する。
             images = subject.get('images')
             image_url = str(images.get('large') or images.get('common') or '') if isinstance(images, dict) else ''
-            series.bangumi_subject_id = subject_id
-            series.bangumi_subject_name = str(subject.get('name', '')) or None
-            series.bangumi_subject_name_cn = str(subject.get('name_cn', '')) or None
-            series.bangumi_subject_summary = str(subject.get('short_summary', '')) or None
-            series.bangumi_subject_image_url = image_url or None
-            await series.save(update_fields=[
-                'bangumi_subject_id',
-                'bangumi_subject_name',
-                'bangumi_subject_name_cn',
-                'bangumi_subject_summary',
-                'bangumi_subject_image_url',
-            ])
+            subject_merge_lock = cls._subject_merge_locks.setdefault(subject_id, asyncio.Lock())
+            async with subject_merge_lock:
+                try:
+                    canonical_series = await SeriesMerger.mergeByBangumiSubject(
+                        series_id = series.id,
+                        subject_id = subject_id,
+                        subject_name = str(subject.get('name', '')) or None,
+                        subject_name_cn = str(subject.get('name_cn', '')) or None,
+                        subject_summary = str(subject.get('short_summary', '')) or None,
+                        subject_image_url = image_url or None,
+                    )
+                except (IntegrityError, ValueError):
+                    # 別プロセスが同じ subject を先に統合した場合は、一意索引の衝突または削除済み ID として観測される。
+                    ## トランザクションのロールバック後に確定済みの主 Series を読み直し、外部 API を再試行しない。
+                    canonical_series = await Series.get_or_none(bangumi_subject_id=subject_id)
+                    if canonical_series is None:
+                        raise
+            matched_series_ids.add(canonical_series.id)
 
-            recorded_programs = await RecordedProgram.filter(series_id=series.id).all()
-            if all(
-                recorded_program.bangumi_subject_id == subject_id and
-                recorded_program.bangumi_episode_id is not None
+            recorded_programs = await RecordedProgram.filter(series_id=canonical_series.id).all()
+            needs_episode_mapping = any(
+                cls.parseEpisodeNumber(recorded_program.episode_number) is not None and (
+                    recorded_program.bangumi_subject_id != subject_id or
+                    recorded_program.bangumi_episode_id is None
+                )
                 for recorded_program in recorded_programs
-                if cls.parseEpisodeNumber(recorded_program.episode_number) is not None
-            ):
-                continue
-            if subject_id not in episodes_by_subject_id:
+            )
+            if needs_episode_mapping and subject_id not in episodes_by_subject_id:
                 episodes_by_subject_id[subject_id] = await cls._getEpisodes(subject_id, access_token)
-            episodes = episodes_by_subject_id[subject_id]
+            episodes = episodes_by_subject_id.get(subject_id, [])
 
-            # 一覧取得時に確定した条目の中だけで、各録画の自然話数を対応する Bangumi episode ID へ結び付ける。
+            # Series 全体が同じ条目と確定したため、特別編や複数話録画にも subject ID までは保存する。
+            ## 自然話数が一意な録画だけ、一覧取得時に確定した条目内の episode ID へ追加で結び付ける。
             for recorded_program in recorded_programs:
+                update_fields: list[str] = []
+                subject_changed = recorded_program.bangumi_subject_id != subject_id
+                if subject_changed:
+                    recorded_program.bangumi_subject_id = subject_id
+                    update_fields.append('bangumi_subject_id')
+
                 episode_number = cls.parseEpisodeNumber(recorded_program.episode_number)
-                if episode_number is None:
-                    continue
-                episode = cls._findEpisode(episodes, episode_number)
-                if episode is None:
-                    continue
-                recorded_program.bangumi_subject_id = subject_id
-                recorded_program.bangumi_episode_id = int(episode['id'])
-                await recorded_program.save(update_fields=['bangumi_subject_id', 'bangumi_episode_id'])
-        return matched_series_count
+                if episode_number is not None and (subject_changed or recorded_program.bangumi_episode_id is None):
+                    episode = cls._findEpisode(episodes, episode_number)
+                    resolved_episode_id = int(episode['id']) if episode is not None else None
+                    if recorded_program.bangumi_episode_id != resolved_episode_id:
+                        recorded_program.bangumi_episode_id = resolved_episode_id
+                        update_fields.append('bangumi_episode_id')
+
+                if update_fields:
+                    await recorded_program.save(update_fields=update_fields)
+        return len(matched_series_ids)
 
 
     @classmethod
